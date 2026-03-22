@@ -1,0 +1,61 @@
+# BaseTruth — Docker Compose
+#
+# Services:
+#   basetruth-cli  — one-shot CLI runner (scan / compare-payslips)
+#   basetruth-api  — FastAPI REST server (port 8000)
+#
+# Usage:
+#   docker compose build
+#   docker compose run --rm basetruth-cli scan --input /app/your_data/doc.pdf
+#   docker compose up basetruth-api
+#
+# Environment overrides: create a `.env` file in this directory.
+# Required: none. All paths default to bind-mounts below.
+
+services:
+
+  # ── CLI — run any basetruth command ─────────────────────────────────────────
+  basetruth-cli:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: basetruth:latest
+    volumes:
+      # Mount your local data in; scan results come back here
+      - ./artifacts:/app/artifacts
+      - ./your_data:/app/your_data
+    environment:
+      TESSERACT_CMD: /usr/bin/tesseract
+      EXIFTOOL_PATH: /usr/bin/exiftool
+      BASETRUTH_ARTIFACT_ROOT: /app/artifacts
+    # Override at `docker compose run` time:
+    #   docker compose run --rm basetruth-cli scan --input /app/your_data/doc.pdf
+    entrypoint: ["python", "-m", "basetruth.cli"]
+    command: ["--help"]
+
+  # ── API — FastAPI REST server ────────────────────────────────────────────────
+  basetruth-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: basetruth:latest
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./your_data:/app/your_data
+    environment:
+      TESSERACT_CMD: /usr/bin/tesseract
+      EXIFTOOL_PATH: /usr/bin/exiftool
+      BASETRUTH_ARTIFACT_ROOT: /app/artifacts
+    entrypoint: ["python", "-m", "uvicorn", "basetruth.api:app",
+                 "--host", "0.0.0.0", "--port", "8000"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped

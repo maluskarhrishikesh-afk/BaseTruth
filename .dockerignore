@@ -1,0 +1,70 @@
+# ── Python artifacts ──────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Test and coverage artifacts ───────────────────────────────────────────────
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# ── Type checker caches ───────────────────────────────────────────────────────
+.mypy_cache/
+.pyright/
+pyrightconfig.json
+
+# ── IDE / editor ─────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Git ───────────────────────────────────────────────────────────────────────
+.git/
+.gitignore
+.gitattributes
+
+# ── Local data (mount as volume at runtime, don't bake into image) ────────────
+your_data/
+artifacts/
+
+# ── Documentation (not needed at runtime) ─────────────────────────────────────
+docs/
+documentation/
+
+# ── Model cache (large, mount separately if needed) ───────────────────────────
+model_cache/
+
+# ── Secrets and local config ──────────────────────────────────────────────────
+.env
+*.env
+config/token*.json
+config/credentials.json
+config/calendar_token.json
+config/drive_token.json
+
+# ── Docker files themselves (no recursive builds) ─────────────────────────────
+Dockerfile*
+docker-compose*.yml
+.dockerignore
