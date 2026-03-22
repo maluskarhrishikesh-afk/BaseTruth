@@ -14,3 +14,5 @@ outputs/
 start.exe
 stop.exe
 *.spec
+# but track the BaseTruth launcher spec
+!start.spec
