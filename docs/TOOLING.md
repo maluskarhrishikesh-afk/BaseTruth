@@ -24,6 +24,7 @@ binaries — no manual PATH setup needed on any OS (Linux, macOS, Windows/WSL2).
 | `gs` (Ghostscript) | `ghostscript` | `ocrmypdf` PDF/A |
 | `qpdf` | `qpdf` | standalone signature workflows |
 | `node` / `npx` | NodeSource 22.x | `@llamaindex/liteparse` |
+| `convert` / `magick` | `imagemagick` | `@llamaindex/liteparse` image-PDF conversion |
 
 ### Quick start
 

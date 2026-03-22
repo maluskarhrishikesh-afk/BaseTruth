@@ -73,6 +73,7 @@ LABEL org.opencontainers.image.source="https://github.com/maluskarhrishikesh-afk
 # qpdf             → standalone signature extraction (pikepdf bundles libqpdf, this is the CLI)
 # libgl1           → opencv headless runtime needs libGL
 # libglib2.0-0     → opencv runtime dep
+# imagemagick      → @llamaindex/liteparse image-PDF conversion
 RUN apt-get update && apt-get install -y --no-install-recommends \
         tesseract-ocr \
         tesseract-ocr-eng \
@@ -81,6 +82,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libimage-exiftool-perl \
         ghostscript \
         qpdf \
+        imagemagick \
         libgl1 \
         libglib2.0-0 \
         libgomp1 \
