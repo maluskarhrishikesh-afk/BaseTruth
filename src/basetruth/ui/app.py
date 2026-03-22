@@ -414,23 +414,62 @@ def _page_scan(service: BaseTruthService) -> None:
             return
 
         if report:
-            # Warn the user when the plain-text fallback was used instead of a
-            # full LiteParse / OCR parse.  The report is still useful for
-            # metadata forensics and structural checks, but field extraction may
-            # be incomplete for image-only documents.
             artifacts = report.get("artifacts", {})
-            if artifacts.get("parse_fallback") or report.get("structured_summary", {}).get("parse_fallback"):
+            summary = report.get("structured_summary", {})
+            is_fallback = artifacts.get("parse_fallback") or summary.get("parse_fallback")
+            is_image_only = artifacts.get("is_image_only_pdf") or summary.get("is_image_only_pdf")
+            ocr_engine = artifacts.get("ocr_engine", "")
+
+            if is_fallback:
                 fallback_reason = (
                     artifacts.get("parse_fallback_reason")
-                    or report.get("structured_summary", {}).get("parse_fallback_reason", "")
-                )
-                st.warning(
-                    "**Partial scan** -- LiteParse could not fully process this document "
-                    f"({fallback_reason or 'reason unknown'}).  "
-                    "BaseTruth used a text-extraction fallback.  "
-                    "PDF metadata forensics and structural checks ran in full; "
-                    "field-level extraction may be incomplete for image-only pages."
-                )
+                    or summary.get("parse_fallback_reason", "")
+                ).split("|")[0].strip()  # First segment only -- drops the verbose stacktrace
+
+                if is_image_only and ocr_engine == "pytesseract":
+                    # OCR ran and succeeded.
+                    st.info(
+                        "**Image-only PDF detected** -- LiteParse required ImageMagick which is "
+                        "not installed. BaseTruth used **Tesseract OCR** as a fallback and "
+                        "successfully extracted text from the document.  "
+                        "Field extraction quality may differ from a full LiteParse scan."
+                    )
+                elif is_image_only and ocr_engine == "unavailable":
+                    # Image-only PDF and no OCR available -- worst case for identity docs.
+                    st.warning(
+                        "**Image-only PDF -- OCR required for full extraction.**  "
+                        "This document (e.g. Aadhaar card, PAN card) contains no embedded "
+                        "text layer. PDF metadata forensics ran, but field-level extraction "
+                        "was not possible without OCR.\n\n"
+                        "**To fix this, choose ONE option:**\n\n"
+                        "**Option A (recommended) -- Install ImageMagick:**  \n"
+                        "Download from https://imagemagick.org/script/download.php#windows  \n"
+                        "Restart the terminal after install, then re-scan.\n\n"
+                        "**Option B -- Install Tesseract + Poppler:**  \n"
+                        "1. Tesseract: https://github.com/UB-Mannheim/tesseract/wiki  \n"
+                        "   Add its folder to your system PATH  \n"
+                        "2. Poppler: https://github.com/oschwartz10612/poppler-windows/releases  \n"
+                        "   Add poppler/bin to your system PATH  \n"
+                        "3. In the BaseTruth folder run:  \n"
+                        "   `.venv\\Scripts\\pip install pytesseract pdf2image`  \n"
+                        "4. Re-scan the document."
+                    )
+                elif is_image_only:
+                    st.warning(
+                        "**Image-only PDF** -- no embedded text found after OCR attempt.  "
+                        "PDF metadata forensics ran in full.  "
+                        f"Reason: {fallback_reason or 'unknown'}."
+                    )
+                else:
+                    # LiteParse failed but text extraction succeeded (text-based PDF).
+                    st.warning(
+                        "**Partial scan** -- LiteParse could not process this document "
+                        f"({fallback_reason or 'reason unknown'}).  "
+                        "BaseTruth used text-extraction fallback (PyMuPDF).  "
+                        "PDF metadata forensics and structural checks ran in full.  "
+                        "To enable full LiteParse scans: install ImageMagick from "
+                        "https://imagemagick.org/script/download.php#windows"
+                    )
             st.divider()
             st.subheader("Scan Result")
             _render_report_summary(report)

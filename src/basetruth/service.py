@@ -13,6 +13,8 @@ from basetruth.integrations.pdf import (
     build_liteparse_json_from_text,
     extract_pdf_metadata,
     extract_text_from_pdf,
+    extract_text_via_ocr,
+    is_image_only_pdf,
 )
 from basetruth.models import CaseNote, CaseRecord, VerificationReport
 from basetruth.reporting.markdown import render_comparison_report, render_scan_report
@@ -150,6 +152,8 @@ class BaseTruthService:
         # the input is a pre-parsed JSON file that skips the LiteParse step.
         parse_fallback = False
         parse_fallback_reason = ""
+        ocr_engine = ""
+        image_only_pdf = False
         if path.suffix.lower() == ".json" and path.name.endswith("_structured.json"):
             structured_summary = json.loads(path.read_text(encoding="utf-8"))
             pdf_metadata = {}
@@ -175,7 +179,34 @@ class BaseTruthService:
                     parse_fallback_reason = str(liteparse_status.get("message", "LiteParse not available"))
 
                 if parse_fallback:
+                    # First try PyMuPDF / pypdf for text-layer PDFs; this is
+                    # fast and works without any external binary.
                     extracted_text = extract_text_from_pdf(path) if path.suffix.lower() == ".pdf" else ""
+
+                    # Detect image-only PDFs (Aadhaar, PAN cards, scanned docs).
+                    # When the page has no text layer at all, try OCR.
+                    page_count = 1
+                    try:
+                        from pypdf import PdfReader  # type: ignore
+                        page_count = len(PdfReader(str(path)).pages)
+                    except Exception:  # noqa: BLE001
+                        pass
+
+                    if is_image_only_pdf(extracted_text, page_count):
+                        image_only_pdf = True
+                        ocr_text, ocr_engine = extract_text_via_ocr(path)
+                        if ocr_text.strip():
+                            extracted_text = ocr_text
+                            parse_fallback_reason += " | OCR via pytesseract succeeded."
+                        else:
+                            # OCR unavailable or returned nothing (image-only, no OCR).
+                            if ocr_engine == "unavailable":
+                                parse_fallback_reason += " | OCR unavailable (install Tesseract + pdf2image)."
+                            elif ocr_engine == "error":
+                                parse_fallback_reason += " | OCR attempt failed."
+                            else:
+                                parse_fallback_reason += " | Image-only PDF: no text layer found."
+
                     fallback_json = build_liteparse_json_from_text(extracted_text, path.name)
                     raw_parse_path.write_text(
                         json.dumps(fallback_json, indent=2, ensure_ascii=False),
@@ -187,6 +218,10 @@ class BaseTruthService:
             if parse_fallback:
                 structured_summary["parse_fallback"] = True
                 structured_summary["parse_fallback_reason"] = parse_fallback_reason
+                if image_only_pdf:
+                    structured_summary["is_image_only_pdf"] = True
+                if ocr_engine == "pytesseract":
+                    structured_summary["ocr_engine"] = "pytesseract"
             structured_path.write_text(json.dumps(structured_summary, indent=2, ensure_ascii=False), encoding="utf-8")
             pdf_metadata = extract_pdf_metadata(source_path) if source_path.suffix.lower() == ".pdf" else {}
             raw_parse_written = str(raw_parse_path)
@@ -215,6 +250,8 @@ class BaseTruthService:
                 "verification_markdown_path": str(verification_markdown_path),
                 "parse_fallback": parse_fallback,
                 "parse_fallback_reason": parse_fallback_reason if parse_fallback else "",
+                "is_image_only_pdf": image_only_pdf,
+                "ocr_engine": ocr_engine,
             },
         )
         verification_json_path.write_text(json.dumps(report.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")

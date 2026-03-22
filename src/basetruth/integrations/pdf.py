@@ -3,24 +3,54 @@ from __future__ import annotations
 """
 PDF integration helpers for BaseTruth.
 
-Two responsibilities:
-  1. extract_pdf_metadata()       -- structural and descriptive metadata from a PDF.
-  2. extract_text_from_pdf()      -- plain-text fallback when LiteParse cannot run.
-  3. build_liteparse_json_from_text() -- wraps extracted text in the LiteParse JSON
-                                        schema so the rest of the pipeline can consume
-                                        it without any code changes.
+Text extraction strategy (in priority order)
+---------------------------------------------
+1. LiteParse  (called by service.scan_document before this module)
+   - Requires ImageMagick on Windows
+   - Best quality: OCR + layout-aware structure
+2. PyMuPDF (fitz)
+   - Pure Python, no external binary, installed via 'pip install pymupdf'
+   - Excellent text extraction for text-layer PDFs (payslips, offer letters...)
+   - Cannot OCR image-only PDFs (Aadhaar, PAN cards)
+3. pypdf
+   - Pure Python fallback if pymupdf is not installed
+   - Acceptable for text PDFs, returns empty for image-only PDFs
+4. pytesseract + pdf2image (Poppler)
+   - OCR tier for image-only PDFs (scanned Aadhaar, PAN cards)
+   - Requires: pip install pytesseract pdf2image
+   - Also requires: Tesseract OCR binary (tesseract.exe)
+     Download: https://github.com/UB-Mannheim/tesseract/wiki
+   - Also requires: Poppler binaries on PATH for pdf2image
+     Download: https://github.com/oschwartz10612/poppler-windows/releases
+   - Gives full field extraction for identity documents
+5. Empty string
+   - Returned when all extraction methods fail; metadata forensics still run
 
-The text-extraction path is used automatically by service.scan_document() when
-LiteParse fails (e.g. ImageMagick not installed on Windows, or the PDF is an
-image-only scan such as an Aadhaar or PAN card).  The tamper/metadata layer and
-domain validators still run in full; field-level extraction will be limited for
-image-only documents that have no embedded text layer.
+How to get full scan for Aadhaar / PAN cards on Windows
+---------------------------------------------------------
+  Option A (recommended): Install ImageMagick
+    https://imagemagick.org/script/download.php#windows
+    After install, restart the terminal and retry.
+
+  Option B: Install Tesseract + Poppler
+    1. Tesseract: https://github.com/UB-Mannheim/tesseract/wiki
+       Add install dir to system PATH (e.g. C:\\Program Files\\Tesseract-OCR)
+    2. Poppler:   https://github.com/oschwartz10612/poppler-windows/releases
+       Add poppler/bin to system PATH
+    3. pip install pytesseract pdf2image
+
+Public API
+----------
+  extract_pdf_metadata(path)               -> Dict
+  extract_text_from_pdf(path)              -> str
+  extract_text_via_ocr(path)               -> Tuple[str, str]  (text, engine)
+  build_liteparse_json_from_text(text, src) -> Dict
 """
 
 import hashlib
 import re
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 
 
 def _sha256_file(path: Path) -> str:
@@ -109,36 +139,96 @@ def extract_pdf_metadata(path: Path) -> Dict[str, Any]:
 
 def extract_text_from_pdf(path: Path) -> str:
     """
-    Extract all plain text from a PDF using pypdf.
+    Extract all plain text from a PDF using PyMuPDF (preferred) or pypdf (fallback).
 
-    This is the fallback path used when LiteParse cannot process a document
-    (e.g. ImageMagick is unavailable on Windows, or the file requires PDF-to-image
-    rasterisation before OCR).  The extracted text is lower-quality than a full
-    LiteParse parse but is sufficient for heuristic tamper scoring and arithmetic
-    validation on text-based PDFs.
+    PyMuPDF (fitz) is used when available because it handles complex PDF structures,
+    multi-column layouts, and embedded fonts far better than pypdf.  Both methods
+    return empty string for image-only PDFs (scanned Aadhaar, PAN cards) -- use
+    extract_text_via_ocr() for those documents.
 
-    For image-only PDFs (scanned Aadhaar cards, PAN cards) the text will be empty
-    because there is no embedded text layer.  The PDF metadata and structural
-    forensics (signature markers, header version, creation-date consistency) still
-    run -- so the truth score reflects the document structure even without any
-    field-level data.
-
-    Returns a single newline-joined string of all page text, or an empty string if
-    pypdf is not installed or the file cannot be read.
+    Returns a single newline-joined string of all page text, or '' on any error.
     """
+    # --- Strategy 1: PyMuPDF (fitz) -- best text quality, pure Python ---
+    try:
+        import fitz  # type: ignore   (PyMuPDF)
+
+        doc = fitz.open(str(path))
+        page_texts = [page.get_text() or "" for page in doc]
+        doc.close()
+        return "\n".join(page_texts)
+    except ImportError:
+        pass  # PyMuPDF not installed; fall through to pypdf
+    except Exception:  # noqa: BLE001
+        pass  # Corrupt / encrypted / unsupported PDF; fall through
+
+    # --- Strategy 2: pypdf -- lighter but less accurate ---
     try:
         from pypdf import PdfReader  # type: ignore
 
         reader = PdfReader(str(path))
-        page_texts = []
-        for page in reader.pages:
-            text = page.extract_text() or ""
-            page_texts.append(text)
+        page_texts = [page.extract_text() or "" for page in reader.pages]
         return "\n".join(page_texts)
     except Exception:  # noqa: BLE001
-        # Any failure (ImportError, encrypted PDF, corrupt file) is caught here
-        # so the caller can proceed gracefully with an empty text string.
         return ""
+
+
+def extract_text_via_ocr(path: Path) -> Tuple[str, str]:
+    """
+    OCR a PDF using pytesseract + pdf2image (Poppler) to extract text from
+    image-only pages (scanned Aadhaar card, PAN card, photo-based PDFs).
+
+    Unlike extract_text_from_pdf(), this function can read PDF pages that contain
+    no embedded text at all -- it rasterises each page to an image, then OCRs it.
+
+    Requirements (all optional -- function returns ('', 'unavailable') if missing):
+      pip install pytesseract pdf2image
+      Tesseract OCR binary: https://github.com/UB-Mannheim/tesseract/wiki
+      Poppler binaries:     https://github.com/oschwartz10612/poppler-windows/releases
+
+    Returns
+    -------
+    (text, engine) where engine is one of:
+      'pytesseract'  -- OCR succeeded
+      'unavailable'  -- pytesseract or Tesseract binary not installed
+      'error'        -- unexpected exception during OCR
+    """
+    # --- pytesseract + pdf2image (Poppler) ---
+    try:
+        import pytesseract  # type: ignore
+        from pdf2image import convert_from_path  # type: ignore
+
+        # Convert PDF pages to PIL images.  Poppler must be on PATH.
+        images = convert_from_path(str(path), dpi=300)
+        page_texts: list[str] = []
+        for img in images:
+            # OCR with English + Hindi languages when available; fall back to eng.
+            try:
+                text = pytesseract.image_to_string(img, lang="eng+hin")
+            except pytesseract.TesseractError:
+                text = pytesseract.image_to_string(img, lang="eng")
+            page_texts.append(text or "")
+        return "\n".join(page_texts), "pytesseract"
+
+    except ImportError:
+        # pytesseract or pdf2image not installed.
+        return "", "unavailable"
+    except pytesseract.TesseractNotFoundError:  # type: ignore[name-defined]
+        # Python packages present but Tesseract binary not on PATH.
+        return "", "unavailable"
+    except Exception:  # noqa: BLE001
+        return "", "error"
+
+
+def is_image_only_pdf(text: str, page_count: int) -> bool:
+    """Return True when extracted text is empty or effectively blank for all pages.
+
+    Used by the service layer to decide whether to attempt OCR and to populate
+    the 'is_image_only_pdf' flag in the report artifacts.
+    """
+    meaningful_chars = sum(1 for ch in text if ch.strip() and ch not in "\n\r\f")
+    # Threshold: fewer than 20 meaningful characters per page is considered image-only.
+    threshold = max(20, page_count * 20)
+    return meaningful_chars < threshold
 
 
 def build_liteparse_json_from_text(text: str, source_name: str) -> Dict[str, Any]:
