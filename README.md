@@ -1,83 +1,104 @@
 # BaseTruth
 
-BaseTruth is a standalone document integrity product focused on explainable fraud detection across industries such as banking, payments, insurance, healthcare, and enterprise operations.
+BaseTruth is a standalone document integrity product for explainable fraud detection across banking, payroll, insurance, healthcare, and enterprise operations.
 
-The first MVP in this repository provides:
+## What It Does
 
-- LiteParse-backed document parsing when the local CLI is installed
-- structured JSON summaries that normalize key fields from parsed documents
-- PDF metadata and digital-signature marker inspection
-- heuristic fraud and tamper scoring with inspectable signals
-- cross-month payslip comparison to surface anomalies automatically
-- Markdown and JSON verification reports for auditability
-- a Streamlit UI for single scans, bulk scans, datasource sync, and report review
-- case-oriented investigation view and report index
-- persisted case workflow management with assignee, labels, disposition, and analyst notes
-- first enterprise datasource connectors for S3, SharePoint, and Google Drive
-
-## Product Direction
-
-BaseTruth is designed as a multi-layer forensic pipeline rather than a single OCR script.
-
-Core layers:
-
-- document ingestion and parsing
-- metadata and signature verification
-- semantic and arithmetic validation
-- cross-document reconciliation
-- explainable reporting and evidence trails
-
-## Repository Layout
-
-- `src/basetruth/` application code
-- `tests/` unit tests
-- `docs/` product and architecture documents
+| Layer | Capability |
+|---|---|
+| Parsing | LiteParse-backed document parsing with PDF metadata fallback |
+| Structuring | Normalised JSON summaries with key-field extraction |
+| Forensics | Heuristic tamper scoring (editor mismatch, metadata anomalies, arithmetic checks) |
+| Validators | Domain-specific validation packs (payroll, banking, invoice, insurance, healthcare) |
+| Cross-document | Cross-month payslip comparison — identity drift, net-pay drop, period gaps |
+| API | FastAPI REST layer (`/api/v1/`) |
+| UI | Professional Streamlit operator UI — Dashboard, Scan, Bulk, Cases, Reports, Datasources, Settings |
+| Reporting | Markdown and JSON verification reports for auditability |
+| Case management | Workflow status, disposition, assignee, labels, analyst notes |
+| Connectors | S3, SharePoint, Google Drive datasource registration and sync |
 
 ## Quick Start
 
 ```powershell
 cd c:\Hrishikesh\BaseTruth
+
+# Install (UI, API, and PDF support)
+pip install -e ".[ui,api,pdf]"
+
+# Run tests
 python -m pytest
+
+# Scan one document
 python -m basetruth.cli scan --input C:\path\to\document.pdf
+
+# Compare payslips across months
 python -m basetruth.cli compare-payslips --input-dir C:\path\to\payslips
+
+# Start the Streamlit UI
 streamlit run src\basetruth\ui\app.py
+
+# Start the REST API  (requires: pip install -e ".[api]")
+uvicorn basetruth.api:app --host 0.0.0.0 --port 8502
 ```
 
-Windows launchers are also supported:
+Windows launcher executables are also provided:
 
-- `start.exe` starts the BaseTruth UI and writes runtime state to `.runtime/`
-- `stop.exe` stops the running BaseTruth UI process tree using the recorded PID
+| Program | Action |
+|---|---|
+| `start.exe` | Starts the BaseTruth UI and records PID to `.runtime/` |
+| `stop.exe` | Stops the running BaseTruth UI using the recorded PID |
 
-## Outputs
+## REST API
 
-By default BaseTruth writes artifacts under `artifacts/`:
+When the `api` extra is installed the REST server is available at `http://localhost:8502`.
 
-- raw LiteParse output when available
-- structured summary JSON
-- verification report JSON
-- verification report Markdown
-- cross-month comparison JSON and Markdown
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/v1/health` | Product info and artifact root |
+| `POST` | `/api/v1/scan` | Scan a document by path |
+| `POST` | `/api/v1/scan/upload` | Scan a multipart file upload |
+| `GET` | `/api/v1/reports` | List all reports |
+| `GET` | `/api/v1/cases` | List all cases |
+| `GET` | `/api/v1/cases/{key}` | Get case detail |
+| `PATCH` | `/api/v1/cases/{key}` | Update case workflow |
 
-## LiteParse and Other Tools
+Interactive docs: `http://localhost:8502/api/docs`
 
-LiteParse is a strong fit for document parsing and layout-preserving extraction, but it is not enough for a full fraud product on its own.
+## Domain Validation Packs
 
-BaseTruth treats LiteParse as the parsing layer. Additional tools you will want as the product matures are documented in `docs/TOOLING.md`.
+`src/basetruth/analysis/validators.py` ships a validation pack for each supported industry. Each pack runs a set of arithmetic and format rules and emits a `ValidationSignal` for every check. Signals are wired directly into `evaluate_tamper_risk()` so they contribute to the overall truth score.
 
-## UI And Datasource Model
+| Pack | Key Rules |
+|---|---|
+| Payroll | gross ≥ net, UAN 12-digit, paid days 0–31, basic ≥ 20 % of gross |
+| Banking | opening + credits − debits = closing balance |
+| Invoice | subtotal + tax = amount due |
+| Insurance | required fields: policy_number, insured_name, insurer_name |
+| Healthcare | required fields: patient_name, provider_name, visit_date |
 
-BaseTruth now includes a lightweight UI designed around four operator workflows:
+## Repository Layout
 
-- single document scan
-- bulk document scan
-- datasource registration and sync
-- report review
-- case review
+```
+src/basetruth/
+  analysis/       structured.py, tamper.py, payslip.py, validators.py
+  integrations/   liteparse.py, pdf.py
+  reporting/      markdown.py
+  ui/             app.py
+  api.py          FastAPI REST layer
+  service.py      BaseTruthService orchestrator
+  datasources.py  DatasourceRegistry and connector adapters
+  models.py       shared data models
+  cli.py          CLI entry point
+tests/            21 unit tests
+docs/             ARCHITECTURE, PRODUCT_VISION, ROADMAP, TRACKER, TOOLING
+artifacts/        scan outputs (JSON, Markdown)
+```
 
-Instead of asking clients to move files into one shared folder manually, the better operating model is:
+## Product Direction
 
-- register a datasource such as a shared folder or manifest file
-- sync it into a BaseTruth-managed snapshot workspace
+BaseTruth is designed as a multi-layer forensic pipeline rather than a single OCR script. Every signal emitted has a name, severity, score contribution, and explanation — nothing is a black box.
+
+Upcoming: cryptographic signature verification, image-region artefact detection, asynchronous job queue, chain-of-custody evidence export.
 - scan the synced snapshot and preserve provenance
 
 That keeps client source systems read-only while giving BaseTruth deterministic evidence trails.

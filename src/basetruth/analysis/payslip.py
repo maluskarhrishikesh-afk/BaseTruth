@@ -116,6 +116,95 @@ def compare_payslip_summaries(summaries: List[Dict[str, Any]]) -> Dict[str, Any]
                 )
         previous = current
 
+    # --- Identity drift: employee ID or name changed across the series. ---
+    employee_ids: List[str] = []
+    employee_names: List[str] = []
+    for item in rows:
+        kf = item["summary"].get("key_fields", {})
+        eid = str(kf.get("employee_id") or "").strip()
+        ename = str(kf.get("employee_name") or "").strip()
+        if eid and eid not in employee_ids:
+            employee_ids.append(eid)
+        if ename and ename not in employee_names:
+            employee_names.append(ename)
+
+    if len(employee_ids) > 1:
+        anomalies.append(
+            {
+                "type": "employee_id_drift",
+                "severity": "high",
+                "from_period": rows[0]["summary"].get("key_fields", {}).get("pay_period", ""),
+                "to_period": rows[-1]["summary"].get("key_fields", {}).get("pay_period", ""),
+                "details": {"observed_ids": employee_ids},
+            }
+        )
+
+    if len(employee_names) > 1:
+        anomalies.append(
+            {
+                "type": "employee_name_drift",
+                "severity": "medium",
+                "from_period": rows[0]["summary"].get("key_fields", {}).get("pay_period", ""),
+                "to_period": rows[-1]["summary"].get("key_fields", {}).get("pay_period", ""),
+                "details": {"observed_names": employee_names},
+            }
+        )
+
+    # --- Net pay drop spike: sudden large downward revision. ---
+    for delta in comparisons:
+        change = delta.get("net_pay_change")
+        if change is None:
+            continue
+        # Find the prior net pay to compute percentage.
+        prev_net: Optional[int] = None
+        for item in rows:
+            period_label = item["summary"].get("key_fields", {}).get("pay_period") or item["summary"].get("key_fields", {}).get("pay_date")
+            if str(period_label) == str(delta.get("from_period")):
+                prev_net = _parse_int(item["summary"].get("key_fields", {}).get("net_pay"))
+                break
+        if prev_net and prev_net > 0 and change < 0:
+            drop_pct = abs(change) / prev_net
+            if drop_pct >= 0.30:
+                anomalies.append(
+                    {
+                        "type": "net_pay_drop_spike",
+                        "severity": "high" if drop_pct >= 0.50 else "medium",
+                        "from_period": delta["from_period"],
+                        "to_period": delta["to_period"],
+                        "details": {
+                            "from_net_pay": prev_net,
+                            "change": change,
+                            "percent_drop": round(drop_pct * 100, 2),
+                        },
+                    }
+                )
+
+    # --- Period gap: months missing from the series. ---
+    known_periods = []
+    for item in rows:
+        period = item.get("period")
+        if period is not None:
+            known_periods.append(period)
+
+    if len(known_periods) >= 2:
+        from datetime import timedelta
+
+        known_periods.sort()
+        for idx in range(len(known_periods) - 1):
+            p1, p2 = known_periods[idx], known_periods[idx + 1]
+            # Estimate expected months between p1 and p2.
+            months_diff = (p2.year - p1.year) * 12 + (p2.month - p1.month)
+            if months_diff > 1:
+                anomalies.append(
+                    {
+                        "type": "period_gap",
+                        "severity": "low",
+                        "from_period": p1.strftime("%B %Y"),
+                        "to_period": p2.strftime("%B %Y"),
+                        "details": {"missing_months": months_diff - 1},
+                    }
+                )
+
     return {
         "document_type": "payslip",
         "summary_count": len(rows),

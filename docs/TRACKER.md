@@ -1,40 +1,58 @@
 # Tracker
 
-## Current MVP Status
+## Completed
 
-- standalone BaseTruth repo created
-- scan pipeline implemented
-- LiteParse integration implemented
-- structured summary generation implemented
-- PDF metadata inspection implemented
-- digital-signature marker detection implemented
-- heuristic tamper scoring implemented
-- cross-month payslip comparison implemented
-- JSON and Markdown reporting implemented
-- unit tests passing
-- operator UI implemented
-- datasource registry and snapshot sync implemented
-- case-oriented UI and report index implemented
-- first enterprise datasource connector layer implemented
+### Phase 1 — MVP
+- [x] standalone BaseTruth repo created
+- [x] scan pipeline implemented
+- [x] LiteParse integration implemented
+- [x] structured summary generation implemented
+- [x] PDF metadata inspection implemented
+- [x] digital-signature marker detection implemented
+- [x] heuristic tamper scoring implemented
+- [x] cross-month payslip comparison implemented
+- [x] JSON and Markdown reporting implemented
+- [x] unit tests passing (21 tests)
+- [x] operator UI implemented (Streamlit)
+- [x] datasource registry and snapshot sync implemented
+- [x] case-oriented UI and report index implemented
+- [x] first enterprise datasource connector layer implemented (S3, Google Drive, SharePoint)
+
+### Phase 2 — Stronger Forensic Layer
+- [x] issuer-specific domain validation packs (`src/basetruth/analysis/validators.py`)
+  - Payroll: gross≥net, UAN format, paid days range, basic proportion
+  - Banking: balance arithmetic (opening+credits−debits=closing)
+  - Invoice: subtotal+tax=amount_due
+  - Insurance / Healthcare: required-fields checks
+- [x] metadata date consistency signal (ModDate should not precede CreationDate)
+- [x] domain validator signals wired into `evaluate_tamper_risk()`
+
+### Phase 3 — Cross-Document Intelligence
+- [x] identity drift detection across payslip series (employee_id, employee_name)
+- [x] net pay drop spike detection (>30 % single-month drop)
+- [x] period gap detection (missing months in the series)
+
+### Phase 4 — Productization
+- [x] professional sidebar-navigation Streamlit UI (Dashboard, Scan, Bulk, Cases, Reports, Datasources, Settings)
+- [x] FastAPI REST layer (`src/basetruth/api.py`) with scan, reports, and case endpoints
+- [x] enriched Markdown report renderer (signal icons, structured tables)
 
 ## Immediate Next Milestones
 
 1. add real cryptographic signature verification through `pdfsig` or `qpdf`
 2. add image manipulation detectors and region-level artifact analysis
-3. add issuer validation packs for banks, insurers, and payroll providers
-4. add API and asynchronous job orchestration
-5. add enterprise datasource connectors such as S3, SharePoint, Drive, and database-backed manifests
-6. harden connector authentication flows and secret rotation guidance
+3. harden connector authentication flows and secret rotation guidance
+4. add asynchronous job queue for large-batch scans (Celery or RQ)
+5. evidence export package (PDF report with chain-of-custody)
+6. FAISS-backed fraud template library for known-bad document recall
 
-## Out Of Scope For This MVP
+## Out Of Scope For Now
 
 - hosted multi-tenant SaaS deployment
-- investigator case management
 - biometric signature verification
-- FAISS template library and fraud template recall
 
 ## Product Discipline
 
 - every detector emits evidence
-- every score is explainable
+- every score is explainable from its signals
 - every new industry pack must define required fields, validation rules, and failure modes

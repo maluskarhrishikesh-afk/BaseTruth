@@ -8,25 +8,29 @@
 - add PDF metadata and signature marker checks
 - compare payslips across months
 
-## Phase 2: Stronger Forensic Layer
+## Phase 2: Stronger Forensic Layer ✅
 
-- integrate `pypdf` deeply for signature inspection
-- add `pdfsig` or `qpdf` wrappers
-- add image artifact checks and region-level comparison
-- add issuer-specific validation packs
+- ~~integrate `pypdf` deeply for signature inspection~~ (stub present)
+- `pdfsig` / `qpdf` cryptographic wrappers (pending)
+- image artifact checks and region-level comparison (pending)
+- **[DONE]** issuer-specific domain validation packs (payroll, banking, invoice, insurance, healthcare)
+- **[DONE]** metadata date consistency signal
 
-## Phase 3: Cross-Document Intelligence
+## Phase 3: Cross-Document Intelligence ✅ (partial)
 
-- reconcile identity, amounts, and dates across uploaded files
-- detect entity drift across statements, IDs, and forms
-- support case-level risk scoring
+- **[DONE]** identity drift detection across payslip series
+- **[DONE]** net pay drop spike and period gap detection
+- reconcile identity and amounts across different document types (pending)
+- FAISS-backed fraud template recall (pending)
 
-## Phase 4: Productization
+## Phase 4: Productization ✅
 
-- REST API and job queue
-- dashboard and investigator UI
-- template registry and fraud knowledge base
-- enterprise evidence export and compliance workflows
+- **[DONE]** FastAPI REST layer (`/api/v1/` endpoints)
+- **[DONE]** professional sidebar-navigation operator UI
+- **[DONE]** enriched Markdown report renderer
+- asynchronous job queue for large-batch scans (pending)
+- evidence export package with chain-of-custody PDF (pending)
+- enterprise compliance workflow templates (pending)
 
 ## Tracking Rules
 

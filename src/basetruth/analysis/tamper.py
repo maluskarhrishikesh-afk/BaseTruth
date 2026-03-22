@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional
 
+from basetruth.analysis.validators import validate_document
 from basetruth.models import Signal, signals_to_dict
 
 
@@ -195,6 +196,41 @@ def evaluate_tamper_risk(summary: Dict[str, Any], pdf_metadata: Dict[str, Any]) 
             details={"flags": conflicting},
         )
     )
+
+    # Metadata date consistency: modification date should not predate creation date.
+    metadata = pdf_metadata.get("metadata", {}) if isinstance(pdf_metadata.get("metadata"), dict) else {}
+    create_date = str(metadata.get("CreationDate") or metadata.get("creation_date") or "").strip()
+    mod_date = str(metadata.get("ModDate") or metadata.get("mod_date") or "").strip()
+    if create_date and mod_date and len(create_date) >= 14 and len(mod_date) >= 14:
+        try:
+            create_prefix = create_date[2:16] if create_date.startswith("D:") else create_date[:14]
+            mod_prefix = mod_date[2:16] if mod_date.startswith("D:") else mod_date[:14]
+            date_order_ok = mod_prefix >= create_prefix
+            signals.append(
+                Signal(
+                    name="metadata_date_consistency",
+                    severity="medium" if not date_order_ok else "info",
+                    score=30 if not date_order_ok else 0,
+                    summary="Modification date should not predate the creation date in PDF metadata.",
+                    passed=date_order_ok,
+                    details={"creation_date": create_date, "mod_date": mod_date},
+                )
+            )
+        except (ValueError, IndexError):
+            pass
+
+    # Domain-specific validation pack signals.
+    for domain_signal in validate_document(summary):
+        signals.append(
+            Signal(
+                name=f"domain::{domain_signal.get('rule', 'unknown')}",
+                severity=str(domain_signal.get("severity", "info")),
+                score=int(domain_signal.get("score", 0)),
+                summary=str(domain_signal.get("message", "")),
+                passed=bool(domain_signal.get("passed", True)),
+                details=dict(domain_signal.get("details", {})),
+            )
+        )
 
     total_risk = sum(signal.score for signal in signals)
     truth_score, risk_level, verdict = _risk_level(total_risk)
