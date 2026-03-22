@@ -25,6 +25,22 @@ try:
     from pydantic import BaseModel, Field
 
     _FASTAPI_AVAILABLE = True
+
+    # ── Request / response models (must be at module level so Pydantic v2
+    # can resolve forward references when generating the OpenAPI schema) ──────
+
+    class ScanPathRequest(BaseModel):
+        path: str = Field(..., description="Absolute path to the document or structured JSON to scan.")
+
+    class UpdateCaseRequest(BaseModel):
+        status: Optional[str] = Field(None, description="new | triage | investigating | pending_client | closed")
+        disposition: Optional[str] = Field(None, description="open | monitor | escalate | cleared | fraud_confirmed")
+        priority: Optional[str] = Field(None, description="low | normal | high | critical")
+        assignee: Optional[str] = Field(None, description="Investigator user name.")
+        labels: Optional[List[str]] = Field(None, description="Free-form labels for routing and triage.")
+        note_text: str = Field("", description="Text of the new note to append, if any.")
+        note_author: str = Field("api", description="Author name for the note.")
+
 except ImportError:
     _FASTAPI_AVAILABLE = False
 
@@ -68,22 +84,6 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
     )
 
     svc = _service(artifact_root)
-
-    # -------------------------------------------------------------------------
-    # Pydantic request/response models
-    # -------------------------------------------------------------------------
-
-    class ScanPathRequest(BaseModel):
-        path: str = Field(..., description="Absolute path to the document or structured JSON to scan.")
-
-    class UpdateCaseRequest(BaseModel):
-        status: Optional[str] = Field(None, description="new | triage | investigating | pending_client | closed")
-        disposition: Optional[str] = Field(None, description="open | monitor | escalate | cleared | fraud_confirmed")
-        priority: Optional[str] = Field(None, description="low | normal | high | critical")
-        assignee: Optional[str] = Field(None, description="Investigator user name.")
-        labels: Optional[List[str]] = Field(None, description="Free-form labels for routing and triage.")
-        note_text: str = Field("", description="Text of the new note to append, if any.")
-        note_author: str = Field("api", description="Author name for the note.")
 
     # -------------------------------------------------------------------------
     # Endpoints
