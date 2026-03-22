@@ -29,6 +29,10 @@ DOC_TYPE_PATTERNS = {
     "invoice": ("invoice", "bill to", "invoice number", "amount due"),
     "receipt": ("receipt", "receipt number", "payment received"),
     "bank_statement": ("bank statement", "closing balance", "statement period"),
+    "payment_receipt": ("upi", "neft", "rtgs", "transaction id", "payment receipt", "utr number"),
+    "insurance": ("policy number", "insured name", "sum insured", "premium", "insurance certificate"),
+    "healthcare": ("patient name", "discharge summary", "diagnosis", "hospital invoice", "uhid"),
+    "compliance": ("audit report", "compliance certificate", "board resolution", "kyc", "aml declaration"),
     "generic": (),
 }
 

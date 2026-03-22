@@ -59,12 +59,32 @@ flowchart TD
 - captures creation and modification timestamps when available
 - scans for signature markers such as `/Sig`, `/FT /Sig`, `/ByteRange`, and `/Contents`
 
-### 4. Logic Layer
+### 4. Logic Layer (Validation Packs)
 
-- validates arithmetic consistency
-- validates amount-in-words consistency when present
+The logic layer is organised around industry-specific validation packs housed in
+`src/basetruth/analysis/packs/`.  Each pack is a self-contained Python module that
+inherits from `BaseValidationPack` and declares its own required fields and
+domain rules.  Adding a new industry requires only three steps: create the module,
+declare the pack, and register it in `packs/__init__.py` — no changes to any
+existing file (Open/Closed Principle).
+
+Registered packs:
+
+| Document Type     | Pack Class                  | Industry                        |
+|-------------------|-----------------------------|---------------------------------|
+| `payslip`         | `PayrollValidationPack`     | Payroll and HR operations       |
+| `bank_statement`  | `BankingValidationPack`     | Banking and lending             |
+| `payment_receipt` | `PaymentsValidationPack`    | Payments and fintech            |
+| `insurance`       | `InsuranceValidationPack`   | Insurance claims                |
+| `healthcare`      | `HealthcareValidationPack`  | Hospitals and healthcare        |
+| `invoice`         | `InvoiceValidationPack`     | Commercial and GST invoices     |
+| `compliance`      | `ComplianceValidationPack`  | Compliance teams and audit      |
+
+Each pack:
+- validates arithmetic consistency (gross vs net, balance identity, subtotal + tax = total)
 - validates required field presence
-- supports future issuer and checksum validation
+- validates domain-specific formats (IFSC, UAN, GSTIN, UPI ID, policy numbers)
+- validates amount and date plausibility
 
 ### 5. Comparison Layer
 

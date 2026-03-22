@@ -37,6 +37,26 @@
 - [x] FastAPI REST layer (`src/basetruth/api.py`) with scan, reports, and case endpoints
 - [x] enriched Markdown report renderer (signal icons, structured tables)
 
+### Phase 5 — SOLID Architecture and Multi-Industry Coverage
+- [x] validation packs refactored into individual industry modules (`src/basetruth/analysis/packs/`)
+  - `base.py`        : BaseValidationPack, ValidationSignal (shared protocol)
+  - `payroll.py`     : PayrollValidationPack (payslip / HR operations)
+  - `banking.py`     : BankingValidationPack (bank statements; IFSC check, overdraft flag)
+  - `payments.py`    : PaymentsValidationPack (UPI / NEFT / fintech receipts)
+  - `insurance.py`   : InsuranceValidationPack (policy docs, claim letters)
+  - `healthcare.py`  : HealthcareValidationPack (hospital bills, discharge summaries)
+  - `invoice.py`     : InvoiceValidationPack (GST invoices; GSTIN format check)
+  - `compliance.py`  : ComplianceValidationPack (audit reports, KYC/AML certificates)
+  - `__init__.py`    : central REGISTRY dict; get_pack(), validate_document() API
+- [x] `validators.py` reduced to a backwards-compatible import shim
+- [x] document-type detection in `structured.py` extended to insurance, healthcare,
+  payment_receipt, and compliance keywords
+- [x] synthetic sample documents created at `C:/Hrishikesh/Documents/`
+  (Banking, Payments, Insurance, Healthcare, Payroll, Compliance -- valid + tampered pairs)
+- [x] LiteParse graceful fallback for image-only PDFs (Aadhaar, PAN)
+- [x] ImageMagick-free pypdf text-extraction fallback with `parse_fallback` flag
+- [x] coded pushed to GitHub: https://github.com/maluskarhrishikesh-afk/BaseTruth
+
 ## Immediate Next Milestones
 
 1. add real cryptographic signature verification through `pdfsig` or `qpdf`
