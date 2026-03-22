@@ -68,3 +68,8 @@ config/drive_token.json
 Dockerfile*
 docker-compose*.yml
 .dockerignore
+
+# ── PyInstaller build artefacts ───────────────────────────────────────────────
+dist/
+build/
+*.spec
