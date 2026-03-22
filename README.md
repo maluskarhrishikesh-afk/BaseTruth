@@ -10,6 +10,9 @@ The first MVP in this repository provides:
 - heuristic fraud and tamper scoring with inspectable signals
 - cross-month payslip comparison to surface anomalies automatically
 - Markdown and JSON verification reports for auditability
+- a Streamlit UI for single scans, bulk scans, datasource sync, and report review
+- case-oriented investigation view and report index
+- first enterprise datasource connectors for S3, SharePoint, and Google Drive
 
 ## Product Direction
 
@@ -32,11 +35,17 @@ Core layers:
 ## Quick Start
 
 ```powershell
-cd c:\Hrishikesh\OctaMind\BaseTruth
+cd c:\Hrishikesh\BaseTruth
 python -m pytest
 python -m basetruth.cli scan --input C:\path\to\document.pdf
 python -m basetruth.cli compare-payslips --input-dir C:\path\to\payslips
+streamlit run src\basetruth\ui\app.py
 ```
+
+Windows launchers are also supported:
+
+- `start.exe` starts the BaseTruth UI and writes runtime state to `.runtime/`
+- `stop.exe` stops the running BaseTruth UI process tree using the recorded PID
 
 ## Outputs
 
@@ -53,6 +62,32 @@ By default BaseTruth writes artifacts under `artifacts/`:
 LiteParse is a strong fit for document parsing and layout-preserving extraction, but it is not enough for a full fraud product on its own.
 
 BaseTruth treats LiteParse as the parsing layer. Additional tools you will want as the product matures are documented in `docs/TOOLING.md`.
+
+## UI And Datasource Model
+
+BaseTruth now includes a lightweight UI designed around four operator workflows:
+
+- single document scan
+- bulk document scan
+- datasource registration and sync
+- report review
+- case review
+
+Instead of asking clients to move files into one shared folder manually, the better operating model is:
+
+- register a datasource such as a shared folder or manifest file
+- sync it into a BaseTruth-managed snapshot workspace
+- scan the synced snapshot and preserve provenance
+
+That keeps client source systems read-only while giving BaseTruth deterministic evidence trails.
+
+Supported datasource types now include:
+
+- local folders
+- manifest files
+- Amazon S3 prefixes
+- Google Drive folders
+- SharePoint document libraries
 
 ## Current MVP Scope
 

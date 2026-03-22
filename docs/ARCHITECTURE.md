@@ -8,6 +8,8 @@ BaseTruth runs a micro-DAG style pipeline where each detector contributes signal
 flowchart TD
   A[Input Document] --> B[PDF Metadata Inspector]
   A --> C[LiteParse Extraction]
+  X[Client Datasource Connectors] --> Y[Snapshot Workspace]
+  Y --> A
   C --> D[Structured Summary Builder]
   D --> E[Semantic And Arithmetic Checks]
   B --> F[Signature And Producer Checks]
@@ -17,6 +19,7 @@ flowchart TD
   G --> H
   H --> I[Truth Score And Verdict]
   I --> J[JSON And Markdown Reports]
+  J --> K[Operator UI]
 ```
 
 ## Layers
@@ -25,7 +28,24 @@ flowchart TD
 
 - accepts PDF files directly
 - accepts LiteParse JSON outputs directly
+- supports datasource connectors such as folder sync and manifest-driven ingest
+- snapshots client documents into a BaseTruth-managed workspace before scanning
 - produces deterministic artifact directories for each scan
+
+### 1A. Operator UI Layer
+
+- supports single-file upload and immediate scan
+- supports bulk upload and folder-driven scan workflows
+- supports datasource registration, sync, and scan operations
+- supports report review without requiring analysts to browse the filesystem manually
+- supports case-centric review by grouping related verification reports
+
+### 1B. Connector Layer
+
+- supports local folder and manifest-based ingest today
+- now supports enterprise pull connectors for S3, Google Drive, and SharePoint
+- keeps connectors separate from the forensic engine so ingest can evolve independently
+- snapshots remote content into the same BaseTruth evidence workspace as local content
 
 ### 2. Parsing Layer
 
@@ -60,3 +80,5 @@ flowchart TD
 ## Why This Shape
 
 This architecture lets BaseTruth scale from a local analyst tool into an enterprise service without replacing the core reasoning model.
+
+The key product decision is to keep client data sources read-only and pull from them into BaseTruth snapshots. That is safer than treating a single mutable shared folder as the system of record.

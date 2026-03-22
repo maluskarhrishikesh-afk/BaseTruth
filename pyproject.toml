@@ -15,6 +15,14 @@ dependencies = []
 
 [project.optional-dependencies]
 pdf = ["pypdf>=4.2.0"]
+ui = ["streamlit>=1.42.0"]
+connectors = [
+  "boto3>=1.37.0",
+  "requests>=2.32.0",
+  "google-api-python-client>=2.165.0",
+  "google-auth>=2.39.0",
+]
+launcher = ["pyinstaller>=6.13.0"]
 
 [project.scripts]
 basetruth = "basetruth.cli:main"

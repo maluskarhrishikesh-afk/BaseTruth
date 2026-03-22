@@ -30,6 +30,13 @@ BaseTruth needs more than parsing. The following capabilities require additional
 - `pytesseract` or domain-specific OCR engines where LiteParse is insufficient
 - embedding or vector tooling when comparing against known fraud template libraries
 
+## Connector Tooling
+
+- `boto3` for S3 datasource sync
+- `google-api-python-client` and `google-auth` for Google Drive datasource sync
+- `requests` for SharePoint / Microsoft Graph datasource sync
+- optional secret stores or env-var injection for enterprise credential handling
+
 ## Product-Specific Detector Families
 
 ### Banking and payments

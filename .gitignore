@@ -1,6 +1,8 @@
 .pytest_cache/
 __pycache__/
 .venv/
+.vscode/
+.runtime/
 *.pyc
 *.pyo
 *.pyd
@@ -9,3 +11,6 @@ build/
 *.egg-info/
 artifacts/
 outputs/
+start.exe
+stop.exe
+*.spec
