@@ -44,6 +44,7 @@ faiss-cpu==1.13.2
 # ── API ───────────────────────────────────────────────────────────────────────
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
+python-multipart>=0.0.9
 pydantic==2.12.5
 pydantic_core==2.41.5
 annotated-types==0.7.0

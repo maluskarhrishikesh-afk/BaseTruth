@@ -36,7 +36,7 @@ ml = [
   "faiss-cpu>=1.9.0",
 ]
 ui = ["streamlit>=1.42.0", "pandas>=2.2.0"]
-api = ["fastapi>=0.115.0", "uvicorn[standard]>=0.32.0", "pydantic>=2.0.0"]
+api = ["fastapi>=0.115.0", "uvicorn[standard]>=0.32.0", "pydantic>=2.0.0", "python-multipart>=0.0.9"]
 connectors = [
   "boto3>=1.37.0",
   "requests>=2.32.0",

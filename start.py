@@ -28,7 +28,7 @@ from pathlib import Path
 
 # ── Config ────────────────────────────────────────────────────────────────────
 API_PORT        = 8000
-BROWSER_URL     = f"http://localhost:{API_PORT}/docs"
+BROWSER_URL     = f"http://localhost:{API_PORT}/api/docs"
 IMAGE_NAME      = "basetruth:latest"
 API_SERVICE     = "basetruth-api"
 DAEMON_WAIT_SEC = 60   # how long to wait for Docker daemon after install
