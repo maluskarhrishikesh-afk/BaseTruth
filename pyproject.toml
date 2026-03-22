@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "basetruth"
+version = "0.1.0"
+description = "Document integrity and fraud detection pipeline with structured summaries and explainable reports."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "Hrishikesh Maluskar" }
+]
+dependencies = []
+
+[project.optional-dependencies]
+pdf = ["pypdf>=4.2.0"]
+
+[project.scripts]
+basetruth = "basetruth.cli:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
