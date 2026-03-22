@@ -50,6 +50,10 @@ pydantic_core==2.41.5
 annotated-types==0.7.0
 typing-inspection==0.4.2
 
+# ── UI (Streamlit dashboard) ─────────────────────────────────────────────────
+streamlit>=1.42.0
+pandas>=2.2.0
+
 # ── Output / formatting ───────────────────────────────────────────────────────
 rich==14.3.3
 markdown-it-py==4.0.0

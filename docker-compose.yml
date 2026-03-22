@@ -34,6 +34,40 @@ services:
     entrypoint: ["python", "-m", "basetruth.cli"]
     command: ["--help"]
 
+  # ── UI — Streamlit operator dashboard ─────────────────────────────────────────
+  basetruth-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: basetruth:latest
+    ports:
+      - "${UI_PORT:-8501}:8501"
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./your_data:/app/your_data
+    environment:
+      TESSERACT_CMD: /usr/bin/tesseract
+      EXIFTOOL_PATH: /usr/bin/exiftool
+      BASETRUTH_ARTIFACT_ROOT: /app/artifacts
+    entrypoint:
+      - python
+      - -m
+      - streamlit
+      - run
+      - src/basetruth/ui/app.py
+      - --server.port=8501
+      - --server.address=0.0.0.0
+      - --server.headless=true
+      - --browser.gatherUsageStats=false
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
   # ── API — FastAPI REST server ────────────────────────────────────────────────
   basetruth-api:
     build:

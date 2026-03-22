@@ -28,10 +28,14 @@ from pathlib import Path
 
 # ── Config ────────────────────────────────────────────────────────────────────
 API_PORT        = 8000
-BROWSER_URL     = f"http://localhost:{API_PORT}/api/docs"
+UI_PORT         = 8501
+BROWSER_URL     = f"http://localhost:{UI_PORT}"   # Streamlit dashboard
+API_DOCS_URL    = f"http://localhost:{API_PORT}/api/docs"
 IMAGE_NAME      = "basetruth:latest"
+UI_SERVICE      = "basetruth-ui"
 API_SERVICE     = "basetruth-api"
 DAEMON_WAIT_SEC = 60   # how long to wait for Docker daemon after install
+UI_WAIT_SEC     = 90   # how long to wait for Streamlit to become healthy
 API_WAIT_SEC    = 60   # how long to wait for the API to become healthy
 
 
@@ -153,29 +157,28 @@ def _build_image(root: Path) -> None:
     print("Build complete.")
 
 
-def _api_is_up() -> bool:
-    """Check if the API container is already serving on API_PORT."""
+def _port_is_up(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.5)
-        return sock.connect_ex(("127.0.0.1", API_PORT)) == 0
+        return sock.connect_ex(("127.0.0.1", port)) == 0
 
 
-def _start_api(root: Path) -> None:
-    _step(f"Starting {API_SERVICE} container ...")
+def _start_services(root: Path) -> None:
+    _step(f"Starting {UI_SERVICE} and {API_SERVICE} containers ...")
     result = subprocess.run(
-        ["docker", "compose", "up", "-d", API_SERVICE],
+        ["docker", "compose", "up", "-d", UI_SERVICE, API_SERVICE],
         cwd=str(root),
     )
     if result.returncode != 0:
-        print(f"[ERROR] docker compose up {API_SERVICE} failed.", file=sys.stderr)
+        print("[ERROR] docker compose up failed.", file=sys.stderr)
         sys.exit(result.returncode)
 
 
-def _wait_for_api() -> bool:
-    _step(f"Waiting for API on port {API_PORT} ...")
-    deadline = time.time() + API_WAIT_SEC
+def _wait_for_port(port: int, label: str, timeout_sec: int) -> bool:
+    _step(f"Waiting for {label} on port {port} ...")
+    deadline = time.time() + timeout_sec
     while time.time() < deadline:
-        if _api_is_up():
+        if _port_is_up(port):
             return True
         time.sleep(1)
     return False
@@ -200,30 +203,46 @@ def main() -> int:
     else:
         _build_image(root)
 
-    # 3. Start API (skip if already listening)
-    if _api_is_up():
-        print(f"\n[ok] API already running on port {API_PORT}.")
-    else:
-        _start_api(root)
-        if not _wait_for_api():
-            print(
-                f"\n[WARNING] API did not become reachable on port {API_PORT} "
-                f"within {API_WAIT_SEC}s.\n"
-                "Check logs with:  docker compose logs basetruth-api",
-                file=sys.stderr,
-            )
-            return 1
+    # 3. Start both UI and API (skip whichever is already listening)
+    ui_already_up  = _port_is_up(UI_PORT)
+    api_already_up = _port_is_up(API_PORT)
 
-    # 4. Open browser
-    print(f"\n[ok] BaseTruth API is live -> {BROWSER_URL}")
+    if ui_already_up and api_already_up:
+        print(f"\n[ok] Dashboard already running on port {UI_PORT}.")
+        print(f"[ok] API already running on port {API_PORT}.")
+    else:
+        _start_services(root)
+
+        if not ui_already_up:
+            if not _wait_for_port(UI_PORT, "Streamlit dashboard", UI_WAIT_SEC):
+                print(
+                    f"\n[WARNING] Dashboard did not start on port {UI_PORT} "
+                    f"within {UI_WAIT_SEC}s.\n"
+                    "Check logs with:  docker compose logs basetruth-ui",
+                    file=sys.stderr,
+                )
+                return 1
+
+        if not api_already_up:
+            if not _wait_for_port(API_PORT, "REST API", API_WAIT_SEC):
+                print(
+                    f"\n[WARNING] API did not start on port {API_PORT} "
+                    f"within {API_WAIT_SEC}s.\n"
+                    "Check logs with:  docker compose logs basetruth-api",
+                    file=sys.stderr,
+                )
+                # API failure is non-fatal — dashboard is already up
+
+    # 4. Open browser -> Streamlit dashboard
+    print(f"\n[ok] BaseTruth Dashboard  ->  {BROWSER_URL}")
+    print(f"[ok] REST API docs        ->  {API_DOCS_URL}")
     try:
         webbrowser.open(BROWSER_URL)
     except OSError:
         pass
 
     print("\nTo stop all containers:  docker compose down")
-    print("To scan a document via CLI:")
-    print("  docker compose run --rm basetruth-cli scan --input /app/your_data/doc.pdf")
+    print("To scan via CLI:  docker compose run --rm basetruth-cli scan --input /app/your_data/doc.pdf")
     print()
     return 0
 
