@@ -23,6 +23,26 @@ class ArtifactPaths:
 
 
 @dataclass
+class CaseNote:
+    created_at: str
+    author: str
+    text: str
+
+
+@dataclass
+class CaseRecord:
+    case_key: str
+    status: str = "new"
+    disposition: str = "open"
+    priority: str = "normal"
+    assignee: str = ""
+    labels: List[str] = field(default_factory=list)
+    notes: List[CaseNote] = field(default_factory=list)
+    created_at: str = ""
+    updated_at: str = ""
+
+
+@dataclass
 class VerificationReport:
     schema_version: int
     generated_at: str

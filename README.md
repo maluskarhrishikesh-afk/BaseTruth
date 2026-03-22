@@ -12,6 +12,7 @@ The first MVP in this repository provides:
 - Markdown and JSON verification reports for auditability
 - a Streamlit UI for single scans, bulk scans, datasource sync, and report review
 - case-oriented investigation view and report index
+- persisted case workflow management with assignee, labels, disposition, and analyst notes
 - first enterprise datasource connectors for S3, SharePoint, and Google Drive
 
 ## Product Direction
@@ -88,6 +89,22 @@ Supported datasource types now include:
 - Amazon S3 prefixes
 - Google Drive folders
 - SharePoint document libraries
+
+Connector setup is handled in the Datasources tab. BaseTruth stores connector configuration with the datasource record and uses the underlying platform credentials at sync time:
+
+- S3: AWS profile or standard AWS credential environment variables
+- Google Drive: local application-default credentials or a service-account JSON path
+- SharePoint: a Microsoft Graph bearer token supplied through a configurable environment variable
+
+## Investigation Workflow
+
+Cases are grouped automatically from verification reports and now support persisted workflow state:
+
+- investigator assignment
+- priority and status tracking
+- disposition decisions
+- labels for routing and triage
+- time-stamped analyst notes
 
 ## Current MVP Scope
 

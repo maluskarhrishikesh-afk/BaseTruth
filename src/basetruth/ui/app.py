@@ -16,9 +16,46 @@ def _default_artifact_root() -> Path:
 
 
 def _get_service() -> BaseTruthService:
-    artifact_root = Path(st.session_state.get("artifact_root", str(_default_artifact_root())))
-    st.session_state["artifact_root"] = str(artifact_root)
+    artifact_root = Path(str(st.session_state.get("artifact_root", _default_artifact_root())))
     return BaseTruthService(artifact_root)
+
+
+def _display_truth_score(value: Any) -> str:
+    return "" if value in {None, ""} else str(value)
+
+
+def _connector_settings_fields(kind: str, existing: Dict[str, Any]) -> Dict[str, Any]:
+    settings: Dict[str, Any] = {}
+    if kind == "s3":
+        settings["bucket"] = st.text_input("S3 bucket", value=str(existing.get("bucket", "")))
+        settings["prefix"] = st.text_input("S3 prefix", value=str(existing.get("prefix", "")))
+        settings["region_name"] = st.text_input("AWS region", value=str(existing.get("region_name", "")))
+        settings["profile_name"] = st.text_input("AWS profile name", value=str(existing.get("profile_name", "")))
+    elif kind == "google_drive":
+        settings["folder_id"] = st.text_input("Drive folder id", value=str(existing.get("folder_id", "")))
+        settings["service_account_file"] = st.text_input(
+            "Service account JSON path",
+            value=str(existing.get("service_account_file", "")),
+        )
+    elif kind == "sharepoint":
+        settings["site_id"] = st.text_input("SharePoint site id", value=str(existing.get("site_id", "")))
+        settings["drive_id"] = st.text_input("Drive id", value=str(existing.get("drive_id", "")))
+        settings["folder_path"] = st.text_input("Folder path", value=str(existing.get("folder_path", "")))
+        settings["token_env_var"] = st.text_input(
+            "Access token environment variable",
+            value=str(existing.get("token_env_var", "BASETRUTH_SHAREPOINT_TOKEN")),
+        )
+    return settings
+
+
+def _render_connector_guidance(kind: str, settings: Dict[str, Any]) -> None:
+    if kind == "s3":
+        st.caption("Authentication uses the selected AWS profile or the standard AWS credential environment variables.")
+    elif kind == "google_drive":
+        st.caption("Use a service-account JSON path for unattended sync, or rely on local Google application-default credentials.")
+    elif kind == "sharepoint":
+        token_env_var = str(settings.get("token_env_var", "BASETRUTH_SHAREPOINT_TOKEN"))
+        st.caption(f"Sync reads a Microsoft Graph bearer token from {token_env_var}.")
 
 
 def _save_uploaded_files(files: List[Any], temp_dir: Path) -> List[Path]:
@@ -104,7 +141,7 @@ def _render_bulk_scan_tab() -> None:
                 }
                 for report in reports
             ]
-            st.dataframe(summary_rows, use_container_width=True)
+            st.dataframe(summary_rows, width="stretch")
             if compare_payslips:
                 comparison = service.compare_payslip_summaries_from_reports(reports)
                 st.markdown("### Payslip anomalies")
@@ -122,15 +159,19 @@ def _render_datasource_tab() -> None:
         recursive = st.checkbox("Recursive", value=True)
         extensions = st.text_input("Extensions (comma separated)", value=".pdf,.json,.png,.jpg,.jpeg")
         description = st.text_area("Description")
+        settings = _connector_settings_fields(kind, {})
+        _render_connector_guidance(kind, settings)
         submitted = st.form_submit_button("Save datasource")
         if submitted:
+            resolved_path = registry.build_path_from_settings(kind, settings, path)
             config = DatasourceConfig(
                 name=name,
                 kind=kind,
-                path=path,
+                path=resolved_path,
                 recursive=recursive,
                 extensions=[item.strip() for item in extensions.split(",") if item.strip()],
                 description=description,
+                settings=settings,
             )
             registry.upsert_source(config)
             st.success(f"Saved datasource '{name}'.")
@@ -144,8 +185,15 @@ def _render_datasource_tab() -> None:
     sources = registry.list_sources()
     if sources:
         st.markdown("### Registered datasources")
-        st.dataframe([source.to_dict() for source in sources], use_container_width=True)
+        st.dataframe([source.to_dict() for source in sources], width="stretch")
         selected_source = st.selectbox("Select datasource to sync", options=[source.name for source in sources])
+        selected_config = registry.get_source(selected_source)
+        with st.expander("Connector auth and config", expanded=False):
+            st.json({
+                "path": selected_config.path,
+                "settings": selected_config.settings or {},
+            })
+            _render_connector_guidance(selected_config.kind, dict(selected_config.settings or {}))
         col1, col2 = st.columns(2)
         if col1.button("Sync datasource"):
             result = registry.sync_source(selected_source)
@@ -183,12 +231,12 @@ def _render_reports_tab() -> None:
             "kind": item.get("kind", ""),
             "case_key": item.get("case_key", ""),
             "risk_level": item.get("risk_level", ""),
-            "truth_score": item.get("truth_score", ""),
+            "truth_score": _display_truth_score(item.get("truth_score")),
             "path": item.get("path", ""),
         }
         for item in reports
     ]
-    st.dataframe(rows, use_container_width=True)
+    st.dataframe(rows, width="stretch")
     selection = st.selectbox("Open report", options=[item["path"] for item in rows])
     if selection:
         payload = json.loads(Path(selection).read_text(encoding="utf-8"))
@@ -208,15 +256,49 @@ def _render_cases_tab() -> None:
             "document_type": item.get("document_type", ""),
             "document_count": item.get("document_count", 0),
             "max_risk_level": item.get("max_risk_level", ""),
-            "min_truth_score": item.get("min_truth_score", ""),
+            "min_truth_score": _display_truth_score(item.get("min_truth_score")),
         }
         for item in cases
     ]
-    st.dataframe(rows, use_container_width=True)
+    st.dataframe(rows, width="stretch")
     selected_case_key = st.selectbox("Open case", options=[item["case_key"] for item in rows])
     case_detail = service.get_case_detail(selected_case_key)
+    workflow = case_detail["workflow"]
     st.markdown("### Case summary")
     st.json(case_detail["case"])
+    with st.form("case_workflow_form"):
+        status = st.selectbox("Status", options=["new", "triage", "investigating", "pending_client", "closed"], index=["new", "triage", "investigating", "pending_client", "closed"].index(str(workflow.get("status", "new"))))
+        disposition = st.selectbox("Disposition", options=["open", "monitor", "escalate", "cleared", "fraud_confirmed"], index=["open", "monitor", "escalate", "cleared", "fraud_confirmed"].index(str(workflow.get("disposition", "open"))))
+        priority = st.selectbox("Priority", options=["low", "normal", "high", "critical"], index=["low", "normal", "high", "critical"].index(str(workflow.get("priority", "normal"))))
+        assignee = st.text_input("Investigator", value=str(workflow.get("assignee", "")))
+        labels_text = st.text_input("Labels", value=", ".join(workflow.get("labels", [])))
+        note_author = st.text_input("Note author", value="analyst")
+        note_text = st.text_area("Add note")
+        workflow_submitted = st.form_submit_button("Update case")
+        if workflow_submitted:
+            service.update_case(
+                selected_case_key,
+                status=status,
+                disposition=disposition,
+                priority=priority,
+                assignee=assignee,
+                labels=[item.strip() for item in labels_text.split(",") if item.strip()],
+                note_text=note_text,
+                note_author=note_author,
+            )
+            st.success("Case workflow updated.")
+            case_detail = service.get_case_detail(selected_case_key)
+            workflow = case_detail["workflow"]
+
+    st.markdown("### Workflow")
+    st.json(workflow)
+    st.markdown("### Investigator notes")
+    if workflow.get("notes"):
+        for note in reversed(workflow["notes"]):
+            st.write(f"{note.get('created_at', '')} | {note.get('author', '')}")
+            st.write(note.get("text", ""))
+    else:
+        st.info("No case notes yet.")
     st.markdown("### Case reports")
     for report in case_detail["reports"]:
         with st.expander(report.get("source", {}).get("name", "report")):
@@ -237,9 +319,11 @@ def _render_index_metrics() -> None:
 
 def main() -> None:
     st.set_page_config(page_title="BaseTruth", page_icon="BT", layout="wide")
+    if "artifact_root" not in st.session_state:
+        st.session_state["artifact_root"] = str(_default_artifact_root())
     st.title("BaseTruth")
     st.caption("Explainable document integrity and fraud detection")
-    st.text_input("Artifact root", key="artifact_root", value=str(_default_artifact_root()))
+    st.text_input("Artifact root", key="artifact_root")
     _render_index_metrics()
 
     tab_single, tab_bulk, tab_datasources, tab_reports, tab_cases = st.tabs(

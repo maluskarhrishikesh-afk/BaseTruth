@@ -52,3 +52,27 @@ def test_manifest_datasource_sync_reads_json_manifest(tmp_path: Path) -> None:
 
     assert result["status"] == "success"
     assert result["copied_count"] == 2
+
+
+def test_connector_settings_are_persisted_and_path_is_derived(tmp_path: Path) -> None:
+    registry = DatasourceRegistry(tmp_path / "artifacts")
+    settings = {
+        "bucket": "fraud-inputs",
+        "prefix": "payroll/jan",
+        "region_name": "ap-south-1",
+        "profile_name": "security-audit",
+    }
+
+    registry.upsert_source(
+        DatasourceConfig(
+            name="S3 Source",
+            kind="s3",
+            path=registry.build_path_from_settings("s3", settings),
+            settings=settings,
+        )
+    )
+
+    saved = registry.get_source("S3 Source")
+
+    assert saved.path == "s3://fraud-inputs/payroll/jan"
+    assert saved.settings == settings

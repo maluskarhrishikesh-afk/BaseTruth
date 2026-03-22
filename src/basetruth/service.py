@@ -10,7 +10,7 @@ from basetruth.analysis.structured import build_structured_summary
 from basetruth.analysis.tamper import evaluate_tamper_risk
 from basetruth.integrations.liteparse import check_liteparse_available, parse_document_to_json
 from basetruth.integrations.pdf import extract_pdf_metadata
-from basetruth.models import VerificationReport
+from basetruth.models import CaseNote, CaseRecord, VerificationReport
 from basetruth.reporting.markdown import render_comparison_report, render_scan_report
 
 
@@ -24,6 +24,83 @@ class BaseTruthService:
         target = self.artifact_root / stem
         target.mkdir(parents=True, exist_ok=True)
         return target
+
+    def _config_dir(self) -> Path:
+        target = self.artifact_root / "config"
+        target.mkdir(parents=True, exist_ok=True)
+        return target
+
+    def _case_records_path(self) -> Path:
+        return self._config_dir() / "case_records.json"
+
+    def _load_case_records(self) -> Dict[str, CaseRecord]:
+        path = self._case_records_path()
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return {}
+        items = payload.get("cases", {}) if isinstance(payload, dict) else {}
+        records: Dict[str, CaseRecord] = {}
+        for case_key, item in items.items():
+            if not isinstance(item, dict):
+                continue
+            notes = [CaseNote(**note) for note in item.get("notes", []) if isinstance(note, dict)]
+            records[str(case_key)] = CaseRecord(
+                case_key=str(case_key),
+                status=str(item.get("status", "new")),
+                disposition=str(item.get("disposition", "open")),
+                priority=str(item.get("priority", "normal")),
+                assignee=str(item.get("assignee", "")),
+                labels=[str(label) for label in item.get("labels", [])],
+                notes=notes,
+                created_at=str(item.get("created_at", "")),
+                updated_at=str(item.get("updated_at", "")),
+            )
+        return records
+
+    def _save_case_records(self, records: Dict[str, CaseRecord]) -> None:
+        payload = {
+            "schema_version": 1,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "cases": {case_key: record for case_key, record in records.items()},
+        }
+        self._case_records_path().write_text(json.dumps(payload, default=lambda value: value.__dict__, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def update_case(
+        self,
+        case_key: str,
+        *,
+        status: str | None = None,
+        disposition: str | None = None,
+        priority: str | None = None,
+        assignee: str | None = None,
+        labels: List[str] | None = None,
+        note_text: str = "",
+        note_author: str = "",
+    ) -> Dict[str, Any]:
+        timestamp = datetime.now(timezone.utc).isoformat()
+        records = self._load_case_records()
+        record = records.get(case_key) or CaseRecord(case_key=case_key, created_at=timestamp, updated_at=timestamp)
+        if status is not None:
+            record.status = str(status)
+        if disposition is not None:
+            record.disposition = str(disposition)
+        if priority is not None:
+            record.priority = str(priority)
+        if assignee is not None:
+            record.assignee = str(assignee)
+        if labels is not None:
+            record.labels = sorted({label.strip() for label in labels if str(label).strip()})
+        if note_text.strip():
+            record.notes.append(CaseNote(created_at=timestamp, author=str(note_author).strip() or "analyst", text=note_text.strip()))
+        record.updated_at = timestamp
+        if not record.created_at:
+            record.created_at = timestamp
+        records[case_key] = record
+        self._save_case_records(records)
+        return record.__dict__ | {"notes": [note.__dict__ for note in record.notes]}
 
     def collect_supported_files(self, input_dir: str | Path) -> List[Path]:
         directory = Path(input_dir)
@@ -184,6 +261,7 @@ class BaseTruthService:
         return results
 
     def list_cases(self) -> List[Dict[str, Any]]:
+        case_records = self._load_case_records()
         cases: Dict[str, Dict[str, Any]] = {}
         for item in self.list_reports():
             if item.get("kind") != "verification":
@@ -208,21 +286,56 @@ class BaseTruthService:
                 case["max_risk_level"] = risk_level
 
         for case in cases.values():
+            record = case_records.get(case["case_key"])
             case["document_count"] = len(case["documents"])
             case["documents"] = sorted(case["documents"], key=lambda item: str(item.get("generated_at", "")), reverse=True)
             if case["min_truth_score"] == 100 and not case["documents"]:
                 case["min_truth_score"] = ""
+            case["status"] = record.status if record else "new"
+            case["disposition"] = record.disposition if record else "open"
+            case["priority"] = record.priority if record else "normal"
+            case["assignee"] = record.assignee if record else ""
+            case["labels"] = list(record.labels) if record else []
+            case["note_count"] = len(record.notes) if record else 0
+            case["updated_at"] = record.updated_at if record else case["documents"][0].get("generated_at", "")
         return sorted(cases.values(), key=lambda item: (str(item.get("max_risk_level")), -int(item.get("document_count", 0))), reverse=True)
 
     def get_case_detail(self, case_key: str) -> Dict[str, Any]:
+        case_records = self._load_case_records()
         for case in self.list_cases():
             if case.get("case_key") == case_key:
                 details: List[Dict[str, Any]] = []
                 for document in case.get("documents", []):
                     payload = json.loads(Path(document["path"]).read_text(encoding="utf-8"))
                     details.append(payload)
+                record = case_records.get(case_key)
                 return {
                     "case": case,
+                    "workflow": (
+                        {
+                            "case_key": record.case_key,
+                            "status": record.status,
+                            "disposition": record.disposition,
+                            "priority": record.priority,
+                            "assignee": record.assignee,
+                            "labels": list(record.labels),
+                            "notes": [note.__dict__ for note in record.notes],
+                            "created_at": record.created_at,
+                            "updated_at": record.updated_at,
+                        }
+                        if record
+                        else {
+                            "case_key": case_key,
+                            "status": "new",
+                            "disposition": "open",
+                            "priority": "normal",
+                            "assignee": "",
+                            "labels": [],
+                            "notes": [],
+                            "created_at": "",
+                            "updated_at": "",
+                        }
+                    ),
                     "reports": details,
                 }
         raise KeyError(case_key)

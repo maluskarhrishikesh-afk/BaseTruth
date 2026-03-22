@@ -49,10 +49,12 @@ class DatasourceConfig:
     extensions: List[str] | None = None
     enabled: bool = True
     description: str = ""
+    settings: Dict[str, Any] | None = None
 
     def to_dict(self) -> Dict[str, Any]:
         payload = asdict(self)
         payload["extensions"] = list(self.extensions or [])
+        payload["settings"] = dict(self.settings or {})
         return payload
 
 
@@ -81,6 +83,7 @@ class DatasourceRegistry:
                     extensions=[str(ext) for ext in item.get("extensions", [])],
                     enabled=bool(item.get("enabled", True)),
                     description=str(item.get("description", "")),
+                    settings=dict(item.get("settings", {}) or {}),
                 )
             )
         return sources
@@ -132,6 +135,25 @@ class DatasourceRegistry:
             raise ValueError("SharePoint datasource path must be 'site_id|drive_id|folder_path'.")
         return parts[0], parts[1], parts[2].strip("/")
 
+    def build_path_from_settings(self, kind: str, settings: Dict[str, Any] | None, fallback_path: str = "") -> str:
+        config = dict(settings or {})
+        if kind == "s3":
+            bucket = str(config.get("bucket", "")).strip()
+            prefix = str(config.get("prefix", "")).strip().strip("/")
+            if bucket:
+                return f"s3://{bucket}/{prefix}".rstrip("/")
+        if kind == "google_drive":
+            folder_id = str(config.get("folder_id", "")).strip()
+            if folder_id:
+                return folder_id
+        if kind == "sharepoint":
+            site_id = str(config.get("site_id", "")).strip()
+            drive_id = str(config.get("drive_id", "")).strip()
+            folder_path = str(config.get("folder_path", "")).strip().strip("/")
+            if site_id and drive_id:
+                return f"{site_id}|{drive_id}|{folder_path}"
+        return fallback_path
+
     def _safe_write_bytes(self, destination: Path, data: bytes) -> str:
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(data)
@@ -177,7 +199,15 @@ class DatasourceRegistry:
             raise RuntimeError("S3 datasource support requires boto3. Install the BaseTruth connectors extra.") from exc
 
         bucket, prefix = self._parse_s3_path(source.path)
-        client = boto3.client("s3")
+        settings = dict(source.settings or {})
+        session_kwargs: Dict[str, Any] = {}
+        profile_name = str(settings.get("profile_name", "")).strip()
+        region_name = str(settings.get("region_name", "")).strip()
+        if profile_name:
+            session_kwargs["profile_name"] = profile_name
+        if region_name:
+            session_kwargs["region_name"] = region_name
+        client = boto3.session.Session(**session_kwargs).client("s3") if session_kwargs else boto3.client("s3")
         paginator = client.get_paginator("list_objects_v2")
         copied_files: List[str] = []
         skipped_files: List[str] = []
@@ -211,7 +241,21 @@ class DatasourceRegistry:
         if not folder_id:
             raise ValueError("Google Drive datasource path must be a folder id or 'drive:<folder_id>'.")
 
-        drive_service: Any = build("drive", "v3")
+        settings = dict(source.settings or {})
+        drive_kwargs: Dict[str, Any] = {}
+        service_account_file = str(settings.get("service_account_file", "")).strip()
+        if service_account_file:
+            try:
+                from google.oauth2 import service_account  # type: ignore
+            except ImportError as exc:  # pragma: no cover - optional dependency
+                raise RuntimeError("Google Drive service-account auth requires google-auth.") from exc
+            credentials = service_account.Credentials.from_service_account_file(
+                service_account_file,
+                scopes=["https://www.googleapis.com/auth/drive.readonly"],
+            )
+            drive_kwargs["credentials"] = credentials
+
+        drive_service: Any = build("drive", "v3", **drive_kwargs)
         copied_files: List[str] = []
         skipped_files: List[str] = []
         queue: List[tuple[str, Path]] = [(folder_id, Path("."))]
@@ -281,9 +325,11 @@ class DatasourceRegistry:
 
         import os
 
-        token = str(os.environ.get("BASETRUTH_SHAREPOINT_TOKEN", "") or "").strip()
+        settings = dict(source.settings or {})
+        token_env_var = str(settings.get("token_env_var", "BASETRUTH_SHAREPOINT_TOKEN")).strip() or "BASETRUTH_SHAREPOINT_TOKEN"
+        token = str(os.environ.get(token_env_var, "") or "").strip()
         if not token:
-            raise RuntimeError("Set BASETRUTH_SHAREPOINT_TOKEN to use SharePoint datasource sync.")
+            raise RuntimeError(f"Set {token_env_var} to use SharePoint datasource sync.")
 
         site_id, drive_id, folder_path = self._parse_sharepoint_path(source.path)
         session = requests.Session()
