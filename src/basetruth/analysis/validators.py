@@ -1,17 +1,39 @@
 """Domain-specific validation packs for BaseTruth.
 
-Each industry pack defines:
-- required fields that must be present
-- cross-field arithmetic consistency rules
-- domain-specific format and range checks
-- suspicious value pattern detection
+This module defines a registry of validation 'packs', one per document type.
+Each pack is a collection of check functions that receive the structured summary
+dict produced by analysis/structured.py and return a list of Signal objects.
 
-Usage::
+Supported document types (as reported by structured_summary["document"]["type"])
+---------------------------------------------------------------------------
+  payslip         -- Indian salary/payslip documents.
+  offer_letter    -- Employment offer letters.
+  bank_statement  -- Bank account statements (basic checks only).
+  invoice         -- GST and commercial invoices.
+  generic         -- Catch-all fallback; runs minimal checks only.
 
-    from basetruth.analysis.validators import validate_document
+Signal schema
+-------------
+Each Signal has these fields:
+  name      (str)   -- machine-readable check identifier, e.g. 'gross_pay_range'.
+  passed    (bool)  -- True if the check passed (no anomaly found).
+  severity  (str)   -- 'critical' | 'high' | 'medium' | 'low'.
+  detail    (str)   -- human-readable explanation of the result.
 
-    signals = validate_document(structured_summary)
+Adding a new pack
+-----------------
+1. Create a function that accepts a structured_summary dict and returns
+   List[Signal].
+2. Register it by adding an entry to VALIDATOR_REGISTRY at the bottom of
+   this file, keyed on the document type string.
+3. The tamper scorer in analysis/tamper.py picks it up automatically.
 
+Public API
+----------
+  validate_document(structured_summary) -> List[Signal]
+      Runs the appropriate pack (falling back to the generic pack) and
+      returns all signals.  Never raises; errors in individual checks are
+      caught and returned as failed signals with severity 'low'.
 """
 from __future__ import annotations
 

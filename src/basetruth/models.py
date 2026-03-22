@@ -1,5 +1,22 @@
 from __future__ import annotations
 
+"""
+Shared data-model dataclasses for BaseTruth.
+
+Classes
+-------
+  Signal          -- a single tamper/validation check result (name, passed,
+                     severity, detail).  Used by the tamper scorer and validators.
+  VerificationReport -- the top-level output object produced by service.scan_document().
+                     Serialised to JSON and Markdown artifacts on disk.
+  CaseNote        -- a timestamped analyst note attached to a CaseRecord.
+  CaseRecord      -- a persistent case that groups one or more documents for
+                     triage, investigation, and disposition tracking.
+
+All classes are plain Python dataclasses so they can be trivially serialised
+with json.dumps(..., default=lambda v: v.__dict__) without a custom encoder.
+"""
+
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 

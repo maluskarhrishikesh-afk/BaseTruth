@@ -1,5 +1,21 @@
 from __future__ import annotations
 
+"""
+Command-line interface for BaseTruth.
+
+Entry point: `basetruth` (declared in pyproject.toml [project.scripts]).
+
+Commands
+--------
+  scan   <path>          -- run a full integrity scan on a single document.
+  bulk   <directory>     -- scan all supported files in a directory tree.
+  compare <directory>    -- cross-month payslip comparison for a folder of
+                            previously scanned structured summaries.
+  serve  [--host] [--port] -- start the Streamlit web UI.
+
+See `basetruth --help` or `basetruth <command> --help` for full usage.
+"""
+
 import argparse
 import json
 from pathlib import Path

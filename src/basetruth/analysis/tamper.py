@@ -1,5 +1,27 @@
 from __future__ import annotations
 
+"""
+Heuristic tamper-risk scorer for BaseTruth.
+
+Combines signals from three sources to produce a single 'truth_score' (0-100)
+and a 'risk_level' ('low' | 'medium' | 'high'):
+
+  1. Structural signals   -- PDF header version, digital signature markers,
+                             creation-date vs modification-date consistency.
+  2. Content signals      -- gross/net pay arithmetic, date range plausibility,
+                             issuer / employer name consistency across fields.
+  3. Validator signals    -- domain-specific checks from analysis/validators.py
+                             (salary bounds, required fields, GST number format, etc.).
+
+Each check emits a Signal (name, passed, severity, detail).  The scorer applies
+a severity-weighted average: 'critical' failures decrement the score most, then
+'high', 'medium', and 'low'.  The final score is clamped to [0, 100].
+
+Public API
+----------
+  evaluate_tamper_risk(structured_summary, pdf_metadata) -> Dict[str, Any]
+"""
+
 import re
 from typing import Any, Dict, List, Optional
 

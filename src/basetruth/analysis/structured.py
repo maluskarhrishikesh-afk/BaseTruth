@@ -1,5 +1,22 @@
 from __future__ import annotations
 
+"""
+Build a structured summary from a LiteParse (or fallback) JSON document.
+
+The pipeline has three stages:
+  1. Text assembly  -- join the raw page texts from the LiteParse JSON output.
+  2. Field extraction -- use regular expressions and heuristics to identify
+     document type (payslip, offer letter, bank statement ...) and extract
+     key fields (employee name, gross pay, net pay, pay period, issuer, etc.).
+  3. Normalisation -- convert currency strings to floats, parse ISO-8601 dates,
+     produce a canonical dict consumed by tamper.evaluate_tamper_risk() and the
+     reporting layer.
+
+Public API
+----------
+  build_structured_summary(raw_parse_path, source_path=None) -> Dict[str, Any]
+"""
+
 import json
 import re
 from datetime import datetime, timezone

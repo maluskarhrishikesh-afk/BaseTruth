@@ -1,5 +1,29 @@
 from __future__ import annotations
 
+"""
+Cross-month payslip comparison and anomaly detection.
+
+This module compares a time-ordered series of structured payslip summaries to
+identify suspicious changes that may indicate document tampering or data errors.
+
+Anomaly types detected
+----------------------
+  identity_drift     -- employee name or ID changes between consecutive payslips.
+  net_pay_drop       -- net pay falls by more than a configurable percentage
+                        compared with the previous period (default: 20 %).
+  gross_net_mismatch -- gross pay is lower than net pay (arithmetic impossibility).
+  period_gap         -- a calendar gap of more than one month between two
+                        consecutive pay periods.
+  duplicate_period   -- the same pay period appears more than once.
+
+All anomalies carry a severity of 'high', 'medium', or 'low' and a details dict
+for the reporting layer.
+
+Public API
+----------
+  compare_payslip_summaries(summaries: List[Dict]) -> Dict[str, Any]
+"""
+
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 

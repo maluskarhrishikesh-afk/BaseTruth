@@ -9,7 +9,11 @@ from basetruth.analysis.payslip import compare_payslip_summaries
 from basetruth.analysis.structured import build_structured_summary
 from basetruth.analysis.tamper import evaluate_tamper_risk
 from basetruth.integrations.liteparse import check_liteparse_available, parse_document_to_json
-from basetruth.integrations.pdf import extract_pdf_metadata
+from basetruth.integrations.pdf import (
+    build_liteparse_json_from_text,
+    extract_pdf_metadata,
+    extract_text_from_pdf,
+)
 from basetruth.models import CaseNote, CaseRecord, VerificationReport
 from basetruth.reporting.markdown import render_comparison_report, render_scan_report
 
@@ -142,6 +146,10 @@ class BaseTruthService:
         verification_markdown_path = artifact_dir / f"{path.stem}_verification.md"
 
         source_path = path
+        # Initialise fallback flags here so they are always defined, even when
+        # the input is a pre-parsed JSON file that skips the LiteParse step.
+        parse_fallback = False
+        parse_fallback_reason = ""
         if path.suffix.lower() == ".json" and path.name.endswith("_structured.json"):
             structured_summary = json.loads(path.read_text(encoding="utf-8"))
             pdf_metadata = {}
@@ -150,14 +158,35 @@ class BaseTruthService:
             if path.suffix.lower() == ".json":
                 raw_parse_path = path
             else:
+                # Track whether we fell back to the plain-text extraction path so
+                # callers can surface a warning in the UI / report.
                 liteparse_status = check_liteparse_available()
                 if liteparse_status["available"]:
                     result = parse_document_to_json(path, raw_parse_path)
                     if result["status"] != "success":
-                        raise RuntimeError(result["message"])
+                        # LiteParse reported a failure (e.g. ImageMagick missing).
+                        # Fall back to pypdf plain-text extraction so the rest of
+                        # the pipeline can still produce a useful (if partial) report.
+                        parse_fallback = True
+                        parse_fallback_reason = str(result.get("message", "LiteParse parse failed"))
                 else:
-                    raise RuntimeError(liteparse_status["message"])
+                    # LiteParse binary is not available at all on this machine.
+                    parse_fallback = True
+                    parse_fallback_reason = str(liteparse_status.get("message", "LiteParse not available"))
+
+                if parse_fallback:
+                    extracted_text = extract_text_from_pdf(path) if path.suffix.lower() == ".pdf" else ""
+                    fallback_json = build_liteparse_json_from_text(extracted_text, path.name)
+                    raw_parse_path.write_text(
+                        json.dumps(fallback_json, indent=2, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
             structured_summary = build_structured_summary(raw_parse_path, source_path=source_path)
+            # Annotate the structured summary when a fallback was used so the UI
+            # and any downstream callers know the quality of the parse.
+            if parse_fallback:
+                structured_summary["parse_fallback"] = True
+                structured_summary["parse_fallback_reason"] = parse_fallback_reason
             structured_path.write_text(json.dumps(structured_summary, indent=2, ensure_ascii=False), encoding="utf-8")
             pdf_metadata = extract_pdf_metadata(source_path) if source_path.suffix.lower() == ".pdf" else {}
             raw_parse_written = str(raw_parse_path)
@@ -184,6 +213,8 @@ class BaseTruthService:
                 "structured_summary_path": str(structured_path),
                 "verification_json_path": str(verification_json_path),
                 "verification_markdown_path": str(verification_markdown_path),
+                "parse_fallback": parse_fallback,
+                "parse_fallback_reason": parse_fallback_reason if parse_fallback else "",
             },
         )
         verification_json_path.write_text(json.dumps(report.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")

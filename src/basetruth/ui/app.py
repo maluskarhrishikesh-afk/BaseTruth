@@ -377,27 +377,67 @@ def _page_scan(service: BaseTruthService) -> None:
         label_visibility="visible",
     )
     path_input = st.text_input("Or enter an existing file path on disk")
+    st.caption(
+        "Note: scanned identity documents (Aadhaar, PAN card) are image-only PDFs with no text layer. "
+        "LiteParse requires ImageMagick for OCR on those files. "
+        "If ImageMagick is not installed, BaseTruth uses a text-extraction fallback that extracts "
+        "metadata and structure but cannot read the printed text from image-only pages."
+    )
 
-    if st.button("Run scan →", type="primary"):
+    if st.button("Run scan ->", type="primary"):
         report: Dict[str, Any] | None = None
-        with st.spinner("Running BaseTruth scan…"):
-            if upload is not None:
-                temp_dir = Path(tempfile.mkdtemp(prefix="bt_upload_"))
-                saved_path = _save_uploaded_files([upload], temp_dir)[0]
-                report = service.scan_document(saved_path)
-            elif path_input.strip():
-                report = service.scan_document(path_input.strip())
-            else:
-                st.warning("Provide an uploaded file or a local file path.")
+        scan_error: str = ""
+        with st.spinner("Running BaseTruth scan..."):
+            try:
+                if upload is not None:
+                    temp_dir = Path(tempfile.mkdtemp(prefix="bt_upload_"))
+                    saved_path = _save_uploaded_files([upload], temp_dir)[0]
+                    report = service.scan_document(saved_path)
+                elif path_input.strip():
+                    report = service.scan_document(path_input.strip())
+                else:
+                    st.warning("Provide an uploaded file or a local file path.")
+            except FileNotFoundError as exc:
+                scan_error = f"File not found: {exc}"
+            except Exception as exc:  # noqa: BLE001
+                scan_error = (
+                    f"Scan failed: {exc}\n\n"
+                    "Common causes:\n"
+                    "- ImageMagick is not installed (needed for image-only PDFs such as "
+                    "Aadhaar / PAN card scans).  Install from https://imagemagick.org/\n"
+                    "- The PDF is password-protected or corrupt.\n"
+                    "- An unexpected LiteParse or OCR error occurred."
+                )
+
+        if scan_error:
+            st.error(scan_error)
+            return
+
         if report:
+            # Warn the user when the plain-text fallback was used instead of a
+            # full LiteParse / OCR parse.  The report is still useful for
+            # metadata forensics and structural checks, but field extraction may
+            # be incomplete for image-only documents.
+            artifacts = report.get("artifacts", {})
+            if artifacts.get("parse_fallback") or report.get("structured_summary", {}).get("parse_fallback"):
+                fallback_reason = (
+                    artifacts.get("parse_fallback_reason")
+                    or report.get("structured_summary", {}).get("parse_fallback_reason", "")
+                )
+                st.warning(
+                    "**Partial scan** -- LiteParse could not fully process this document "
+                    f"({fallback_reason or 'reason unknown'}).  "
+                    "BaseTruth used a text-extraction fallback.  "
+                    "PDF metadata forensics and structural checks ran in full; "
+                    "field-level extraction may be incomplete for image-only pages."
+                )
             st.divider()
             st.subheader("Scan Result")
             _render_report_summary(report)
-            artifacts = report.get("artifacts", {})
             if artifacts.get("verification_json_path"):
-                st.caption(f"📄 Report saved to: {artifacts['verification_json_path']}")
+                st.caption(f"Report saved to: {artifacts['verification_json_path']}")
             st.download_button(
-                "⬇  Download JSON report",
+                "Download JSON report",
                 data=json.dumps(report, indent=2, ensure_ascii=False),
                 file_name=f"{report.get('source', {}).get('name', 'report')}_verification.json",
                 mime="application/json",
@@ -433,12 +473,20 @@ def _page_bulk(service: BaseTruthService) -> None:
                 return
 
             reports: List[Dict[str, Any]] = []
+            errors: List[str] = []
             prog = st.progress(0)
             for i, p in enumerate(paths):
-                reports.append(service.scan_document(p))
+                try:
+                    reports.append(service.scan_document(p))
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"{p.name}: {exc}")
                 prog.progress((i + 1) / len(paths))
 
         st.success(f"Scanned {len(reports)} document(s).")
+        if errors:
+            with st.expander(f"{len(errors)} document(s) had errors -- click to expand"):
+                for err in errors:
+                    st.error(err)
 
         try:
             import pandas as pd
