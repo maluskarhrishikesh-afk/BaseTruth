@@ -44,15 +44,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /build
 
-# Copy dependency files first — changes here bust the cache; source changes don't
+# Copy only dependency manifests first.
+# Docker caches each layer independently — as long as requirements.txt and
+# pyproject.toml do not change, the expensive pip install below is a cache HIT
+# even when source files in src/ change.
 COPY requirements.txt pyproject.toml ./
-COPY src/ ./src/
 
-# Install pinned requirements + dev tools into a prefix we copy to the final image
+# Install pinned requirements — this layer is reused on every build where
+# requirements.txt / pyproject.toml are unchanged (no downloads, ~0s).
 RUN pip install --no-cache-dir --upgrade pip \
  && pip install --no-cache-dir --prefix=/install -r requirements.txt \
- && pip install --no-cache-dir --prefix=/install --no-deps "." \
  && pip install --no-cache-dir --prefix=/install pytest
+
+# Copy source AFTER deps are installed.  Changes here only invalidate the fast
+# "install package itself" step below, not the multi-GB download layer above.
+COPY src/ ./src/
+RUN pip install --no-cache-dir --prefix=/install --no-deps "."
 
 
 # ──────────────────────────────────────────────────────────────────────────────

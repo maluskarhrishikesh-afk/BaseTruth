@@ -32,8 +32,25 @@
 - evidence export package with chain-of-custody PDF (pending)
 - enterprise compliance workflow templates (pending)
 
+## Phase 6: Mortgage Fraud Module
+
+- **[DONE]** `MortgageValidationPack` — payslip arithmetic, PF/PT/TDS slab checks, HRA proportion, CIN format + age validation, CTC vs monthly gross consistency
+- **[DONE]** `BankingValidationPack` extended — circular funds detection, duplicate transaction reference flag, salary credit regularity check
+- **[DONE]** Mortgage document type detection in `structured.py` (employment_letter, form16, utility_bill, gift_letter, property_agreement, mortgage)
+- **[DONE]** Mortgage document type aliases registered in `packs/__init__.py`
+- **[DONE]** Synthetic mortgage corpus — 50 cases, 426 PDFs, labels.csv (`scripts/generate_mortgage_docs.py`)
+- **[DONE]** Comprehensive `docs/Mortgage_Fraud.md` — full Indian mortgage industry knowledge base, fraud typology, cross-document checks, rules engine, ML features, implementation tracker
+- **[DONE]** 21 new mortgage-specific tests (42 total)
+- cross-document reconciliation engine (`src/basetruth/analysis/cross_doc.py`) — pending
+- case bundle grouping + multi-document scan (`src/basetruth/analysis/case_bundle.py`) — pending
+- FAISS-backed fraud template fingerprint library — pending
+- MCA21 CIN registry API stub — pending
+- CERSAI charge lookup stub — pending
+- Graph ring detection engine — pending
+
 ## Tracking Rules
 
 - every detector must emit explicit evidence
 - every score must be explainable from emitted signals
 - every domain pack must define what counts as suspicious and why
+- every new mortgage check must reference a rule ID from `docs/Mortgage_Fraud.md`

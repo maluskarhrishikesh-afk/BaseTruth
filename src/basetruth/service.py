@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from basetruth.analysis.payslip import compare_payslip_summaries
 from basetruth.analysis.structured import build_structured_summary
@@ -18,6 +19,7 @@ from basetruth.integrations.pdf import (
 )
 from basetruth.models import CaseNote, CaseRecord, VerificationReport
 from basetruth.reporting.markdown import render_comparison_report, render_scan_report
+from basetruth.reporting.pdf import render_scan_report_pdf
 
 
 class BaseTruthService:
@@ -154,29 +156,38 @@ class BaseTruthService:
         parse_fallback_reason = ""
         ocr_engine = ""
         image_only_pdf = False
+        parse_method = "liteparse"      # updated below as we discover what actually ran
+        liteparse_cmd_used: Optional[str] = None
         if path.suffix.lower() == ".json" and path.name.endswith("_structured.json"):
             structured_summary = json.loads(path.read_text(encoding="utf-8"))
             pdf_metadata = {}
             raw_parse_written = ""
+            parse_method = "prebuilt_json"
         else:
             if path.suffix.lower() == ".json":
                 raw_parse_path = path
+                parse_method = "json_input"
             else:
                 # Track whether we fell back to the plain-text extraction path so
                 # callers can surface a warning in the UI / report.
                 liteparse_status = check_liteparse_available()
                 if liteparse_status["available"]:
                     result = parse_document_to_json(path, raw_parse_path)
+                    liteparse_cmd_used = " ".join(str(c) for c in result.get("command", []))
                     if result["status"] != "success":
                         # LiteParse reported a failure (e.g. ImageMagick missing).
                         # Fall back to pypdf plain-text extraction so the rest of
                         # the pipeline can still produce a useful (if partial) report.
                         parse_fallback = True
                         parse_fallback_reason = str(result.get("message", "LiteParse parse failed"))
+                        parse_method = "pypdf_fallback"
+                    else:
+                        parse_method = f"liteparse({result.get('command_source', '?')})"
                 else:
                     # LiteParse binary is not available at all on this machine.
                     parse_fallback = True
                     parse_fallback_reason = str(liteparse_status.get("message", "LiteParse not available"))
+                    parse_method = "pypdf_fallback"
 
                 if parse_fallback:
                     # First try PyMuPDF / pypdf for text-layer PDFs; this is
@@ -198,6 +209,7 @@ class BaseTruthService:
                         if ocr_text.strip():
                             extracted_text = ocr_text
                             parse_fallback_reason += " | OCR via pytesseract succeeded."
+                            parse_method = "ocr_pytesseract"
                         else:
                             # OCR unavailable or returned nothing (image-only, no OCR).
                             if ocr_engine == "unavailable":
@@ -206,6 +218,7 @@ class BaseTruthService:
                                 parse_fallback_reason += " | OCR attempt failed."
                             else:
                                 parse_fallback_reason += " | Image-only PDF: no text layer found."
+                            parse_method = "no_text_extracted"
 
                     fallback_json = build_liteparse_json_from_text(extracted_text, path.name)
                     raw_parse_path.write_text(
@@ -213,8 +226,11 @@ class BaseTruthService:
                         encoding="utf-8",
                     )
             structured_summary = build_structured_summary(raw_parse_path, source_path=source_path)
-            # Annotate the structured summary when a fallback was used so the UI
-            # and any downstream callers know the quality of the parse.
+            # Annotate the structured summary so the UI and downstream callers
+            # know exactly how the document was parsed and classified.
+            structured_summary["parse_method"] = parse_method
+            if liteparse_cmd_used:
+                structured_summary["liteparse_command"] = liteparse_cmd_used
             if parse_fallback:
                 structured_summary["parse_fallback"] = True
                 structured_summary["parse_fallback_reason"] = parse_fallback_reason
@@ -254,9 +270,31 @@ class BaseTruthService:
                 "ocr_engine": ocr_engine,
             },
         )
-        verification_json_path.write_text(json.dumps(report.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
         verification_markdown_path.write_text(render_scan_report(report.to_dict()), encoding="utf-8")
-        return report.to_dict()
+
+        # Plain-English PDF report for loan officers / non-technical reviewers
+        pdf_report_path = artifact_dir / f"{path.stem}_report.pdf"
+        try:
+            pdf_bytes = render_scan_report_pdf(report.to_dict())
+            pdf_report_path.write_bytes(pdf_bytes)
+            report.artifacts["pdf_report_path"] = str(pdf_report_path)
+        except Exception:  # noqa: BLE001 — PDF generation is non-fatal
+            report.artifacts["pdf_report_path"] = ""
+
+        # Re-write verification JSON now that pdf_report_path is populated
+        report_dict = report.to_dict()
+        verification_json_path.write_text(json.dumps(report_dict, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        # Persist to PostgreSQL (non-fatal — file artefacts are always written first)
+        try:
+            from basetruth.db import init_db
+            from basetruth.store import save_scan_to_db
+            init_db()
+            save_scan_to_db(report_dict, pdf_bytes if "pdf_bytes" in dir() else None)
+        except Exception:  # noqa: BLE001
+            pass
+
+        return report_dict
 
     def compare_payslip_folder(self, input_dir: str | Path) -> Dict[str, Any]:
         directory = Path(input_dir)
@@ -289,6 +327,373 @@ class BaseTruthService:
     def compare_payslip_summaries_from_reports(self, reports: List[Dict[str, Any]]) -> Dict[str, Any]:
         summaries = [report.get("structured_summary", {}) for report in reports if report.get("structured_summary")]
         return compare_payslip_summaries(summaries)
+
+    def reconcile_income_documents(self, reports: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Cross-document salary reconciliation for a mortgage document bundle.
+
+        Compares salary figures extracted from payslips, Form 16, and employment /
+        offer letter.  A large discrepancy (> 15 %) between any two sources is a
+        strong indicator of income inflation fraud (tamper type: income_inflated).
+
+        Also checks whether bank-statement salary credits are consistent with
+        payslip net pay.
+
+        Returns a dict with:
+          anomalies   -- list of anomaly dicts (same schema as compare_payslip_summaries)
+          evidence    -- raw extracted figures for transparency
+        """
+        from basetruth.analysis.packs.base import _parse_int
+
+        payslip_gross_monthly: List[int] = []
+        payslip_net_monthly: List[int] = []
+        payslip_sources: List[str] = []
+
+        form16_annual_gross: Optional[int] = None
+        form16_source: str = ""
+
+        letter_annual_ctc: Optional[int] = None
+        letter_gross_monthly: Optional[int] = None
+        letter_source: str = ""
+
+        bank_salary_credits: List[int] = []
+        bank_source: str = ""
+
+        # Cross-doc mismatch data collection
+        payslip_pan: Optional[str] = None
+        payslip_pan_source: str = ""
+        payslip_bank_name: Optional[str] = None
+
+        form16_pan: Optional[str] = None
+        form16_pan_source: str = ""
+
+        bank_statement_bank_name: Optional[str] = None
+        bank_statement_ifsc: Optional[str] = None
+        bank_statement_all_credits: List[int] = []  # all credit amounts (for gift check)
+
+        gift_amount: Optional[int] = None
+        gift_source: str = ""
+
+        for report in reports:
+            summary = report.get("structured_summary", {})
+            doc_type = str(summary.get("document", {}).get("type", "")).lower()
+            key_fields = summary.get("key_fields", {})
+            named: Dict[str, Any] = key_fields.get("named_fields") or {}
+            source_name = str(report.get("source", {}).get("name", ""))
+
+            if doc_type == "payslip":
+                gross = _parse_int(key_fields.get("gross_earnings"))
+                if gross:
+                    payslip_gross_monthly.append(gross)
+                    payslip_sources.append(source_name)
+                net = _parse_int(key_fields.get("net_pay"))
+                if net:
+                    payslip_net_monthly.append(net)
+                # PAN for cross-doc check (case_059)
+                pan = str(key_fields.get("pan") or "").strip().upper()
+                if pan and payslip_pan is None:
+                    payslip_pan = pan
+                    payslip_pan_source = source_name
+                # Bank name on payslip for cross-doc bank-name check (case_051)
+                bk = str(key_fields.get("bank") or "").strip()
+                if bk and payslip_bank_name is None:
+                    payslip_bank_name = bk.upper()
+
+            elif doc_type == "employment_letter" or (
+                doc_type == "generic"
+                and (
+                    key_fields.get("annual_ctc")
+                    or key_fields.get("gross_monthly_salary")
+                    or "annual_ctc" in named
+                    or "gross_monthly_salary" in named
+                    or "whomsoever" in str(key_fields.get("title", "")).lower()
+                )
+            ):
+                ctc = _parse_int(
+                    key_fields.get("annual_ctc")
+                    or key_fields.get("ctc")
+                    or named.get("annual_ctc")
+                    or named.get("ctc")
+                )
+                gm = _parse_int(
+                    key_fields.get("gross_monthly_salary")
+                    or named.get("gross_monthly_salary")
+                )
+                if ctc and letter_annual_ctc is None:
+                    letter_annual_ctc = ctc
+                    letter_source = source_name
+                if gm and letter_gross_monthly is None:
+                    letter_gross_monthly = gm
+
+            elif doc_type == "form16" or (
+                doc_type == "generic"
+                and (
+                    "form 16" in str(key_fields.get("title", "")).lower()
+                    or "form-16" in str(key_fields.get("title", "")).lower()
+                    or "certificate of tax" in str(key_fields.get("title", "")).lower()
+                    or "assessment_year" in named
+                    or "gross_salary_total" in named
+                    or "tan_of_employer" in named
+                )
+            ):
+                gross = _parse_int(
+                    key_fields.get("gross_salary")
+                    or key_fields.get("gross_earnings")
+                    or named.get("gross_salary_total")
+                    or named.get("gross_salary")
+                    or named.get("gross_earnings")
+                )
+                if gross and form16_annual_gross is None:
+                    form16_annual_gross = gross
+                    form16_source = source_name
+                # PAN of employee on Form 16 for cross-doc check (case_059)
+                f16_pan = str(named.get("pan_of_employee") or "").strip().upper()
+                if f16_pan and form16_pan is None:
+                    form16_pan = f16_pan
+                    form16_pan_source = source_name
+
+            elif doc_type == "bank_statement":
+                if not bank_source:
+                    bank_source = source_name
+                # Bank name and IFSC from bank statement (for cross-doc bank check, case_051/054)
+                if bank_statement_bank_name is None:
+                    bank_statement_bank_name = str(key_fields.get("bank_name") or "").upper()
+                if bank_statement_ifsc is None:
+                    bank_statement_ifsc = str(key_fields.get("ifsc") or "").upper()
+                # Collect all bank credit amounts for gift-letter cross-check (case_060)
+                for txn in key_fields.get("transactions") or []:
+                    cr = _parse_int(txn.get("credit"))
+                    if cr and cr > 10_000:
+                        bank_statement_all_credits.append(cr)
+                # Also collect via named_fields salary-credit path (legacy fallback)
+                named_items = list(named.items())
+                for idx, (_key, v) in enumerate(named_items):
+                    if isinstance(v, str) and "salary credit" in v.lower():
+                        for j in range(idx + 1, min(idx + 3, len(named_items))):
+                            next_val = named_items[j][1]
+                            if isinstance(next_val, str):
+                                digits = "".join(ch for ch in next_val if ch.isdigit())
+                                if len(digits) >= 4:
+                                    amount = int(digits)
+                                    if 5_000 <= amount <= 2_000_000:
+                                        bank_salary_credits.append(amount)
+                                        break
+
+            elif doc_type == "gift_letter":
+                g = _parse_int(key_fields.get("gift_amount"))
+                if g and gift_amount is None:
+                    gift_amount = g
+                    gift_source = source_name
+
+        anomalies: List[Dict[str, Any]] = []
+        _TOLERANCE = 0.15  # 15 %
+
+        if not payslip_gross_monthly:
+            return {"anomalies": anomalies, "evidence": {}}
+
+        avg_monthly_gross = int(sum(payslip_gross_monthly) / len(payslip_gross_monthly))
+        annual_from_payslips = avg_monthly_gross * 12
+
+        # --- Check 1: Payslip annualised gross vs Form 16 annual gross ---
+        if form16_annual_gross:
+            delta_pct = abs(annual_from_payslips - form16_annual_gross) / max(form16_annual_gross, 1)
+            if delta_pct > _TOLERANCE:
+                anomalies.append({
+                    "type": "payslip_vs_form16_salary_mismatch",
+                    "severity": "high",
+                    "from_period": "payslips",
+                    "to_period": form16_source,
+                    "details": {
+                        "payslip_avg_monthly_gross": avg_monthly_gross,
+                        "payslip_annualised_gross": annual_from_payslips,
+                        "form16_annual_gross": form16_annual_gross,
+                        "discrepancy_pct": round(delta_pct * 100, 1),
+                        "payslip_sources": payslip_sources,
+                        "form16_source": form16_source,
+                        "explanation": (
+                            f"Payslips report ₹{annual_from_payslips:,}/yr but Form 16 shows "
+                            f"₹{form16_annual_gross:,}/yr — {round(delta_pct*100, 1):.1f}% gap."
+                        ),
+                    },
+                })
+
+        # --- Check 2: Payslip annualised gross vs employment letter CTC ---
+        if letter_annual_ctc:
+            delta_pct = abs(annual_from_payslips - letter_annual_ctc) / max(letter_annual_ctc, 1)
+            if delta_pct > _TOLERANCE:
+                anomalies.append({
+                    "type": "payslip_vs_offer_letter_salary_mismatch",
+                    "severity": "high",
+                    "from_period": "payslips",
+                    "to_period": letter_source,
+                    "details": {
+                        "payslip_avg_monthly_gross": avg_monthly_gross,
+                        "payslip_annualised_gross": annual_from_payslips,
+                        "letter_annual_ctc": letter_annual_ctc,
+                        "discrepancy_pct": round(delta_pct * 100, 1),
+                        "payslip_sources": payslip_sources,
+                        "letter_source": letter_source,
+                        "explanation": (
+                            f"Payslips report ₹{annual_from_payslips:,}/yr but offer letter "
+                            f"states CTC ₹{letter_annual_ctc:,}/yr — {round(delta_pct*100, 1):.1f}% gap."
+                        ),
+                    },
+                })
+
+        # --- Check 3: Employment letter CTC vs Form 16 annual gross ---
+        if letter_annual_ctc and form16_annual_gross:
+            delta_pct = abs(letter_annual_ctc - form16_annual_gross) / max(form16_annual_gross, 1)
+            if delta_pct > _TOLERANCE:
+                anomalies.append({
+                    "type": "offer_letter_vs_form16_salary_mismatch",
+                    "severity": "medium",
+                    "from_period": letter_source,
+                    "to_period": form16_source,
+                    "details": {
+                        "letter_annual_ctc": letter_annual_ctc,
+                        "form16_annual_gross": form16_annual_gross,
+                        "discrepancy_pct": round(delta_pct * 100, 1),
+                        "explanation": (
+                            f"Offer letter CTC ₹{letter_annual_ctc:,} vs Form 16 gross "
+                            f"₹{form16_annual_gross:,} — {round(delta_pct*100, 1):.1f}% gap."
+                        ),
+                    },
+                })
+
+        # --- Check 4: Bank statement salary credits vs payslip net pay ---
+        if bank_salary_credits and payslip_net_monthly:
+            avg_bank_credit = int(sum(bank_salary_credits) / len(bank_salary_credits))
+            avg_net_pay = int(sum(payslip_net_monthly) / len(payslip_net_monthly))
+            delta_pct = abs(avg_net_pay - avg_bank_credit) / max(avg_bank_credit, 1)
+            if delta_pct > _TOLERANCE:
+                anomalies.append({
+                    "type": "payslip_net_vs_bank_salary_credit_mismatch",
+                    "severity": "high",
+                    "from_period": "payslips",
+                    "to_period": bank_source,
+                    "details": {
+                        "payslip_avg_net_pay": avg_net_pay,
+                        "bank_avg_salary_credit": avg_bank_credit,
+                        "bank_credits_found": len(bank_salary_credits),
+                        "discrepancy_pct": round(delta_pct * 100, 1),
+                        "bank_source": bank_source,
+                        "explanation": (
+                            f"Payslips claim net pay ₹{avg_net_pay:,}/mo but bank statement "
+                            f"shows salary credits of ₹{avg_bank_credit:,}/mo — "
+                            f"{round(delta_pct*100, 1):.1f}% gap."
+                        ),
+                    },
+                })
+
+        # --- Check 5: PAN mismatch between payslip and Form 16 (case_059) ---
+        # Each payslip carries the employee's PAN; Form 16 also carries
+        # "PAN of Employee".  These must match — a mismatch means one document
+        # belongs to a different person and has been swapped into the bundle.
+        if payslip_pan and form16_pan:
+            pan_match = payslip_pan.upper() == form16_pan.upper()
+            if not pan_match:
+                anomalies.append({
+                    "type": "pan_mismatch_payslip_vs_form16",
+                    "severity": "high",
+                    "from_period": payslip_pan_source,
+                    "to_period": form16_pan_source,
+                    "details": {
+                        "payslip_pan": payslip_pan,
+                        "form16_pan": form16_pan,
+                        "explanation": (
+                            f"Payslip PAN ({payslip_pan}) does not match Form 16 PAN "
+                            f"({form16_pan}). The documents may belong to different people."
+                        ),
+                    },
+                })
+
+        # --- Check 6: Bank name on payslip vs bank statement (case_051) ---
+        # The payslip lists the salaried employee's bank (e.g. "HDFC Bank").
+        # The bank statement submitted should be from the same bank.
+        # A mismatch indicates either the wrong bank statement was submitted or
+        # the payslip bank field was tampered to match a real bank statement.
+        if payslip_bank_name and bank_statement_bank_name:
+            # Normalise: uppercase, remove "Bank" / "Ltd" suffixes for comparison
+            def _norm_bank(name: str) -> str:
+                return re.sub(r"\b(BANK|LTD|LIMITED|FINANCIAL|OF|INDIA)\b", "", name.upper()).strip()
+
+            norm_payslip = _norm_bank(payslip_bank_name)
+            norm_stmt    = _norm_bank(bank_statement_bank_name)
+            # Check if any word from payslip bank name appears in the statement bank name
+            words_payslip = [w for w in norm_payslip.split() if len(w) >= 3]
+            bank_names_consistent = any(w in norm_stmt for w in words_payslip)
+            if not bank_names_consistent:
+                anomalies.append({
+                    "type": "bank_name_payslip_vs_statement_mismatch",
+                    "severity": "high",
+                    "from_period": payslip_pan_source or "payslip",
+                    "to_period": bank_source,
+                    "details": {
+                        "payslip_bank": payslip_bank_name,
+                        "bank_statement_bank": bank_statement_bank_name,
+                        "bank_statement_ifsc": bank_statement_ifsc,
+                        "explanation": (
+                            f"Payslip lists bank as '{payslip_bank_name}' but the submitted "
+                            f"bank statement is from '{bank_statement_bank_name}' "
+                            f"(IFSC: {bank_statement_ifsc}). Wrong bank statement submitted."
+                        ),
+                    },
+                })
+
+        # --- Check 7: Gift letter amount appearing as bank credit (case_060) ---
+        # A gift letter declares a sum that was "gifted" for the home-loan down payment.
+        # If that exact amount appears as an incoming bank credit within the same bundle,
+        # it suggests the "gift" is actually a loan repayment or circular transfer used
+        # to inflate the applicant's apparent savings balance.
+        if gift_amount and bank_statement_all_credits:
+            _GIFT_TOL = 0.02  # 2% tolerance
+            # Check both credits and all transaction amounts (parser may mis-classify
+            # gift inflows as debit if the description lacks standard credit keywords)
+            _all_txn_amounts = list(bank_statement_all_credits)
+            for _rpt in reports:
+                _kf = _rpt.get("structured_summary", {}).get("key_fields", {})
+                if _rpt.get("structured_summary", {}).get("document", {}).get("type") == "bank_statement":
+                    for _t in _kf.get("transactions") or []:
+                        _dv = _parse_int(_t.get("debit"))
+                        if _dv and _dv > 10_000:
+                            _all_txn_amounts.append(_dv)
+            matching_credits = [
+                c for c in _all_txn_amounts
+                if abs(c - gift_amount) / max(gift_amount, 1) <= _GIFT_TOL
+            ]
+            if matching_credits:
+                anomalies.append({
+                    "type": "gift_amount_matches_bank_credit",
+                    "severity": "high",
+                    "from_period": gift_source,
+                    "to_period": bank_source,
+                    "details": {
+                        "gift_amount": gift_amount,
+                        "matching_bank_credits": matching_credits[:3],
+                        "explanation": (
+                            f"Gift letter declares ₹{gift_amount:,} but the same amount "
+                            f"appears as an incoming bank credit in the statement. "
+                            "The gift may be a disguised loan or circular transfer."
+                        ),
+                    },
+                })
+
+        return {
+            "anomalies": anomalies,
+            "evidence": {
+                "payslip_avg_monthly_gross": avg_monthly_gross,
+                "payslip_annualised_gross": annual_from_payslips,
+                "payslip_count": len(payslip_gross_monthly),
+                "payslip_sources": payslip_sources,
+                "form16_annual_gross": form16_annual_gross,
+                "form16_source": form16_source,
+                "letter_annual_ctc": letter_annual_ctc,
+                "letter_gross_monthly": letter_gross_monthly,
+                "letter_source": letter_source,
+                "bank_avg_salary_credit": int(sum(bank_salary_credits) / len(bank_salary_credits)) if bank_salary_credits else None,
+                "bank_salary_credit_count": len(bank_salary_credits),
+                "bank_source": bank_source,
+            },
+        }
 
     def list_reports(self) -> List[Dict[str, Any]]:
         results: List[Dict[str, Any]] = []

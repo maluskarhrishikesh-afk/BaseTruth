@@ -46,10 +46,21 @@ services:
     volumes:
       - ./artifacts:/app/artifacts
       - ./your_data:/app/your_data
+      # DEV: mount the local src directory so code changes are reflected without
+      # rebuilding the image. PYTHONPATH below ensures Python prefers this over
+      # the installed package in site-packages.
+      - ./src:/app/src
     environment:
       TESSERACT_CMD: /usr/bin/tesseract
       EXIFTOOL_PATH: /usr/bin/exiftool
       BASETRUTH_ARTIFACT_ROOT: /app/artifacts
+      # Prepend /app/src so the live source files take precedence over the
+      # installed wheel baked into the image.
+      PYTHONPATH: /app/src
+      DATABASE_URL: postgresql://basetruth:basetruth_secret@db:5432/basetruth
+    depends_on:
+      db:
+        condition: service_healthy
     entrypoint:
       - python
       - -m
@@ -80,12 +91,18 @@ services:
     volumes:
       - ./artifacts:/app/artifacts
       - ./your_data:/app/your_data
+      - ./src:/app/src
     environment:
       TESSERACT_CMD: /usr/bin/tesseract
       EXIFTOOL_PATH: /usr/bin/exiftool
       BASETRUTH_ARTIFACT_ROOT: /app/artifacts
+      PYTHONPATH: /app/src
+      DATABASE_URL: postgresql://basetruth:basetruth_secret@db:5432/basetruth
+    depends_on:
+      db:
+        condition: service_healthy
     entrypoint: ["python", "-m", "uvicorn", "basetruth.api:app",
-                 "--host", "0.0.0.0", "--port", "8000"]
+                 "--host", "0.0.0.0", "--port", "8000", "--reload"]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
       interval: 30s
@@ -93,3 +110,24 @@ services:
       retries: 3
       start_period: 10s
     restart: unless-stopped
+
+  # ── Database — PostgreSQL 16 ─────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: basetruth
+      POSTGRES_USER: basetruth
+      POSTGRES_PASSWORD: basetruth_secret
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U basetruth"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "${DB_PORT:-5432}:5432"
+
+volumes:
+  postgres_data:

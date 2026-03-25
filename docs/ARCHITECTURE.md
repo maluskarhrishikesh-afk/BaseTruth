@@ -79,6 +79,12 @@ Registered packs:
 | `healthcare`      | `HealthcareValidationPack`  | Hospitals and healthcare        |
 | `invoice`         | `InvoiceValidationPack`     | Commercial and GST invoices     |
 | `compliance`      | `ComplianceValidationPack`  | Compliance teams and audit      |
+| `mortgage`        | `MortgageValidationPack`    | Home-loan / mortgage bundles    |
+| `employment_letter` | `MortgageValidationPack`  | Employment verification letters |
+| `form16`          | `MortgageValidationPack`    | TDS certificates (Form 16)      |
+| `utility_bill`    | `MortgageValidationPack`    | Utility bills (residency proof) |
+| `gift_letter`     | `MortgageValidationPack`    | Gift declaration letters        |
+| `property_agreement` | `MortgageValidationPack` | Property sale agreements        |
 
 Each pack:
 - validates arithmetic consistency (gross vs net, balance identity, subtotal + tax = total)

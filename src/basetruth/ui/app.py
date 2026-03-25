@@ -10,6 +10,23 @@ import streamlit as st
 from basetruth.datasources import DatasourceConfig, DatasourceRegistry
 from basetruth.service import BaseTruthService
 
+# DB layer — imported lazily so the app still starts even without a DB.
+try:
+    from basetruth.db import db_available, init_db
+    from basetruth.store import (
+        db_stats,
+        get_entity_scans,
+        get_scan_pdf,
+        list_recent_scans,
+        search_entities,
+        update_entity,
+    )
+    _DB_IMPORTS_OK = True
+except Exception:  # noqa: BLE001
+    _DB_IMPORTS_OK = False
+    def db_available() -> bool: return False  # type: ignore[misc]
+    def init_db() -> bool: return False  # type: ignore[misc]
+
 
 # ---------------------------------------------------------------------------
 # Theme constants
@@ -418,7 +435,8 @@ _PAGES: Dict[str, str] = {
     "🔍  Scan": "scan",
     "📦  Bulk Scan": "bulk",
     "📁  Cases": "cases",
-    "📊  Reports": "reports",
+    "�  Records": "records",
+    "�📊  Reports": "reports",
     "🔗  Datasources": "datasources",
     "⚙️  Settings": "settings",
 }
@@ -454,6 +472,17 @@ def _sidebar() -> str:
             value=str(st.session_state.get("artifact_root", _default_artifact_root())),
             label_visibility="collapsed",
         )
+        st.divider()
+        # DB connection status pill
+        if _DB_IMPORTS_OK:
+            _db_up = db_available()
+            _dot = "🟢" if _db_up else "🔴"
+            _label = "PostgreSQL connected" if _db_up else "DB offline (file mode)"
+            st.markdown(
+                f'<div style="font-size:11px;color:#475569;text-align:center;">'
+                f'{_dot} {_label}</div>',
+                unsafe_allow_html=True,
+            )
 
     return str(st.session_state.get("page", "dashboard"))
 
@@ -1438,6 +1467,224 @@ def _page_settings() -> None:
 # ---------------------------------------------------------------------------
 # Index metrics (sidebar summary)
 # ---------------------------------------------------------------------------
+# Records page  (PostgreSQL entity search + scan history)
+# ---------------------------------------------------------------------------
+
+def _page_records() -> None:
+    st.header("Records")
+
+    if not _DB_IMPORTS_OK or not db_available():
+        st.warning(
+            "PostgreSQL is not available. Connect the database to use the Records feature.\n\n"
+            "Ensure `DATABASE_URL` is set and the `db` Docker service is healthy."
+        )
+        return
+
+    # ── Search bar ----------------------------------------------------------
+    st.markdown("Search for individuals by any known identifier.")
+    sc1, sc2, sc3 = st.columns([3, 1, 1])
+    search_query = sc1.text_input(
+        "Search",
+        placeholder="Name, PAN, Aadhaar, email, phone, BT-XXXXXX…",
+        label_visibility="collapsed",
+        key="rec_search_query",
+    )
+    field_opts = {
+        "All fields": "all",
+        "Name": "name",
+        "PAN": "pan",
+        "Aadhaar": "aadhar",
+        "Email": "email",
+        "Phone": "phone",
+    }
+    search_field_label = sc2.selectbox(
+        "Field", list(field_opts.keys()), label_visibility="collapsed", key="rec_search_field"
+    )
+    search_field = field_opts[search_field_label]
+    sc3.markdown("<div style='margin-top:2px'></div>", unsafe_allow_html=True)
+    do_search = sc3.button("Search", use_container_width=True, type="primary")
+
+    # Trigger on button click or when query changes
+    if do_search or search_query:
+        results = search_entities(search_query, search_field, limit=100)
+    else:
+        results = search_entities("", "all", limit=50)
+
+    # ── Summary stats -------------------------------------------------------
+    stats = db_stats()
+    s1, s2, s3 = st.columns(3)
+    s1.metric("Total Entities", stats.get("entities", 0))
+    s2.metric("Total Scans in DB", stats.get("scans", 0))
+    s3.metric("High-Risk Scans", stats.get("high_risk", 0))
+    st.divider()
+
+    if not results:
+        st.info("No records found. Scan some documents first — they will be stored automatically.")
+        return
+
+    # ── Entity table --------------------------------------------------------
+    st.subheader(f"{len(results)} record{'s' if len(results) != 1 else ''} found")
+    try:
+        import pandas as pd
+
+        tbl_rows = [
+            {
+                "Ref #": r["entity_ref"],
+                "First Name": r["first_name"],
+                "Last Name": r["last_name"],
+                "PAN": r["pan_number"],
+                "Aadhaar": r["aadhar_number"],
+                "Email": r["email"],
+                "Phone": r["phone"],
+                "Scans": r["scan_count"],
+                "Latest Risk": str(r["latest_risk"]).title() if r["latest_risk"] else "—",
+                "Score": r["latest_score"] if r["latest_score"] is not None else "—",
+            }
+            for r in results
+        ]
+        st.dataframe(pd.DataFrame(tbl_rows), hide_index=True, use_container_width=True)
+    except ImportError:
+        for r in results:
+            st.write(f"{r['entity_ref']} — {r['first_name']} {r['last_name']}")
+
+    st.divider()
+
+    # ── Entity detail panel -------------------------------------------------
+    ref_options = [r["entity_ref"] for r in results]
+    selected_ref = st.selectbox(
+        "Open entity record",
+        options=ref_options,
+        format_func=lambda ref: next(
+            (
+                f"{ref}  •  {r['first_name']} {r['last_name']}"
+                for r in results if r["entity_ref"] == ref
+            ),
+            ref,
+        ),
+        key="rec_selected_ref",
+    )
+
+    selected_entity = next((r for r in results if r["entity_ref"] == selected_ref), None)
+    if not selected_entity:
+        return
+
+    # ---- Identity card -----------------------------------------------------
+    st.markdown(
+        f"""
+        <div style="background:var(--bt-surface);border:1px solid var(--bt-surface-border);
+          border-radius:14px;padding:1.25rem 1.5rem;margin:0.5rem 0 1rem;
+          box-shadow:var(--bt-card-shadow);">
+          <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:12px;">
+            <span style="font-size:1.5rem;font-weight:800;letter-spacing:-0.02em;">
+              {selected_entity['first_name']} {selected_entity['last_name']}
+            </span>
+            <span style="font-size:12px;font-weight:600;background:rgba(99,102,241,0.12);
+              color:#6366f1;border:1px solid rgba(99,102,241,0.25);
+              padding:2px 10px;border-radius:6px;">{selected_ref}</span>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px 20px;">
+            <div><span style="font-size:11px;color:var(--bt-text-muted);text-transform:uppercase;letter-spacing:0.06em;">PAN</span><br>
+              <strong>{selected_entity['pan_number'] or '—'}</strong></div>
+            <div><span style="font-size:11px;color:var(--bt-text-muted);text-transform:uppercase;letter-spacing:0.06em;">Aadhaar</span><br>
+              <strong>{selected_entity['aadhar_number'] or '—'}</strong></div>
+            <div><span style="font-size:11px;color:var(--bt-text-muted);text-transform:uppercase;letter-spacing:0.06em;">Email</span><br>
+              <strong>{selected_entity['email'] or '—'}</strong></div>
+            <div><span style="font-size:11px;color:var(--bt-text-muted);text-transform:uppercase;letter-spacing:0.06em;">Phone</span><br>
+              <strong>{selected_entity['phone'] or '—'}</strong></div>
+            <div><span style="font-size:11px;color:var(--bt-text-muted);text-transform:uppercase;letter-spacing:0.06em;">Documents scanned</span><br>
+              <strong>{selected_entity['scan_count']}</strong></div>
+            <div><span style="font-size:11px;color:var(--bt-text-muted);text-transform:uppercase;letter-spacing:0.06em;">Member since</span><br>
+              <strong>{str(selected_entity['created_at'])[:10]}</strong></div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # ---- Edit identity fields inline --------------------------------------
+    with st.expander("✏️  Edit identity details", expanded=False):
+        with st.form(f"edit_entity_{selected_ref}"):
+            e1, e2 = st.columns(2)
+            f_first = e1.text_input("First name", value=selected_entity["first_name"])
+            f_last = e2.text_input("Last name", value=selected_entity["last_name"])
+            e3, e4 = st.columns(2)
+            f_email = e3.text_input("Email", value=selected_entity["email"])
+            f_phone = e4.text_input("Phone", value=selected_entity["phone"])
+            e5, e6 = st.columns(2)
+            f_pan = e5.text_input("PAN number", value=selected_entity["pan_number"])
+            f_aadhar = e6.text_input("Aadhaar number", value=selected_entity["aadhar_number"])
+            if st.form_submit_button("Save changes", type="primary"):
+                result = update_entity(
+                    selected_ref,
+                    {
+                        "first_name": f_first,
+                        "last_name": f_last,
+                        "email": f_email,
+                        "phone": f_phone,
+                        "pan_number": f_pan,
+                        "aadhar_number": f_aadhar,
+                    },
+                )
+                if result:
+                    st.success("Record updated.")
+                    st.rerun()
+                else:
+                    st.error("Update failed — check DB connection.")
+
+    # ---- Scan history for this entity ------------------------------------
+    scans = get_entity_scans(selected_ref)
+    st.subheader(f"Document history  ({len(scans)} scan{'s' if len(scans) != 1 else ''})")
+
+    if not scans:
+        st.info("No documents scanned for this entity yet.")
+        return
+
+    for sc in scans:
+        risk = str(sc.get("risk_level", "low")).lower()
+        score = sc.get("truth_score", "")
+        doc_type = str(sc.get("document_type", "generic")).replace("_", " ").title()
+        fname = sc.get("source_name", "unknown")
+        ts = str(sc.get("generated_at", ""))[:19].replace("T", " ")
+        risk_icon = {"high": "🚨", "medium": "⚠️", "review": "🔷"}.get(risk, "✅")
+        score_display = f"Score {score}/100" if isinstance(score, int) else ""
+
+        with st.expander(
+            f"{risk_icon} {fname}  —  {doc_type}  |  {score_display}  |  {ts}"
+        ):
+            _render_report_summary(sc["report_json"])
+
+            dl1, dl2 = st.columns(2)
+            dl1.download_button(
+                "⬇ Download JSON report",
+                data=json.dumps(sc["report_json"], indent=2, ensure_ascii=False),
+                file_name=f"{Path(fname).stem}_verification.json",
+                mime="application/json",
+                key=f"rec_json_{sc['id']}",
+                use_container_width=True,
+            )
+            if sc.get("has_pdf"):
+                pdf_data = get_scan_pdf(sc["id"])
+                if pdf_data:
+                    dl2.download_button(
+                        "⬇ Download PDF report",
+                        data=pdf_data,
+                        file_name=f"{Path(fname).stem}_report.pdf",
+                        mime="application/pdf",
+                        key=f"rec_pdf_{sc['id']}",
+                        use_container_width=True,
+                    )
+            else:
+                dl2.button(
+                    "PDF not available",
+                    disabled=True,
+                    key=f"rec_pdf_na_{sc['id']}",
+                    use_container_width=True,
+                )
+
+
+# ---------------------------------------------------------------------------
+# Index metrics strip
+# ---------------------------------------------------------------------------
 
 def _render_index_metrics() -> None:
     service = _get_service()
@@ -1491,6 +1738,8 @@ def main() -> None:
         _page_bulk(service)
     elif page == "cases":
         _page_cases(service)
+    elif page == "records":
+        _page_records()
     elif page == "reports":
         _page_reports(service)
     elif page == "datasources":
