@@ -1,0 +1,43 @@
+Can you improve the look and feel of the page?
+
+The left panel does not look polished, it is way too the right than in the middle->
+When we click on various links like Dashboard, Scan, Bulk Scan etc they move up and down.
+
+---------------------------------------------------------------------------
+
+In the below section the button "Generate Case Report PDF" does not seem to be properly aligned ->
+
+📄 Case Report PDF
+Generate a single plain-English PDF report covering all documents, income reconciliation, and an overall verdict — suitable for a loan officer review.
+
+Report title
+
+Mortgage Application Review
+
+-----------------------------------------------------------------
+
+The top section is not properly visible, it gets cut a little ->
+Cases
+
+20
+
+Scanned
+
+42
+
+High Risk
+
+3
+
+Comparisons
+
+1
+
+---------------------------------------------------------------------------------
+
+At the right hand top side where we have options like System | Light | Dark, it does not seem to be working as expected.
+When we click dark the text and various labels become invisible (color combination issue)
+
+------------------------------------------------------------------------------------
+
+After doing this push the code to git and deploy and run the code so that I can go and test it

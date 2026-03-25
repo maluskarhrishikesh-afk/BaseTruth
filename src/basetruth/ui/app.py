@@ -16,10 +16,10 @@ from basetruth.service import BaseTruthService
 # ---------------------------------------------------------------------------
 
 _RISK_COLORS = {
-    "high": ("#fef2f2", "#dc2626", "#fecaca"),
-    "medium": ("#fffbeb", "#b45309", "#fde68a"),
-    "low": ("#f0fdf4", "#15803d", "#bbf7d0"),
-    "review": ("#eff6ff", "#1d4ed8", "#bfdbfe"),
+    "high":   ("rgba(220,38,38,0.10)",  "#dc2626", "rgba(220,38,38,0.30)"),
+    "medium": ("rgba(217,119,6,0.10)",  "#d97706", "rgba(217,119,6,0.30)"),
+    "low":    ("rgba(21,128,61,0.10)",  "#16a34a", "rgba(21,128,61,0.30)"),
+    "review": ("rgba(29,78,216,0.10)",  "#2563eb", "rgba(29,78,216,0.30)"),
 }
 
 _STATUS_COLORS = {
@@ -40,56 +40,299 @@ _DISPOSITION_ICONS = {
 
 _CSS = """
 <style>
-/* ---- Layout ---- */
-.block-container { padding-top: 1.25rem !important; max-width: 1400px !important; }
-[data-testid="stSidebar"] > div:first-child { padding-top: 0.5rem; }
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
 
-/* ---- Nav buttons ---- */
-[data-testid="stSidebar"] .stButton button {
+/* ============================================================
+   BASETRUTH UI — Modern Elegant Theme v2
+   ============================================================ */
+
+/* ---- Typography ------------------------------------------- */
+html, body, [class*="css"] {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+}
+
+/* ---- CSS Custom Properties (light defaults) --------------- */
+:root {
+    --bt-surface: #f8fafc;
+    --bt-surface-raised: #ffffff;
+    --bt-surface-border: #e2e8f0;
+    --bt-text-muted: #94a3b8;
+    --bt-note-bg: #f1f5f9;
+    --bt-note-accent: #6366f1;
+    --bt-card-shadow: 0 1px 4px rgba(15,23,42,0.08), 0 1px 2px rgba(15,23,42,0.04);
+    --bt-divider: #e2e8f0;
+}
+
+/* ---- Dark mode via Streamlit theme attribute -------------- */
+[data-testid="stApp"][data-theme="dark"] {
+    --bt-surface: #1e293b;
+    --bt-surface-raised: #0f172a;
+    --bt-surface-border: #334155;
+    --bt-text-muted: #64748b;
+    --bt-note-bg: #1e293b;
+    --bt-card-shadow: 0 1px 4px rgba(0,0,0,0.35), 0 1px 2px rgba(0,0,0,0.25);
+    --bt-divider: #334155;
+}
+
+/* ---- Dark mode via OS preference -------------------------- */
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bt-surface: #1e293b;
+        --bt-surface-raised: #0f172a;
+        --bt-surface-border: #334155;
+        --bt-text-muted: #64748b;
+        --bt-note-bg: #1e293b;
+        --bt-card-shadow: 0 1px 4px rgba(0,0,0,0.35), 0 1px 2px rgba(0,0,0,0.25);
+        --bt-divider: #334155;
+    }
+}
+
+/* ---- Layout ----------------------------------------------- */
+.block-container {
+    padding-top: 3rem !important;
+    padding-bottom: 3rem !important;
+    max-width: 1440px !important;
+}
+
+/* ---- Sidebar root ----------------------------------------- */
+/* NOTE: No min/max-width here — those break the native resize handle */
+[data-testid="stSidebar"] {
+    background: #0f172a !important;
+    border-right: 1px solid rgba(255,255,255,0.04) !important;
+    box-shadow: 2px 0 16px rgba(0,0,0,0.18) !important;
+}
+[data-testid="stSidebar"] > div:first-child {
+    padding-top: 0 !important;
+    padding-left: 0.875rem !important;
+    padding-right: 0.875rem !important;
+}
+
+/* ---- Sidebar brand ---------------------------------------- */
+.bt-brand {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 1.5rem 0.5rem 1rem;
+    gap: 3px;
+}
+.bt-brand-icon {
+    width: 48px;
+    height: 48px;
+    background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+    border-radius: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+    margin-bottom: 10px;
+    box-shadow: 0 4px 16px rgba(99,102,241,0.45);
+}
+.bt-brand-name {
+    font-size: 18px;
+    font-weight: 800;
+    color: #ffffff;
+    letter-spacing: -0.03em;
+    line-height: 1.2;
+}
+.bt-brand-sub {
+    font-size: 9.5px;
+    color: #475569;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    margin-top: 1px;
+}
+
+/* ---- Sidebar nav buttons ---------------------------------- */
+[data-testid="stSidebar"] .stButton > button {
     text-align: left !important;
-    border-radius: 6px !important;
+    border-radius: 9px !important;
     font-weight: 500 !important;
-    padding: 0.45rem 0.75rem !important;
+    font-size: 0.875rem !important;
+    padding: 0.6rem 1rem !important;
     margin-bottom: 2px !important;
     border: none !important;
+    width: 100% !important;
     background: transparent !important;
-    color: #334155 !important;
-    transition: background 0.15s;
+    color: #64748b !important;
+    box-shadow: none !important;
+    transition: background 0.15s ease, color 0.15s ease !important;
 }
-[data-testid="stSidebar"] .stButton button:hover {
-    background: #e2e8f0 !important;
-}
-[data-testid="stSidebar"] .nav-active button {
-    background: #1e3a5f !important;
-    color: white !important;
-    font-weight: 600 !important;
+[data-testid="stSidebar"] .stButton > button:hover {
+    background: rgba(255,255,255,0.07) !important;
+    color: #e2e8f0 !important;
 }
 
-/* ---- Metric cards ---- */
+/* Active nav item — primary button type */
+[data-testid="stSidebar"] [data-testid="baseButton-primary"],
+[data-testid="stSidebar"] .stButton > button[kind="primary"] {
+    background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%) !important;
+    color: #ffffff !important;
+    font-weight: 600 !important;
+    box-shadow: 0 2px 10px rgba(99,102,241,0.40) !important;
+}
+[data-testid="stSidebar"] [data-testid="baseButton-primary"]:hover,
+[data-testid="stSidebar"] .stButton > button[kind="primary"]:hover {
+    background: linear-gradient(135deg, #4338ca 0%, #4f46e5 100%) !important;
+    box-shadow: 0 4px 14px rgba(99,102,241,0.50) !important;
+}
+
+/* Sidebar secondary/default button — keep clean, no border */
+[data-testid="stSidebar"] [data-testid="baseButton-secondary"],
+[data-testid="stSidebar"] .stButton > button[kind="secondary"] {
+    border: none !important;
+    background: transparent !important;
+    color: #64748b !important;
+}
+
+/* Sidebar misc text */
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"],
+[data-testid="stSidebar"] .stCaption {
+    color: #475569 !important;
+    font-size: 11px !important;
+}
+[data-testid="stSidebar"] label {
+    color: #475569 !important;
+    font-size: 12px !important;
+}
+[data-testid="stSidebar"] input {
+    background: rgba(255,255,255,0.05) !important;
+    border-color: #1e293b !important;
+    color: #94a3b8 !important;
+    border-radius: 8px !important;
+    font-size: 12px !important;
+}
+[data-testid="stSidebar"] hr {
+    border-color: #1e293b !important;
+    opacity: 1 !important;
+    margin: 0.75rem 0 !important;
+}
+
+/* ---- Metric cards ----------------------------------------- */
 [data-testid="stMetric"] {
-    background: #f8fafc !important;
-    border-radius: 10px !important;
-    border-left: 4px solid #3b82f6 !important;
-    padding: 1rem !important;
+    background: var(--bt-surface-raised) !important;
+    border-radius: 14px !important;
+    border: 1px solid var(--bt-surface-border) !important;
+    border-top: 3px solid #6366f1 !important;
+    padding: 1.1rem 1.4rem !important;
+    box-shadow: var(--bt-card-shadow) !important;
 }
-[data-testid="stMetricDelta"] { font-size: 12px; }
-
-/* ---- Divider ---- */
-hr { margin: 0.75rem 0 !important; border-color: #e2e8f0 !important; }
-
-/* ---- Form inputs ---- */
-.stTextInput input, .stTextArea textarea {
-    border-radius: 6px !important;
-    border-color: #cbd5e1 !important;
-}
-
-/* ---- Expander header ---- */
-.streamlit-expanderHeader { font-weight: 600 !important; }
-
-/* ---- Full-width buttons ---- */
-.stFormSubmitButton button {
-    border-radius: 6px !important;
+[data-testid="stMetricLabel"] {
+    font-size: 11px !important;
     font-weight: 600 !important;
+    letter-spacing: 0.07em !important;
+    text-transform: uppercase !important;
+    opacity: 0.55 !important;
+}
+[data-testid="stMetricValue"] {
+    font-size: 2.2rem !important;
+    font-weight: 800 !important;
+    letter-spacing: -0.03em !important;
+    line-height: 1.15 !important;
+}
+
+/* ---- Divider ---------------------------------------------- */
+hr {
+    margin: 1.25rem 0 !important;
+    border-color: var(--bt-divider) !important;
+    opacity: 1 !important;
+}
+
+/* ---- Form inputs ------------------------------------------ */
+.stTextInput > div > input,
+.stTextArea > div > textarea {
+    border-radius: 10px !important;
+    font-size: 0.9rem !important;
+}
+.stTextInput > div > input:focus,
+.stTextArea > div > textarea:focus {
+    border-color: #6366f1 !important;
+    box-shadow: 0 0 0 3px rgba(99,102,241,0.14) !important;
+}
+
+/* ---- Main action buttons ---------------------------------- */
+.stButton > button,
+.stFormSubmitButton > button {
+    border-radius: 10px !important;
+    font-weight: 600 !important;
+    font-size: 0.875rem !important;
+    transition: all 0.15s ease !important;
+}
+.stButton > button[kind="primary"],
+[data-testid="baseButton-primary"],
+.stFormSubmitButton > button[kind="primaryFormSubmit"] {
+    background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%) !important;
+    border: none !important;
+    color: #ffffff !important;
+    box-shadow: 0 2px 8px rgba(99,102,241,0.30) !important;
+}
+.stButton > button[kind="primary"]:hover,
+[data-testid="baseButton-primary"]:hover,
+.stFormSubmitButton > button[kind="primaryFormSubmit"]:hover {
+    background: linear-gradient(135deg, #4338ca 0%, #4f46e5 100%) !important;
+    box-shadow: 0 4px 14px rgba(99,102,241,0.40) !important;
+    transform: translateY(-1px) !important;
+}
+
+/* ---- Expander -------------------------------------------- */
+[data-testid="stExpander"] summary,
+.streamlit-expanderHeader {
+    border-radius: 10px !important;
+    font-weight: 600 !important;
+    font-size: 0.9rem !important;
+}
+
+/* ---- Download button ------------------------------------- */
+[data-testid="stDownloadButton"] > button {
+    border-radius: 10px !important;
+    font-weight: 600 !important;
+}
+
+/* ---- Dataframe ------------------------------------------- */
+[data-testid="stDataFrame"] {
+    border-radius: 12px !important;
+    overflow: hidden !important;
+    border: 1px solid var(--bt-surface-border) !important;
+    box-shadow: var(--bt-card-shadow) !important;
+}
+
+/* ---- Score card ------------------------------------------- */
+.bt-score-card {
+    background: var(--bt-surface-raised);
+    border: 1px solid var(--bt-surface-border);
+    border-radius: 16px;
+    padding: 1.5rem 1.25rem;
+    text-align: center;
+    box-shadow: var(--bt-card-shadow);
+}
+
+/* ---- PDF section card ------------------------------------ */
+.bt-pdf-card {
+    background: var(--bt-surface);
+    border: 1px solid var(--bt-surface-border);
+    border-radius: 14px;
+    padding: 1.5rem;
+    margin-top: 0.75rem;
+    box-shadow: var(--bt-card-shadow);
+}
+.bt-pdf-card h4 {
+    margin: 0 0 0.25rem;
+    font-size: 1rem;
+    font-weight: 700;
+}
+.bt-pdf-card p {
+    margin: 0 0 1rem;
+    font-size: 0.85rem;
+    color: var(--bt-text-muted);
+}
+
+/* ---- Headers --------------------------------------------- */
+h1 { letter-spacing: -0.03em !important; font-weight: 800 !important; }
+h2 { letter-spacing: -0.02em !important; font-weight: 700 !important; }
+h3 { letter-spacing: -0.01em !important; font-weight: 600 !important; }
+
+/* ---- Top metrics strip top fix --------------------------- */
+[data-testid="stHorizontalBlock"]:first-of-type [data-testid="stMetric"] {
+    margin-top: 0 !important;
 }
 </style>
 """
@@ -135,11 +378,11 @@ def _score_card(score: Any, risk_level: str) -> str:
     _, fg, _ = _RISK_COLORS.get(str(risk_level).lower(), _RISK_COLORS["low"])
     bar_pct = max(0, min(100, n))
     return f"""
-<div style="text-align:center;padding:16px 8px;background:#f8fafc;border-radius:12px;border:1px solid #e2e8f0;">
-  <div style="font-size:52px;font-weight:800;color:{fg};line-height:1.1;">{n}</div>
-  <div style="font-size:12px;color:#94a3b8;letter-spacing:0.06em;text-transform:uppercase;">TRUTH SCORE</div>
-  <div style="background:#e2e8f0;border-radius:999px;height:8px;margin:10px 0 4px;">
-    <div style="background:{fg};width:{bar_pct}%;height:100%;border-radius:999px;"></div>
+<div class="bt-score-card">
+  <div style="font-size:52px;font-weight:800;color:{fg};line-height:1.05;letter-spacing:-0.02em;">{n}</div>
+  <div style="font-size:11px;color:var(--bt-text-muted);letter-spacing:0.1em;text-transform:uppercase;margin-top:4px;">TRUTH SCORE</div>
+  <div style="background:var(--bt-surface-border);border-radius:999px;height:6px;margin:12px 0 8px;">
+    <div style="background:{fg};width:{bar_pct}%;height:100%;border-radius:999px;transition:width 0.5s ease;"></div>
   </div>
   <div style="margin-top:6px;">{_badge(risk_level)}</div>
 </div>"""
@@ -185,9 +428,10 @@ def _sidebar() -> str:
     with st.sidebar:
         st.markdown(
             """
-            <div style="padding:12px 0 8px 4px;">
-              <span style="font-size:22px;font-weight:800;color:#1e3a5f;letter-spacing:0.01em;">BaseTruth</span><br>
-              <span style="font-size:11px;color:#94a3b8;letter-spacing:0.06em;text-transform:uppercase;">Document Integrity</span>
+            <div class="bt-brand">
+              <div class="bt-brand-icon">🛡</div>
+              <div class="bt-brand-name">BaseTruth</div>
+              <div class="bt-brand-sub">Document Integrity</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -197,14 +441,10 @@ def _sidebar() -> str:
         current_page = st.session_state.get("page", "dashboard")
         for label, key in _PAGES.items():
             is_active = current_page == key
-            container = st.container()
-            if is_active:
-                container.markdown('<div class="nav-active">', unsafe_allow_html=True)
-            if container.button(label, key=f"nav_{key}", use_container_width=True):
+            btn_type = "primary" if is_active else "secondary"
+            if st.button(label, key=f"nav_{key}", use_container_width=True, type=btn_type):
                 st.session_state["page"] = key
                 st.rerun()
-            if is_active:
-                container.markdown("</div>", unsafe_allow_html=True)
 
         st.divider()
         st.caption("Artifact root")
@@ -475,12 +715,29 @@ def _page_scan(service: BaseTruthService) -> None:
             _render_report_summary(report)
             if artifacts.get("verification_json_path"):
                 st.caption(f"Report saved to: {artifacts['verification_json_path']}")
-            st.download_button(
-                "Download JSON report",
-                data=json.dumps(report, indent=2, ensure_ascii=False),
-                file_name=f"{report.get('source', {}).get('name', 'report')}_verification.json",
-                mime="application/json",
-            )
+
+            stem = Path(report.get("source", {}).get("name", "report")).stem
+            col_dl1, col_dl2 = st.columns(2)
+            with col_dl1:
+                st.download_button(
+                    "⬇ Download JSON report",
+                    data=json.dumps(report, indent=2, ensure_ascii=False),
+                    file_name=f"{stem}_verification.json",
+                    mime="application/json",
+                    use_container_width=True,
+                )
+            with col_dl2:
+                pdf_path_str = artifacts.get("pdf_report_path", "")
+                if pdf_path_str and Path(pdf_path_str).exists():
+                    st.download_button(
+                        "⬇ Download PDF report",
+                        data=Path(pdf_path_str).read_bytes(),
+                        file_name=f"{stem}_report.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                    )
+                else:
+                    st.button("PDF report (generating...)", disabled=True, use_container_width=True)
 
 
 # ---------------------------------------------------------------------------
@@ -509,54 +766,280 @@ def _page_bulk(service: BaseTruthService) -> None:
                 paths.extend(service.collect_supported_files(folder_input.strip()))
             if not paths:
                 st.warning("Provide uploaded files or a folder path.")
-                return
+                st.stop()
 
-            reports: List[Dict[str, Any]] = []
-            errors: List[str] = []
+            _new_reports: List[Dict[str, Any]] = []
+            _new_errors: List[str] = []
             prog = st.progress(0)
             for i, p in enumerate(paths):
                 try:
-                    reports.append(service.scan_document(p))
+                    _new_reports.append(service.scan_document(p))
                 except Exception as exc:  # noqa: BLE001
-                    errors.append(f"{p.name}: {exc}")
+                    _new_errors.append(f"{p.name}: {exc}")
                 prog.progress((i + 1) / len(paths))
 
-        st.success(f"Scanned {len(reports)} document(s).")
-        if errors:
-            with st.expander(f"{len(errors)} document(s) had errors -- click to expand"):
-                for err in errors:
-                    st.error(err)
+        # Persist results so they survive reruns triggered by any button inside this page
+        st.session_state["bt_bulk_reports"] = _new_reports
+        st.session_state["bt_bulk_errors"] = _new_errors
+        st.session_state["bt_bulk_compare"] = compare_payslips
+        # Clear any previously generated bundle PDF on fresh scan
+        st.session_state.pop("bt_bundle_pdf_bytes", None)
 
+    # ── Results section ────────────────────────────────────────────────────
+    # All display + action buttons live OUTSIDE the scan-button block so they
+    # persist across every Streamlit rerun triggered by any widget click.
+    if "bt_bulk_reports" not in st.session_state:
+        return
+
+    reports: List[Dict[str, Any]] = st.session_state["bt_bulk_reports"]
+    errors: List[str] = st.session_state["bt_bulk_errors"]
+    compare_payslips = st.session_state.get("bt_bulk_compare", compare_payslips)
+
+    st.success(f"Scanned {len(reports)} document(s).")
+    if errors:
+        with st.expander(f"{len(errors)} document(s) had errors -- click to expand"):
+            for err in errors:
+                st.error(err)
+
+    try:
+        import pandas as pd
+
+        summary_rows = []
+        for r in reports:
+            ss = r.get("structured_summary", {})
+            doc = ss.get("document", {})
+            kf = ss.get("key_fields", {})
+            # Principal: employee name (payslip), account holder (bank), employer (letter)
+            principal = (
+                kf.get("employee_name")
+                or kf.get("account_holder")
+                or kf.get("employer_name")
+                or kf.get("company_name")
+                or ""
+            )
+            # Key amount: gross earnings (payslip), annual CTC (letter), or opening balance (bank)
+            key_amount = (
+                kf.get("gross_earnings")
+                or kf.get("gross_monthly_salary")
+                or kf.get("annual_ctc")
+                or kf.get("opening_balance")
+                or ""
+            )
+            if key_amount:
+                try:
+                    key_amount = f"Rs {int(str(key_amount).replace(',', '')):,}"
+                except (ValueError, TypeError):
+                    key_amount = str(key_amount)
+            summary_rows.append({
+                "File": r.get("source", {}).get("name", ""),
+                "Type": doc.get("type", ""),
+                "Principal": str(principal)[:25] if principal else "—",
+                "Key Amount": str(key_amount) if key_amount else "—",
+                "Score": _display_truth_score(r.get("tamper_assessment", {}).get("truth_score")),
+                "Risk": str(r.get("tamper_assessment", {}).get("risk_level", "")).title(),
+                "Confidence": f"{int(doc.get('type_confidence', 0) * 100)}%",
+                "Parse Method": ss.get("parse_method", "?"),
+                "Fallback": "⚠️ Yes" if ss.get("parse_fallback") else "No",
+            })
+        st.dataframe(pd.DataFrame(summary_rows), hide_index=True, use_container_width=True)
+    except ImportError:
+        st.json([r.get("source", {}).get("name", "") for r in reports])
+
+    # Per-document detailed results with download buttons
+    st.subheader("Document Results")
+    for r in reports:
+        fname = r.get("source", {}).get("name", "unknown")
+        stem = Path(fname).stem
+        risk = str(r.get("tamper_assessment", {}).get("risk_level", "low")).lower()
+        score = r.get("tamper_assessment", {}).get("truth_score", 100)
+        risk_icon = {"high": "🚨", "critical": "🚨", "medium": "⚠️", "review": "🔷"}.get(risk, "✅")
+        with st.expander(f"{risk_icon} {fname}  —  Score: {score}/100  |  Risk: {risk.title()}"):
+            _render_report_summary(r)
+            r_artifacts = r.get("artifacts", {})
+            dl1, dl2 = st.columns(2)
+            with dl1:
+                st.download_button(
+                    "⬇ Download JSON report",
+                    data=json.dumps(r, indent=2, ensure_ascii=False),
+                    file_name=f"{stem}_verification.json",
+                    mime="application/json",
+                    key=f"json_{stem}",
+                    use_container_width=True,
+                )
+            with dl2:
+                pdf_path_str = r_artifacts.get("pdf_report_path", "")
+                if pdf_path_str and Path(pdf_path_str).exists():
+                    st.download_button(
+                        "⬇ Download PDF report",
+                        data=Path(pdf_path_str).read_bytes(),
+                        file_name=f"{stem}_report.pdf",
+                        mime="application/pdf",
+                        key=f"pdf_{stem}",
+                        use_container_width=True,
+                    )
+                else:
+                    st.button("PDF (not available)", disabled=True, key=f"pdf_na_{stem}", use_container_width=True)
+
+    # Classifier diagnostics — one expander per document
+    with st.expander("Classifier diagnostics (click to inspect per-file classification)"):
+        for r in reports:
+            ss = r.get("structured_summary", {})
+            doc = ss.get("document", {})
+            parser = ss.get("parser", {})
+            fname = r.get("source", {}).get("name", "?")
+            doc_type = doc.get("type", "generic")
+            parse_method = ss.get("parse_method", "?")
+            fallback = ss.get("parse_fallback", False)
+            fallback_reason = ss.get("parse_fallback_reason", "")
+            scores = doc.get("classification_scores", {})
+            markers = doc.get("matched_markers", {})
+            text_len = parser.get("text_length", 0)
+            preview = doc.get("text_preview", "")
+
+            st.markdown(f"**{fname}** → `{doc_type}` ({int(doc.get('type_confidence', 0)*100)}% confidence)")
+            col1, col2 = st.columns(2)
+            col1.metric("Parse method", parse_method)
+            col1.metric("Text extracted (chars)", text_len)
+            col2.metric("Classification winner", doc_type)
+            if scores:
+                col2.write("All type scores:")
+                col2.json(scores)
+            if markers.get(doc_type):
+                st.caption("Matched markers: " + ", ".join(markers[doc_type]))
+            if fallback:
+                st.warning(f"Parse fallback used: {fallback_reason}")
+            if text_len == 0:
+                st.error("No text was extracted from this document — classification will be generic. Check that LiteParse (Node.js) is installed or Tesseract OCR is available.")
+            elif text_len < 100:
+                st.warning(f"Very little text extracted ({text_len} chars). Classification may be unreliable.")
+            if preview:
+                st.caption("Text preview: " + preview[:200])
+            st.divider()
+
+    if compare_payslips:
+        comparison = service.compare_payslip_summaries_from_reports(reports)
+        if comparison.get("anomalies"):
+            st.subheader(f"Payslip anomalies — {len(comparison['anomalies'])} detected")
+            for anomaly in comparison["anomalies"]:
+                sev = str(anomaly.get("severity", "low"))
+                icon = "🚨" if sev == "high" else "⚠️" if sev == "medium" else "🔷"
+                with st.expander(
+                    f"{icon} {anomaly.get('type', '').replace('_', ' ').title()}  "
+                    f"— {anomaly.get('from_period', '')} → {anomaly.get('to_period', '')}"
+                ):
+                    st.json(anomaly.get("details", {}))
+        else:
+            st.success("No payslip anomalies detected across this document set.")
+
+    # --- Cross-document income reconciliation ---
+    st.divider()
+    reconciliation = service.reconcile_income_documents(reports)
+    income_anomalies = reconciliation.get("anomalies", [])
+    evidence = reconciliation.get("evidence", {})
+
+    st.subheader("Cross-Document Income Reconciliation")
+
+    # Evidence summary table
+    evidence_rows = []
+    if evidence.get("payslip_avg_monthly_gross"):
+        evidence_rows.append({
+            "Source": f"Payslips ({evidence.get('payslip_count', 0)} docs)",
+            "Monthly Gross": f"₹{evidence['payslip_avg_monthly_gross']:,}",
+            "Annual (×12)": f"₹{evidence.get('payslip_annualised_gross', 0):,}",
+        })
+    if evidence.get("letter_annual_ctc"):
+        monthly = evidence.get("letter_gross_monthly")
+        evidence_rows.append({
+            "Source": evidence.get("letter_source", "Offer letter"),
+            "Monthly Gross": f"₹{monthly:,}" if monthly else "—",
+            "Annual (×12)": f"₹{evidence['letter_annual_ctc']:,}",
+        })
+    if evidence.get("form16_annual_gross"):
+        evidence_rows.append({
+            "Source": evidence.get("form16_source", "Form 16"),
+            "Monthly Gross": "—",
+            "Annual (×12)": f"₹{evidence['form16_annual_gross']:,}",
+        })
+    if evidence.get("bank_avg_salary_credit"):
+        evidence_rows.append({
+            "Source": f"Bank statement ({evidence.get('bank_salary_credit_count', 0)} credits)",
+            "Monthly Gross": f"₹{evidence['bank_avg_salary_credit']:,} (net credit)",
+            "Annual (×12)": f"₹{evidence['bank_avg_salary_credit'] * 12:,}",
+        })
+
+    if evidence_rows:
         try:
             import pandas as pd
-
-            summary_rows = [
-                {
-                    "Source": r.get("source", {}).get("name", ""),
-                    "Type": r.get("structured_summary", {}).get("document", {}).get("type", ""),
-                    "Score": _display_truth_score(r.get("tamper_assessment", {}).get("truth_score")),
-                    "Risk": str(r.get("tamper_assessment", {}).get("risk_level", "")).title(),
-                }
-                for r in reports
-            ]
-            st.dataframe(pd.DataFrame(summary_rows), hide_index=True, width="stretch")
+            st.dataframe(pd.DataFrame(evidence_rows), hide_index=True, use_container_width=True)
         except ImportError:
-            st.json([r.get("source", {}).get("name", "") for r in reports])
+            for row in evidence_rows:
+                st.write(row)
 
-        if compare_payslips:
-            comparison = service.compare_payslip_summaries_from_reports(reports)
-            if comparison.get("anomalies"):
-                st.subheader(f"Payslip anomalies — {len(comparison['anomalies'])} detected")
-                for anomaly in comparison["anomalies"]:
-                    sev = str(anomaly.get("severity", "low"))
-                    icon = "🚨" if sev == "high" else "⚠️" if sev == "medium" else "🔷"
-                    with st.expander(
-                        f"{icon} {anomaly.get('type', '').replace('_', ' ').title()}  "
-                        f"— {anomaly.get('from_period', '')} → {anomaly.get('to_period', '')}"
-                    ):
-                        st.json(anomaly.get("details", {}))
-            else:
-                st.success("No payslip anomalies detected across this document set.")
+    if income_anomalies:
+        st.error(f"⚠️ {len(income_anomalies)} income inconsistenc{'y' if len(income_anomalies) == 1 else 'ies'} detected — possible income inflation fraud")
+        for anomaly in income_anomalies:
+            sev = str(anomaly.get("severity", "low"))
+            icon = "🚨" if sev == "high" else "⚠️"
+            with st.expander(
+                f"{icon} {anomaly.get('type', '').replace('_', ' ').title()}  "
+                f"— {anomaly.get('from_period', '')} → {anomaly.get('to_period', '')}"
+            ):
+                details = anomaly.get("details", {})
+                explanation = details.get("explanation", "")
+                if explanation:
+                    st.warning(explanation)
+                st.json({k: v for k, v in details.items() if k != "explanation"})
+    elif evidence_rows:
+        st.success("✅ Income figures are consistent across all documents.")
+
+    # --- Case Bundle PDF Report ---
+    st.divider()
+    st.subheader("📄 Case Report PDF")
+    st.caption(
+        "Generate a single plain-English PDF report covering all documents, income "
+        "reconciliation, and an overall verdict — suitable for a loan officer review."
+    )
+    st.markdown('<div class="bt-pdf-card">', unsafe_allow_html=True)
+    case_report_title = st.text_input(
+        "Report title",
+        value="Mortgage Application Review",
+        key="bundle_pdf_title",
+    )
+    _gen_pdf_clicked = st.button(
+        "📄 Generate Case Report PDF",
+        type="primary",
+        use_container_width=True,
+        key="gen_bundle_pdf",
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
+    if _gen_pdf_clicked:
+        try:
+            from basetruth.reporting.pdf import render_case_bundle_pdf
+            with st.spinner("Generating case report PDF…"):
+                _pdf_bytes = render_case_bundle_pdf(
+                    reports=reports,
+                    reconciliation=reconciliation,
+                    case_title=case_report_title or "Mortgage Application Review",
+                )
+            st.session_state["bt_bundle_pdf_bytes"] = _pdf_bytes
+            st.session_state["bt_bundle_pdf_title"] = case_report_title or "case_report"
+        except Exception as _e:
+            st.error(f"Could not generate bundle PDF: {_e}")
+            st.session_state.pop("bt_bundle_pdf_bytes", None)
+
+    # Show download button if PDF bytes are ready in session state
+    if "bt_bundle_pdf_bytes" in st.session_state:
+        _pdf_title = st.session_state.get("bt_bundle_pdf_title", "case_report")
+        _safe_fname = "".join(c if c.isalnum() or c in "-_ " else "_" for c in _pdf_title).strip() + ".pdf"
+        st.download_button(
+            label="⬇ Download Case Report PDF",
+            data=st.session_state["bt_bundle_pdf_bytes"],
+            file_name=_safe_fname,
+            mime="application/pdf",
+            key="dl_bundle_pdf",
+            use_container_width=True,
+        )
+        st.success("✅ Case report PDF is ready — click above to download.")
 
 
 # ---------------------------------------------------------------------------
@@ -696,9 +1179,9 @@ def _page_cases(service: BaseTruthService) -> None:
             ts = str(note.get("created_at", ""))[:19].replace("T", " ")
             author = note.get("author", "")
             st.markdown(
-                f'<div style="background:#f8fafc;border-left:3px solid #3b82f6;'
-                f'padding:8px 12px;border-radius:0 6px 6px 0;margin-bottom:8px;">'
-                f'<span style="font-size:12px;color:#64748b;">{ts} · {author}</span><br>'
+                f'<div style="background:var(--bt-note-bg);border-left:3px solid var(--bt-note-accent);'
+                f'padding:10px 14px;border-radius:0 8px 8px 0;margin-bottom:10px;">'
+                f'<span style="font-size:11px;color:var(--bt-text-muted);">{ts} · {author}</span><br>'
                 f'{note.get("text", "")}</div>',
                 unsafe_allow_html=True,
             )
