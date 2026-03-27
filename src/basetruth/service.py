@@ -15,7 +15,10 @@ from basetruth.integrations.pdf import (
     extract_pdf_metadata,
     extract_text_from_pdf,
     extract_text_via_ocr,
+    is_image_file,
     is_image_only_pdf,
+    ocr_image_directly,
+    extract_image_file_metadata,
 )
 from basetruth.models import CaseNote, CaseRecord, VerificationReport
 from basetruth.reporting.markdown import render_comparison_report, render_scan_report
@@ -158,12 +161,58 @@ class BaseTruthService:
         image_only_pdf = False
         parse_method = "liteparse"      # updated below as we discover what actually ran
         liteparse_cmd_used: Optional[str] = None
+        image_forensics_result: Optional[Dict[str, Any]] = None  # populated for raw image files
+
         if path.suffix.lower() == ".json" and path.name.endswith("_structured.json"):
             structured_summary = json.loads(path.read_text(encoding="utf-8"))
             pdf_metadata = {}
             raw_parse_written = ""
             parse_method = "prebuilt_json"
+
+        elif is_image_file(path):
+            # ── Raw image file branch (JPEG, PNG, TIFF, BMP, WebP) ──────────
+            # 1. OCR the image directly with pytesseract (no Poppler needed)
+            ocr_text, ocr_engine = ocr_image_directly(path)
+            if ocr_engine == "pytesseract":
+                parse_method = "ocr_pytesseract_direct"
+            else:
+                parse_method = "no_text_extracted"
+                parse_fallback = True
+                parse_fallback_reason = (
+                    "Direct image OCR unavailable (install pytesseract + Tesseract binary). "
+                    "Image forensics signals will still be generated."
+                )
+
+            # 2. Build the same structured JSON that the rest of the pipeline expects
+            fallback_json = build_liteparse_json_from_text(ocr_text or "", path.name)
+            raw_parse_path.write_text(
+                json.dumps(fallback_json, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+            structured_summary = build_structured_summary(raw_parse_path, source_path=source_path)
+            structured_summary["parse_method"] = parse_method
+            structured_summary["is_image_file"] = True
+            if parse_fallback:
+                structured_summary["parse_fallback"] = True
+                structured_summary["parse_fallback_reason"] = parse_fallback_reason
+            if ocr_engine == "pytesseract":
+                structured_summary["ocr_engine"] = "pytesseract"
+            structured_path.write_text(
+                json.dumps(structured_summary, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+            raw_parse_written = str(raw_parse_path)
+
+            # 3. File-level metadata (dimensions, format, SHA-256)
+            pdf_metadata = extract_image_file_metadata(path)
+
+            # 4. Image forensics (ELA, EXIF, noise analysis)
+            try:
+                from basetruth.analysis.image_forensics import analyse_image
+                image_forensics_result = analyse_image(path)
+            except Exception:  # noqa: BLE001
+                image_forensics_result = None
+
         else:
+            # ── PDF / JSON input branch ──────────────────────────────────────
             if path.suffix.lower() == ".json":
                 raw_parse_path = path
                 parse_method = "json_input"
@@ -244,7 +293,9 @@ class BaseTruthService:
 
         if path.suffix.lower() == ".json" and path.name.endswith("_structured.json"):
             structured_path = path
-        tamper_assessment = evaluate_tamper_risk(structured_summary, pdf_metadata)
+        tamper_assessment = evaluate_tamper_risk(
+            structured_summary, pdf_metadata, image_forensics=image_forensics_result
+        )
 
         source = {
             "path": str(source_path),
@@ -268,6 +319,7 @@ class BaseTruthService:
                 "parse_fallback_reason": parse_fallback_reason if parse_fallback else "",
                 "is_image_only_pdf": image_only_pdf,
                 "ocr_engine": ocr_engine,
+                "image_forensics": image_forensics_result or {},
             },
         )
         verification_markdown_path.write_text(render_scan_report(report.to_dict()), encoding="utf-8")

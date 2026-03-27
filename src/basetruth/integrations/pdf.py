@@ -48,9 +48,12 @@ Public API
 """
 
 import hashlib
+import logging
 import re
 from pathlib import Path
 from typing import Any, Dict, Tuple
+
+log = logging.getLogger(__name__)
 
 
 def _sha256_file(path: Path) -> str:
@@ -266,3 +269,79 @@ def build_liteparse_json_from_text(text: str, source_name: str) -> Dict[str, Any
         "source": source_name,
         "pages": pages,
     }
+
+
+# ---------------------------------------------------------------------------
+# Image file helpers  (for raw .jpg / .png / .tiff etc. — not PDF-wrapped)
+# ---------------------------------------------------------------------------
+
+_IMAGE_EXTENSIONS = frozenset(
+    {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".webp"}
+)
+
+
+def is_image_file(path: Path) -> bool:
+    """Return True when *path* is a raw image format (not a PDF)."""
+    return path.suffix.lower() in _IMAGE_EXTENSIONS
+
+
+def ocr_image_directly(path: Path) -> Tuple[str, str]:
+    """OCR a raw image file (JPEG, PNG, TIFF…) using pytesseract.
+
+    Unlike :func:`extract_text_via_ocr` this function does NOT need pdf2image /
+    Poppler because it feeds the image directly to Tesseract.
+
+    Returns
+    -------
+    (text, engine) where engine is one of:
+      'pytesseract'  -- OCR succeeded
+      'unavailable'  -- pytesseract or its binary are not installed
+      'error'        -- unexpected exception
+    """
+    try:
+        import pytesseract  # type: ignore
+        from PIL import Image  # type: ignore
+
+        with Image.open(str(path)) as img:
+            try:
+                text = pytesseract.image_to_string(img, lang="eng+hin")
+            except pytesseract.TesseractError:
+                text = pytesseract.image_to_string(img, lang="eng")
+        return text or "", "pytesseract"
+
+    except ImportError:
+        return "", "unavailable"
+    except Exception as exc:  # noqa: BLE001
+        log.debug("Direct image OCR failed for %s: %s", path.name, exc)
+        return "", "error"
+
+
+def extract_image_file_metadata(path: Path) -> Dict[str, Any]:
+    """Return basic file-level metadata for a raw image file.
+
+    Mirrors the structure returned by :func:`extract_pdf_metadata` so downstream
+    code can treat both uniformly.  EXIF / forensic metadata is handled by the
+    :mod:`basetruth.analysis.image_forensics` module.
+    """
+    payload: Dict[str, Any] = {
+        "available": False,
+        "path": str(path),
+        "size_bytes": path.stat().st_size,
+        "sha256": _sha256_file(path),
+        "is_image_file": True,
+        "image_extension": path.suffix.lower(),
+    }
+
+    try:
+        from PIL import Image  # type: ignore
+
+        with Image.open(str(path)) as img:
+            payload["available"] = True
+            payload["image_width"] = img.width
+            payload["image_height"] = img.height
+            payload["image_mode"] = img.mode
+            payload["image_format"] = img.format or path.suffix.upper().lstrip(".")
+    except Exception as exc:  # noqa: BLE001
+        payload["message"] = f"Could not open image: {exc}"
+
+    return payload

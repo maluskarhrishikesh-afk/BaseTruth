@@ -124,7 +124,11 @@ def _risk_level(score: int) -> tuple[int, str, str]:
     return truth_score, "low", "no_obvious_tampering"
 
 
-def evaluate_tamper_risk(summary: Dict[str, Any], pdf_metadata: Dict[str, Any]) -> Dict[str, Any]:
+def evaluate_tamper_risk(
+    summary: Dict[str, Any],
+    pdf_metadata: Dict[str, Any],
+    image_forensics: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     signals: List[Signal] = []
     document_type = summary.get("document", {}).get("type", "generic")
     key_fields = summary.get("key_fields", {})
@@ -208,6 +212,13 @@ def evaluate_tamper_risk(summary: Dict[str, Any], pdf_metadata: Dict[str, Any]) 
         for key, value in summary.get("generic_candidates", {}).items()
         if isinstance(value, list) and key == "dates" and len(value) > 5
     ]
+    # Bank statements and financial ledgers legitimately contain many dates
+    # (one per transaction row).  Suppress the density flag for these types so
+    # the signal only fires on documents where a high date-count IS unusual.
+    _date_dense_types = {"bank_statement", "loan_statement", "credit_card_statement"}
+    doc_type_for_density = str(summary.get("document", {}).get("type", "")).lower()
+    if doc_type_for_density in _date_dense_types:
+        conflicting = []
     signals.append(
         Signal(
             name="unexpected_candidate_density",
@@ -254,9 +265,26 @@ def evaluate_tamper_risk(summary: Dict[str, Any], pdf_metadata: Dict[str, Any]) 
             )
         )
 
+    # ── Image forensics signals (ELA, EXIF, noise) for raw image input ──────
+    if image_forensics and isinstance(image_forensics.get("signals"), list):
+        for img_sig in image_forensics["signals"]:
+            if not isinstance(img_sig, dict):
+                continue
+            signals.append(
+                Signal(
+                    name=str(img_sig.get("name", "image_forensic_check")),
+                    severity=str(img_sig.get("severity", "info")),
+                    score=int(img_sig.get("score", 0)),
+                    summary=str(img_sig.get("summary", "")),
+                    passed=bool(img_sig.get("passed", True)),
+                    details=dict(img_sig.get("details", {})),
+                )
+            )
+
     total_risk = sum(signal.score for signal in signals)
     truth_score, risk_level, verdict = _risk_level(total_risk)
-    return {
+
+    result: Dict[str, Any] = {
         "truth_score": truth_score,
         "risk_level": risk_level,
         "risk_score": total_risk,
@@ -267,3 +295,16 @@ def evaluate_tamper_risk(summary: Dict[str, Any], pdf_metadata: Dict[str, Any]) 
             "Cryptographic validation requires trusted issuer certificates or external signature tools.",
         ],
     }
+
+    # Attach high-level image forensics summary when available
+    if image_forensics:
+        result["image_forensics_summary"] = {
+            "ela_score": image_forensics.get("ela_score"),
+            "high_error_frac": image_forensics.get("high_error_frac"),
+            "noise_cv": image_forensics.get("noise_cv"),
+            "suspicious_tool": image_forensics.get("suspicious_tool"),
+        }
+        if image_forensics.get("limitations"):
+            result["limitations"] = result["limitations"] + image_forensics["limitations"]
+
+    return result

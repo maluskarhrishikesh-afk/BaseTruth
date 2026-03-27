@@ -27,6 +27,7 @@ from basetruth.analysis.packs.compliance import ComplianceValidationPack
 from basetruth.analysis.packs.healthcare import HealthcareValidationPack
 from basetruth.analysis.packs.insurance import InsuranceValidationPack
 from basetruth.analysis.packs.invoice import InvoiceValidationPack
+from basetruth.analysis.packs.mortgage import MortgageValidationPack
 from basetruth.analysis.packs.payments import PaymentsValidationPack
 from basetruth.analysis.packs.payroll import PayrollValidationPack
 from typing import Any, Dict, List, Optional
@@ -42,6 +43,23 @@ REGISTRY: Dict[str, BaseValidationPack] = {
     HealthcareValidationPack.DOCUMENT_TYPE: HealthcareValidationPack(),
     InvoiceValidationPack.DOCUMENT_TYPE: InvoiceValidationPack(),
     ComplianceValidationPack.DOCUMENT_TYPE: ComplianceValidationPack(),
+    MortgageValidationPack.DOCUMENT_TYPE: MortgageValidationPack(),
+    # Mortgage sub-type aliases — all route to MortgageValidationPack
+    "mortgage_payslip": MortgageValidationPack(),
+    "mortgage_bank_statement": MortgageValidationPack(),
+    "mortgage_employment_letter": MortgageValidationPack(),
+    "mortgage_form16": MortgageValidationPack(),
+    "mortgage_utility_bill": MortgageValidationPack(),
+    "mortgage_gift_letter": MortgageValidationPack(),
+    "mortgage_property_agreement": MortgageValidationPack(),
+    "employment_letter": MortgageValidationPack(),
+    "form16": MortgageValidationPack(),
+    "utility_bill": MortgageValidationPack(),
+    "gift_letter": MortgageValidationPack(),
+    "property_agreement": MortgageValidationPack(),
+    # Override generic packs: mortgage pipeline uses mortgage-specific checks for all doc types
+    "payslip": MortgageValidationPack(),
+    "bank_statement": MortgageValidationPack(),
 }
 
 

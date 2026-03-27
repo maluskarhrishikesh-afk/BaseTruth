@@ -226,7 +226,7 @@ html, body, [class*="css"] {
 
 /* ---- Metric cards ----------------------------------------- */
 [data-testid="stMetric"] {
-    background: var(--bt-surface-raised) !important;
+    background: var(--secondary-background-color, var(--bt-surface-raised)) !important;
     border-radius: 14px !important;
     border: 1px solid var(--bt-surface-border) !important;
     border-top: 3px solid #6366f1 !important;
@@ -238,13 +238,44 @@ html, body, [class*="css"] {
     font-weight: 600 !important;
     letter-spacing: 0.07em !important;
     text-transform: uppercase !important;
-    opacity: 0.55 !important;
+    /* var(--text-color) is Streamlit-injected and auto-adapts to dark/light mode */
+    color: var(--text-color, #64748b) !important;
+    opacity: 0.65 !important;
 }
 [data-testid="stMetricValue"] {
     font-size: 2.2rem !important;
     font-weight: 800 !important;
     letter-spacing: -0.03em !important;
     line-height: 1.15 !important;
+    /* var(--text-color) is Streamlit-injected and auto-adapts to dark/light mode */
+    color: var(--text-color, #0f172a) !important;
+}
+
+/* ---- Metric text — dark mode hard overrides (fallback) ---- */
+/* Used when Streamlit's --text-color is not injected (rare) */
+[data-testid="stApp"][data-theme="dark"] [data-testid="stMetricValue"],
+[data-theme="dark"] [data-testid="stMetricValue"],
+html[data-theme="dark"] [data-testid="stMetricValue"],
+body[data-theme="dark"] [data-testid="stMetricValue"] {
+    color: #f1f5f9 !important;
+}
+[data-testid="stApp"][data-theme="dark"] [data-testid="stMetricLabel"],
+[data-theme="dark"] [data-testid="stMetricLabel"],
+html[data-theme="dark"] [data-testid="stMetricLabel"],
+body[data-theme="dark"] [data-testid="stMetricLabel"] {
+    color: #94a3b8 !important;
+    opacity: 1 !important;
+}
+[data-testid="stApp"][data-theme="dark"] [data-testid="stMetric"],
+[data-theme="dark"] [data-testid="stMetric"],
+html[data-theme="dark"] [data-testid="stMetric"] {
+    background: #0f172a !important;
+    border-color: #334155 !important;
+}
+@media (prefers-color-scheme: dark) {
+    [data-testid="stMetricValue"] { color: #f1f5f9 !important; }
+    [data-testid="stMetricLabel"] { color: #94a3b8 !important; opacity: 1 !important; }
+    [data-testid="stMetric"] { background: #0f172a !important; border-color: #334155 !important; }
 }
 
 /* ---- Divider ---------------------------------------------- */
@@ -343,13 +374,421 @@ hr {
 }
 
 /* ---- Headers --------------------------------------------- */
-h1 { letter-spacing: -0.03em !important; font-weight: 800 !important; }
+h1 {
+    letter-spacing: -0.03em !important;
+    font-weight: 800 !important;
+    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 60%, #06b6d4 100%) !important;
+    -webkit-background-clip: text !important;
+    -webkit-text-fill-color: transparent !important;
+    background-clip: text !important;
+}
 h2 { letter-spacing: -0.02em !important; font-weight: 700 !important; }
 h3 { letter-spacing: -0.01em !important; font-weight: 600 !important; }
 
 /* ---- Top metrics strip top fix --------------------------- */
 [data-testid="stHorizontalBlock"]:first-of-type [data-testid="stMetric"] {
     margin-top: 0 !important;
+}
+
+/* ---- Search card ----------------------------------------- */
+.bt-search-card {
+    background: var(--secondary-background-color, #ffffff);
+    border: 1px solid var(--bt-surface-border, #e2e8f0);
+    border-radius: 14px;
+    padding: 1.1rem 1.25rem 0.5rem;
+    margin-bottom: 1rem;
+    box-shadow: 0 1px 3px rgba(15,23,42,0.05);
+}
+.bt-search-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #94a3b8;
+    margin-bottom: 0.5rem;
+    display: block;
+}
+
+/* ---- Identity / entity record card ----------------------- */
+.bt-entity-card {
+    border-left: 4px solid #6366f1;
+    border-radius: 14px;
+    padding: 1.25rem 1.5rem;
+    margin: 0.5rem 0 1rem;
+    transition: box-shadow 0.2s ease;
+}
+.bt-entity-card:hover {
+    box-shadow: 0 4px 20px rgba(99,102,241,0.15) !important;
+}
+.bt-entity-field-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #94a3b8;
+    margin-bottom: 3px;
+}
+.bt-entity-name {
+    font-size: 1.4rem;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+    color: var(--text-color, #0f172a);
+}
+.bt-entity-field-value {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text-color, #1e293b);
+}
+
+/* ---- Dark mode: entity card text override ----------------- */
+/* Without this, field values are invisible in dark mode      */
+/* (dark-navy fallback on dark-navy background).              */
+[data-testid="stApp"][data-theme="dark"] .bt-entity-name,
+[data-testid="stApp"][data-theme="dark"] .bt-entity-field-value {
+    color: #f1f5f9 !important;
+}
+@media (prefers-color-scheme: dark) {
+    .bt-entity-name     { color: #f1f5f9 !important; }
+    .bt-entity-field-value { color: #f1f5f9 !important; }
+}
+
+/* ---- Auto-generated PDF banner --------------------------- */
+.bt-pdf-banner {
+    background: linear-gradient(135deg, rgba(99,102,241,0.08) 0%, rgba(139,92,246,0.08) 100%);
+    border: 1px solid rgba(99,102,241,0.25);
+    border-radius: 14px;
+    padding: 1rem 1.25rem;
+    margin: 0.75rem 0;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+/* ---- Select box ------------------------------------------ */
+[data-testid="stSelectbox"] > div > div {
+    border-radius: 10px !important;
+    font-size: 0.9rem !important;
+}
+
+/* ---- Alert/info boxes ------------------------------------ */
+[data-testid="stAlert"] {
+    border-radius: 10px !important;
+}
+
+/* ---- Upload area ----------------------------------------- */
+[data-testid="stFileUploaderDropzone"] {
+    border-radius: 12px !important;
+    border-style: dashed !important;
+}
+
+/* ---- Tabs ----------------------------------------------- */
+[data-testid="stTabs"] [data-testid="stTab"] {
+    font-weight: 600 !important;
+    font-size: 0.875rem !important;
+}
+[data-testid="stTabs"] [data-testid="stTab"][aria-selected="true"] {
+    color: #6366f1 !important;
+}
+
+/* ============================================================
+   ADDITIONAL POLISH — dark mode, alignment, modern touches
+   ============================================================ */
+
+/* ---- Guarantee --text-color is always defined ------------- */
+/* Streamlit injects this, but we define fallbacks so inline   */
+/* var(--text-color) works even in edge-case versions.         */
+:root { --text-color: #1e293b; }
+@media (prefers-color-scheme: dark) { :root { --text-color: #f1f5f9; } }
+[data-testid="stApp"][data-theme="dark"] { --text-color: #f1f5f9; }
+
+/* ---- Records search bar: align button to input bottom ----- */
+/* Bottom-aligns all columns so inputs and button sit level.   */
+.bt-search-card [data-testid="stHorizontalBlock"] {
+    align-items: flex-end !important;
+    gap: 0.75rem !important;
+}
+/* Remove any extra top-margin on the button widget wrapper    */
+.bt-search-card [data-testid="column"]:last-child > div {
+    padding-top: 0 !important;
+    margin-top: 0 !important;
+}
+
+/* ---- Dark mode: entity card background override ----------- */
+[data-testid="stApp"][data-theme="dark"] .bt-entity-card {
+    background: #1e293b !important;
+    border-color: rgba(99,102,241,0.30) !important;
+}
+@media (prefers-color-scheme: dark) {
+    .bt-entity-card {
+        background: #1e293b !important;
+        border-color: rgba(99,102,241,0.30) !important;
+    }
+}
+
+/* ---- Custom scrollbar (webkit) ----------------------------- */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+    background: rgba(99,102,241,0.28);
+    border-radius: 999px;
+    transition: background 0.2s ease;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(99,102,241,0.55); }
+
+/* ---- Alert / info / warning / error / success ------------- */
+[data-testid="stAlert"] {
+    border-radius: 12px !important;
+    border-left-width: 4px !important;
+    font-size: 0.875rem !important;
+    line-height: 1.55 !important;
+}
+
+/* ---- Progress bar ------------------------------------------ */
+[data-testid="stProgress"] > div > div > div {
+    background: linear-gradient(90deg, #4f46e5, #6366f1, #8b5cf6) !important;
+    border-radius: 999px !important;
+    transition: width 0.3s ease !important;
+}
+[data-testid="stProgress"] > div > div {
+    border-radius: 999px !important;
+    overflow: hidden !important;
+}
+
+/* ---- File uploader ----------------------------------------- */
+[data-testid="stFileUploaderDropzone"] {
+    border-color: rgba(99,102,241,0.35) !important;
+    transition: border-color 0.2s ease, background 0.2s ease !important;
+}
+[data-testid="stFileUploaderDropzone"]:hover {
+    border-color: #6366f1 !important;
+    background: rgba(99,102,241,0.04) !important;
+}
+
+/* ---- Expander ---------------------------------------------- */
+[data-testid="stExpander"] summary svg { color: #6366f1 !important; }
+[data-testid="stExpander"] summary {
+    transition: background 0.15s ease !important;
+}
+[data-testid="stExpander"] summary:hover {
+    background: rgba(99,102,241,0.06) !important;
+}
+
+/* ---- Checkbox/toggle --------------------------------------- */
+[data-testid="stCheckbox"] label span[data-testid="stCheckboxLabel"] {
+    font-size: 0.875rem !important;
+}
+
+/* ---- Caption and help text --------------------------------- */
+[data-testid="stCaptionContainer"] {
+    font-size: 11.5px !important;
+    line-height: 1.55 !important;
+    opacity: 0.75 !important;
+}
+
+/* ---- Selectbox dropdown ------------------------------------ */
+[data-testid="stSelectbox"] [data-baseweb="select"] {
+    border-radius: 10px !important;
+}
+
+/* ---- Spinner ----------------------------------------------- */
+[data-testid="stSpinner"] > div {
+    border-top-color: #6366f1 !important;
+}
+
+/* ---- Download button accent -------------------------------- */
+[data-testid="stDownloadButton"] > button[kind="primary"] {
+    background: linear-gradient(135deg,#4f46e5 0%,#6366f1 100%) !important;
+    color: #ffffff !important;
+    border: none !important;
+    box-shadow: 0 2px 8px rgba(99,102,241,0.30) !important;
+}
+
+/* ---- Sub-headers ------------------------------------------- */
+.main [data-testid="stMarkdownContainer"] h3 {
+    font-size: 1rem !important;
+    font-weight: 700 !important;
+    letter-spacing: -0.01em !important;
+    margin-top: 1.25rem !important;
+}
+
+/* ---- Page title gradient (h1) reaffirm --------------------- */
+.main h1 {
+    font-size: 2.1rem !important;
+    font-weight: 800 !important;
+    letter-spacing: -0.03em !important;
+    margin-bottom: 0.15rem !important;
+    line-height: 1.15 !important;
+}
+
+/* ---- Section sub-headers (h2 from st.subheader) ------------ */
+/* These are smaller than page titles; keep them clean.         */
+.main [data-testid="stMarkdownContainer"] h2 {
+    font-size: 1.15rem !important;
+    font-weight: 700 !important;
+    letter-spacing: -0.015em !important;
+    border-bottom: 1px solid var(--bt-divider, #e2e8f0) !important;
+    padding-bottom: 0.35rem !important;
+    margin-top: 1.4rem !important;
+    margin-bottom: 0.6rem !important;
+}
+
+/* ---- Sidebar version footer -------------------------------- */
+[data-testid="stSidebar"] .stCaption:last-of-type {
+    position: absolute;
+    bottom: 1.25rem;
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-size: 10px !important;
+    color: #334155 !important;
+}
+
+/* ---- Glass morphism for metric cards in dark mode ---------- */
+[data-testid="stApp"][data-theme="dark"] [data-testid="stMetric"] {
+    background: rgba(15,23,42,0.72) !important;
+    backdrop-filter: blur(12px) !important;
+    -webkit-backdrop-filter: blur(12px) !important;
+    border-color: rgba(99,102,241,0.20) !important;
+}
+@media (prefers-color-scheme: dark) {
+    [data-testid="stMetric"] {
+        background: rgba(15,23,42,0.72) !important;
+        backdrop-filter: blur(12px) !important;
+        -webkit-backdrop-filter: blur(12px) !important;
+        border-color: rgba(99,102,241,0.20) !important;
+    }
+}
+
+/* ---- Entity card hover glow -------------------------------- */
+.bt-entity-card {
+    transition: box-shadow 0.25s ease, border-color 0.25s ease !important;
+}
+.bt-entity-card:hover {
+    border-left-color: #8b5cf6 !important;
+    box-shadow: 0 8px 28px rgba(99,102,241,0.18), 0 2px 8px rgba(0,0,0,0.08) !important;
+}
+
+/* ---- Badge pill tighter radius ----------------------------- */
+span[style*="border-radius:4px"][style*="font-weight:700"] {
+    border-radius: 6px !important;
+}
+
+/* ---- Divider styling --------------------------------------- */
+hr {
+    border: none !important;
+    border-top: 1px solid var(--bt-divider) !important;
+    margin: 1.5rem 0 !important;
+}
+
+/* ---- Dataframe container ----------------------------------- */
+[data-testid="stDataFrame"] > div {
+    border-radius: 12px !important;
+    overflow: hidden !important;
+}
+
+/* ---- Smooth page transitions ------------------------------- */
+.main .block-container > div {
+    animation: bt-fadein 0.22s ease forwards;
+}
+@keyframes bt-fadein {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ---- Sidebar active nav - polished glow -------------------- */
+[data-testid="stSidebar"] [data-testid="baseButton-primary"] {
+    position: relative;
+    overflow: hidden;
+}
+[data-testid="stSidebar"] [data-testid="baseButton-primary"]::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.15);
+    pointer-events: none;
+}
+
+/* ---- Score card glow --------------------------------------- */
+.bt-score-card {
+    transition: box-shadow 0.25s ease !important;
+}
+.bt-score-card:hover {
+    box-shadow: 0 6px 24px rgba(99,102,241,0.15) !important;
+}
+
+/* ---- PDF banner modern look -------------------------------- */
+.bt-pdf-banner {
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    transition: box-shadow 0.2s ease;
+}
+.bt-pdf-banner:hover {
+    box-shadow: 0 4px 20px rgba(99,102,241,0.18);
+}
+
+/* ---- Records search card: robust column alignment ---------- */
+/* Ensures the "Search →" button aligns to the bottom of the   */
+/* selectbox / text-input on all Streamlit versions.           */
+.bt-search-card [data-testid="stHorizontalBlock"] {
+    align-items: flex-end !important;
+    gap: 0.5rem !important;
+}
+.bt-search-card [data-testid="column"] {
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: flex-end !important;
+}
+.bt-search-card [data-testid="column"] > div:first-child {
+    margin-top: auto !important;
+}
+/* Remove Streamlit's default top-margin on the button column  */
+.bt-search-card [data-testid="column"]:last-child .stButton {
+    margin-top: 0 !important;
+    padding-top: 0 !important;
+}
+.bt-search-card [data-testid="column"]:last-child .stButton > button {
+    height: 2.5rem !important;
+    min-height: 2.5rem !important;
+}
+
+/* ---- Page section subheaders ------------------------------ */
+.main h2 {
+    font-size: 1.15rem !important;
+    font-weight: 700 !important;
+    letter-spacing: -0.015em !important;
+    margin-top: 1.5rem !important;
+    margin-bottom: 0.5rem !important;
+}
+
+/* ---- Sidebar nav: tighten divider spacing ------------------ */
+[data-testid="stSidebar"] hr {
+    margin: 0.5rem 0 !important;
+}
+
+/* ---- Dashboard: chart container subtle border -------------- */
+[data-testid="stArrowVegaLiteChart"],
+[data-testid="stVegaLiteChart"] {
+    border-radius: 12px !important;
+    overflow: hidden !important;
+}
+
+/* ---- Upload dropzone polish -------------------------------- */
+[data-testid="stFileUploaderDropzone"] {
+    transition: all 0.2s ease !important;
+    background: rgba(99,102,241,0.02) !important;
+}
+[data-testid="stFileUploaderDropzone"]:hover,
+[data-testid="stFileUploaderDropzone"]:focus-within {
+    background: rgba(99,102,241,0.06) !important;
+    border-color: #6366f1 !important;
+    box-shadow: 0 0 0 3px rgba(99,102,241,0.12) !important;
+}
+
+/* ---- Dark mode: PDF banner title text ---------------------- */
+[data-testid="stApp"][data-theme="dark"] .bt-pdf-banner div[style*="color:var(--text-color"] {
+    color: #f1f5f9 !important;
 }
 </style>
 """
@@ -435,8 +874,8 @@ _PAGES: Dict[str, str] = {
     "🔍  Scan": "scan",
     "📦  Bulk Scan": "bulk",
     "📁  Cases": "cases",
-    "�  Records": "records",
-    "�📊  Reports": "reports",
+    "🗂️  Records": "records",
+    "📊  Reports": "reports",
     "🔗  Datasources": "datasources",
     "⚙️  Settings": "settings",
 }
@@ -537,7 +976,7 @@ def _render_report_summary(report: Dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 def _page_dashboard(service: BaseTruthService) -> None:
-    st.header("Dashboard")
+    st.markdown("# Dashboard")
 
     reports = service.list_reports()
     cases = service.list_cases()
@@ -636,7 +1075,7 @@ def _page_dashboard(service: BaseTruthService) -> None:
 # ---------------------------------------------------------------------------
 
 def _page_scan(service: BaseTruthService) -> None:
-    st.header("Scan Document")
+    st.markdown("# Scan Document")
     st.markdown("Upload a document or point to an existing file to run a full BaseTruth integrity scan.")
 
     upload = st.file_uploader(
@@ -774,7 +1213,7 @@ def _page_scan(service: BaseTruthService) -> None:
 # ---------------------------------------------------------------------------
 
 def _page_bulk(service: BaseTruthService) -> None:
-    st.header("Bulk Scan")
+    st.markdown("# Bulk Scan")
     st.markdown("Scan multiple documents at once and optionally run a cross-month payslip comparison.")
 
     uploads = st.file_uploader(
@@ -813,6 +1252,33 @@ def _page_bulk(service: BaseTruthService) -> None:
         st.session_state["bt_bulk_compare"] = compare_payslips
         # Clear any previously generated bundle PDF on fresh scan
         st.session_state.pop("bt_bundle_pdf_bytes", None)
+        st.session_state.pop("bt_bundle_pdf_path", None)
+
+        # ── Auto-generate case report PDF immediately after scan ──────────────
+        if _new_reports:
+            try:
+                import datetime
+                from basetruth.reporting.pdf import render_case_bundle_pdf
+                with st.spinner("Generating case report PDF…"):
+                    _auto_reconciliation = service.reconcile_income_documents(_new_reports)
+                    _ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    _auto_title = f"Case Report — {_ts}"
+                    _pdf_bytes = render_case_bundle_pdf(
+                        reports=_new_reports,
+                        reconciliation=_auto_reconciliation,
+                        case_title=_auto_title,
+                    )
+                # Save to persistent location for regulatory / audit access
+                _reports_dir = service.artifact_root / "case_reports"
+                _reports_dir.mkdir(parents=True, exist_ok=True)
+                _pdf_path = _reports_dir / f"{_ts}_case_report.pdf"
+                _pdf_path.write_bytes(_pdf_bytes)
+                st.session_state["bt_bundle_pdf_bytes"] = _pdf_bytes
+                st.session_state["bt_bundle_pdf_title"] = f"{_ts}_case_report"
+                st.session_state["bt_bundle_pdf_path"] = str(_pdf_path)
+            except Exception as _pdf_err:
+                st.session_state["bt_bundle_pdf_bytes"] = None
+                st.warning(f"Scan complete — PDF generation failed: {_pdf_err}")
 
     # ── Results section ────────────────────────────────────────────────────
     # All display + action buttons live OUTSIDE the scan-button block so they
@@ -1021,54 +1487,38 @@ def _page_bulk(service: BaseTruthService) -> None:
     elif evidence_rows:
         st.success("✅ Income figures are consistent across all documents.")
 
-    # --- Case Bundle PDF Report ---
+    # --- Case Report PDF (auto-generated after scan) ---
     st.divider()
-    st.subheader("📄 Case Report PDF")
-    st.caption(
-        "Generate a single plain-English PDF report covering all documents, income "
-        "reconciliation, and an overall verdict — suitable for a loan officer review."
-    )
-    st.markdown('<div class="bt-pdf-card">', unsafe_allow_html=True)
-    case_report_title = st.text_input(
-        "Report title",
-        value="Mortgage Application Review",
-        key="bundle_pdf_title",
-    )
-    _gen_pdf_clicked = st.button(
-        "📄 Generate Case Report PDF",
-        type="primary",
-        use_container_width=True,
-        key="gen_bundle_pdf",
-    )
-    st.markdown("</div>", unsafe_allow_html=True)
-    if _gen_pdf_clicked:
-        try:
-            from basetruth.reporting.pdf import render_case_bundle_pdf
-            with st.spinner("Generating case report PDF…"):
-                _pdf_bytes = render_case_bundle_pdf(
-                    reports=reports,
-                    reconciliation=reconciliation,
-                    case_title=case_report_title or "Mortgage Application Review",
-                )
-            st.session_state["bt_bundle_pdf_bytes"] = _pdf_bytes
-            st.session_state["bt_bundle_pdf_title"] = case_report_title or "case_report"
-        except Exception as _e:
-            st.error(f"Could not generate bundle PDF: {_e}")
-            st.session_state.pop("bt_bundle_pdf_bytes", None)
-
-    # Show download button if PDF bytes are ready in session state
-    if "bt_bundle_pdf_bytes" in st.session_state:
+    _pdf_bytes_ready = st.session_state.get("bt_bundle_pdf_bytes")
+    _pdf_path_saved = st.session_state.get("bt_bundle_pdf_path", "")
+    if _pdf_bytes_ready:
         _pdf_title = st.session_state.get("bt_bundle_pdf_title", "case_report")
         _safe_fname = "".join(c if c.isalnum() or c in "-_ " else "_" for c in _pdf_title).strip() + ".pdf"
+        st.markdown(
+            f'<div class="bt-pdf-banner">'
+            f'<span style="font-size:1.5rem;">📄</span>'
+            f'<div><div style="font-weight:700;font-size:0.95rem;color:var(--text-color,#1e293b);">'
+            f'Case Report PDF generated automatically</div>'
+            f'<div style="font-size:0.8rem;color:#94a3b8;margin-top:2px;">'
+            f'Saved to: {_pdf_path_saved or "artifacts/case_reports/"}</div></div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
         st.download_button(
-            label="⬇ Download Case Report PDF",
-            data=st.session_state["bt_bundle_pdf_bytes"],
+            label="⬇  Download Case Report PDF",
+            data=_pdf_bytes_ready,
             file_name=_safe_fname,
             mime="application/pdf",
             key="dl_bundle_pdf",
             use_container_width=True,
+            type="primary",
         )
-        st.success("✅ Case report PDF is ready — click above to download.")
+    else:
+        st.info(
+            "📄 **Case Report PDF** — A PDF report will be generated automatically "
+            "after scanning documents. It covers all documents, income reconciliation, "
+            "and an overall verdict suitable for loan officer or regulator review."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1076,7 +1526,7 @@ def _page_bulk(service: BaseTruthService) -> None:
 # ---------------------------------------------------------------------------
 
 def _page_cases(service: BaseTruthService) -> None:
-    st.header("Cases")
+    st.markdown("# Cases")
 
     cases = service.list_cases()
     if not cases:
@@ -1231,7 +1681,7 @@ def _page_cases(service: BaseTruthService) -> None:
 # ---------------------------------------------------------------------------
 
 def _page_reports(service: BaseTruthService) -> None:
-    st.header("Reports")
+    st.markdown("# Reports")
 
     reports = service.list_reports()
     if not reports:
@@ -1331,7 +1781,7 @@ def _connector_settings_fields(kind: str, existing: Dict[str, Any]) -> Dict[str,
 # ---------------------------------------------------------------------------
 
 def _page_datasources(service: BaseTruthService) -> None:
-    st.header("Datasources")
+    st.markdown("# Datasources")
     registry = DatasourceRegistry(service.artifact_root)
     sources = registry.list_sources()
 
@@ -1426,7 +1876,7 @@ def _page_datasources(service: BaseTruthService) -> None:
 # ---------------------------------------------------------------------------
 
 def _page_settings() -> None:
-    st.header("Settings")
+    st.markdown("# Settings")
 
     st.subheader("Artifact root")
     st.markdown(
@@ -1471,7 +1921,7 @@ def _page_settings() -> None:
 # ---------------------------------------------------------------------------
 
 def _page_records() -> None:
-    st.header("Records")
+    st.markdown("# Records")
 
     if not _DB_IMPORTS_OK or not db_available():
         st.warning(
@@ -1481,14 +1931,16 @@ def _page_records() -> None:
         return
 
     # ── Search bar ----------------------------------------------------------
-    st.markdown("Search for individuals by any known identifier.")
-    sc1, sc2, sc3 = st.columns([3, 1, 1])
-    search_query = sc1.text_input(
-        "Search",
-        placeholder="Name, PAN, Aadhaar, email, phone, BT-XXXXXX…",
-        label_visibility="collapsed",
-        key="rec_search_query",
-    )
+    st.markdown('<div class="bt-search-card">', unsafe_allow_html=True)
+    st.markdown('<span class="bt-search-label">Search individuals by name, PAN, Aadhaar, email, phone or reference number</span>', unsafe_allow_html=True)
+    sc1, sc2, sc3 = st.columns([4, 1.5, 1])
+    with sc1:
+        search_query = st.text_input(
+            "Search",
+            placeholder="Name, PAN, Aadhaar, email, phone, BT-XXXXXX…",
+            label_visibility="collapsed",
+            key="rec_search_query",
+        )
     field_opts = {
         "All fields": "all",
         "Name": "name",
@@ -1497,12 +1949,14 @@ def _page_records() -> None:
         "Email": "email",
         "Phone": "phone",
     }
-    search_field_label = sc2.selectbox(
-        "Field", list(field_opts.keys()), label_visibility="collapsed", key="rec_search_field"
-    )
+    with sc2:
+        search_field_label = st.selectbox(
+            "Field", list(field_opts.keys()), label_visibility="collapsed", key="rec_search_field"
+        )
     search_field = field_opts[search_field_label]
-    sc3.markdown("<div style='margin-top:2px'></div>", unsafe_allow_html=True)
-    do_search = sc3.button("Search", use_container_width=True, type="primary")
+    with sc3:
+        do_search = st.button("Search →", use_container_width=True, type="primary", key="rec_do_search")
+    st.markdown('</div>', unsafe_allow_html=True)
 
     # Trigger on button click or when query changes
     if do_search or search_query:
@@ -1569,32 +2023,73 @@ def _page_records() -> None:
         return
 
     # ---- Identity card -----------------------------------------------------
+    # Identity card — uses Streamlit's injected var(--text-color) +
+    # var(--secondary-background-color), which auto-adapt to dark/light mode.
+    _pan   = selected_entity['pan_number'] or '—'
+    _aadh  = selected_entity['aadhar_number'] or '—'
+    _email = selected_entity['email'] or '—'
+    _phone = selected_entity['phone'] or '—'
+    _scans = selected_entity['scan_count']
+    _since = str(selected_entity['created_at'])[:10]
+    _fname = selected_entity['first_name']
+    _lname = selected_entity['last_name']
     st.markdown(
         f"""
-        <div style="background:var(--bt-surface);border:1px solid var(--bt-surface-border);
-          border-radius:14px;padding:1.25rem 1.5rem;margin:0.5rem 0 1rem;
-          box-shadow:var(--bt-card-shadow);">
-          <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:12px;">
-            <span style="font-size:1.5rem;font-weight:800;letter-spacing:-0.02em;">
-              {selected_entity['first_name']} {selected_entity['last_name']}
-            </span>
-            <span style="font-size:12px;font-weight:600;background:rgba(99,102,241,0.12);
-              color:#6366f1;border:1px solid rgba(99,102,241,0.25);
-              padding:2px 10px;border-radius:6px;">{selected_ref}</span>
+        <div class="bt-entity-card" style="
+          background:var(--secondary-background-color,#ffffff);
+          border:1px solid rgba(99,102,241,0.20);
+          border-left:4px solid #6366f1;
+          box-shadow:0 2px 12px rgba(99,102,241,0.08);">
+          <div style="display:flex;align-items:center;gap:14px;margin-bottom:16px;flex-wrap:wrap;">
+            <div style="width:44px;height:44px;border-radius:12px;
+              background:linear-gradient(135deg,#6366f1,#8b5cf6);
+              display:flex;align-items:center;justify-content:center;
+              font-size:18px;font-weight:800;color:#fff;flex-shrink:0;">
+              {_fname[0].upper() if _fname else '?'}
+            </div>
+            <div>
+              <div class="bt-entity-name">
+                {_fname} {_lname}
+              </div>
+              <div style="margin-top:4px;">
+                <span style="font-size:11px;font-weight:700;
+                  background:rgba(99,102,241,0.12);color:#6366f1;
+                  border:1px solid rgba(99,102,241,0.28);
+                  padding:2px 10px;border-radius:6px;">{selected_ref}</span>
+              </div>
+            </div>
           </div>
-          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px 20px;">
-            <div><span style="font-size:11px;color:var(--bt-text-muted);text-transform:uppercase;letter-spacing:0.06em;">PAN</span><br>
-              <strong>{selected_entity['pan_number'] or '—'}</strong></div>
-            <div><span style="font-size:11px;color:var(--bt-text-muted);text-transform:uppercase;letter-spacing:0.06em;">Aadhaar</span><br>
-              <strong>{selected_entity['aadhar_number'] or '—'}</strong></div>
-            <div><span style="font-size:11px;color:var(--bt-text-muted);text-transform:uppercase;letter-spacing:0.06em;">Email</span><br>
-              <strong>{selected_entity['email'] or '—'}</strong></div>
-            <div><span style="font-size:11px;color:var(--bt-text-muted);text-transform:uppercase;letter-spacing:0.06em;">Phone</span><br>
-              <strong>{selected_entity['phone'] or '—'}</strong></div>
-            <div><span style="font-size:11px;color:var(--bt-text-muted);text-transform:uppercase;letter-spacing:0.06em;">Documents scanned</span><br>
-              <strong>{selected_entity['scan_count']}</strong></div>
-            <div><span style="font-size:11px;color:var(--bt-text-muted);text-transform:uppercase;letter-spacing:0.06em;">Member since</span><br>
-              <strong>{str(selected_entity['created_at'])[:10]}</strong></div>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px 24px;">
+            <div>
+              <div style="font-size:10px;font-weight:700;color:#94a3b8;
+                text-transform:uppercase;letter-spacing:0.08em;margin-bottom:3px;">PAN</div>
+              <div class="bt-entity-field-value">{_pan}</div>
+            </div>
+            <div>
+              <div style="font-size:10px;font-weight:700;color:#94a3b8;
+                text-transform:uppercase;letter-spacing:0.08em;margin-bottom:3px;">Aadhaar</div>
+              <div class="bt-entity-field-value">{_aadh}</div>
+            </div>
+            <div>
+              <div style="font-size:10px;font-weight:700;color:#94a3b8;
+                text-transform:uppercase;letter-spacing:0.08em;margin-bottom:3px;">Email</div>
+              <div class="bt-entity-field-value">{_email}</div>
+            </div>
+            <div>
+              <div style="font-size:10px;font-weight:700;color:#94a3b8;
+                text-transform:uppercase;letter-spacing:0.08em;margin-bottom:3px;">Phone</div>
+              <div class="bt-entity-field-value">{_phone}</div>
+            </div>
+            <div>
+              <div style="font-size:10px;font-weight:700;color:#94a3b8;
+                text-transform:uppercase;letter-spacing:0.08em;margin-bottom:3px;">Documents Scanned</div>
+              <div class="bt-entity-field-value">{_scans}</div>
+            </div>
+            <div>
+              <div style="font-size:10px;font-weight:700;color:#94a3b8;
+                text-transform:uppercase;letter-spacing:0.08em;margin-bottom:3px;">Member Since</div>
+              <div class="bt-entity-field-value">{_since}</div>
+            </div>
           </div>
         </div>
         """,

@@ -157,6 +157,47 @@ def _build_image(root: Path) -> None:
     print("Build complete.")
 
 
+def _rebuild_if_needed(root: Path) -> None:
+    """Rebuild the Docker image only when Dockerfile or requirements have changed.
+
+    Docker's build cache means unchanged layers are reused — this is fast.
+    The image is rebuilt when:
+      - requirements.txt was modified after the image was last built
+      - Dockerfile was modified after the image was last built
+      - The image does not exist yet
+    """
+    if not _image_exists():
+        _build_image(root)
+        return
+    # Get the image creation timestamp from Docker
+    ts_result = subprocess.run(
+        ["docker", "image", "inspect", IMAGE_NAME, "--format", "{{.Created}}"],
+        capture_output=True, text=True,
+    )
+    if ts_result.returncode != 0:
+        # Can't determine age — rebuild to be safe
+        _build_image(root)
+        return
+    try:
+        from datetime import datetime, timezone
+        image_created = datetime.fromisoformat(
+            ts_result.stdout.strip().replace("Z", "+00:00")
+        )
+        watch_files = [root / "Dockerfile", root / "requirements.txt", root / "pyproject.toml"]
+        for watch in watch_files:
+            if not watch.exists():
+                continue
+            mtime = datetime.fromtimestamp(watch.stat().st_mtime, tz=timezone.utc)
+            if mtime > image_created:
+                print(f"\n[info] {watch.name} changed after last build — rebuilding image ...")
+                _build_image(root)
+                return
+        print(f"\n[ok] Image {IMAGE_NAME!r} is up-to-date — skipping rebuild.")
+    except Exception:  # noqa: BLE001
+        # Timestamp comparison failed — just proceed without rebuilding
+        pass
+
+
 def _port_is_up(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.5)
@@ -164,9 +205,16 @@ def _port_is_up(port: int) -> bool:
 
 
 def _start_services(root: Path) -> None:
-    _step(f"Starting {UI_SERVICE} and {API_SERVICE} containers ...")
+    """Start (or restart) both services so they always run the latest code.
+
+    --force-recreate ensures the container is rebuilt from its image even if
+    it was already running.  Combined with the  ./src:/app/src  volume mount
+    in docker-compose.yml this guarantees the running process always sees the
+    latest Python source files without requiring a full image rebuild.
+    """
+    _step(f"Starting {UI_SERVICE} and {API_SERVICE} with latest code ...")
     result = subprocess.run(
-        ["docker", "compose", "up", "-d", UI_SERVICE, API_SERVICE],
+        ["docker", "compose", "up", "-d", "--force-recreate", UI_SERVICE, API_SERVICE],
         cwd=str(root),
     )
     if result.returncode != 0:
@@ -196,44 +244,33 @@ def main() -> int:
     # 1. Docker present and daemon running
     _ensure_docker(root)
 
-    # 2. Build image only when it does not exist yet
-    if _image_exists():
-        print(f"\n[ok] Image {IMAGE_NAME!r} already exists -- skipping build.")
-        print("     To force a rebuild:  docker compose build")
-    else:
-        _build_image(root)
+    # 2. Rebuild image only when Dockerfile / requirements changed (uses cache)
+    _rebuild_if_needed(root)
 
-    # 3. Start both UI and API (skip whichever is already listening)
-    ui_already_up  = _port_is_up(UI_PORT)
-    api_already_up = _port_is_up(API_PORT)
+    # 3. Always force-recreate containers so the running process picks up
+    #    the latest code from the ./src volume mount.
+    _start_services(root)
 
-    if ui_already_up and api_already_up:
-        print(f"\n[ok] Dashboard already running on port {UI_PORT}.")
-        print(f"[ok] API already running on port {API_PORT}.")
-    else:
-        _start_services(root)
+    # 4. Wait for services to become available
+    if not _wait_for_port(UI_PORT, "Streamlit dashboard", UI_WAIT_SEC):
+        print(
+            f"\n[WARNING] Dashboard did not start on port {UI_PORT} "
+            f"within {UI_WAIT_SEC}s.\n"
+            "Check logs with:  docker compose logs basetruth-ui",
+            file=sys.stderr,
+        )
+        return 1
 
-        if not ui_already_up:
-            if not _wait_for_port(UI_PORT, "Streamlit dashboard", UI_WAIT_SEC):
-                print(
-                    f"\n[WARNING] Dashboard did not start on port {UI_PORT} "
-                    f"within {UI_WAIT_SEC}s.\n"
-                    "Check logs with:  docker compose logs basetruth-ui",
-                    file=sys.stderr,
-                )
-                return 1
+    if not _wait_for_port(API_PORT, "REST API", API_WAIT_SEC):
+        print(
+            f"\n[WARNING] API did not start on port {API_PORT} "
+            f"within {API_WAIT_SEC}s.\n"
+            "Check logs with:  docker compose logs basetruth-api",
+            file=sys.stderr,
+        )
+        # API failure is non-fatal — dashboard is already up
 
-        if not api_already_up:
-            if not _wait_for_port(API_PORT, "REST API", API_WAIT_SEC):
-                print(
-                    f"\n[WARNING] API did not start on port {API_PORT} "
-                    f"within {API_WAIT_SEC}s.\n"
-                    "Check logs with:  docker compose logs basetruth-api",
-                    file=sys.stderr,
-                )
-                # API failure is non-fatal — dashboard is already up
-
-    # 4. Open browser -> Streamlit dashboard
+    # 5. Open browser -> Streamlit dashboard
     print(f"\n[ok] BaseTruth Dashboard  ->  {BROWSER_URL}")
     print(f"[ok] REST API docs        ->  {API_DOCS_URL}")
     try:

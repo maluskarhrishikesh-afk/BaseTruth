@@ -1,43 +1,43 @@
-Can you improve the look and feel of the page?
+Here one problem is that we have to click on "Generate Case Report PDF" to generate the report. Can we generate the report immediately after we click on upload files? This way the reports can also be stored in a data store and we can open them whenever the regulators or customers ask us about it.
 
-The left panel does not look polished, it is way too the right than in the middle->
-When we click on various links like Dashboard, Scan, Bulk Scan etc they move up and down.
+---------------------------------------------------------------------------------------------
 
----------------------------------------------------------------------------
+In "Records" tab in dark mode the following fields dont dispay properly ->
+Ishaan Mann
+BT-000034
+PAN
+—
+Aadhaar
+—
+Email
+—
+Phone
+—
+Documents scanned
+1
+Member since
+2026-03-26
 
-In the below section the button "Generate Case Report PDF" does not seem to be properly aligned ->
+--------------------------------------------------------------------------------------------
+
+In Records tab the search button is also not aligned properly ->
+Records
+Search for individuals by any known identifier.
+
+Name, PAN, Aadhaar, email, phone, BT-XXXXXX…
+All fields
+
+Can you make the overall UI moderan, elegant and classy?
+
+----------------------------------------------------------------------------------------------
+
+In Bulk Scan tab there is a empty text field , dont know exactly what it is ->
 
 📄 Case Report PDF
 Generate a single plain-English PDF report covering all documents, income reconciliation, and an overall verdict — suitable for a loan officer review.
 
 Report title
 
-Mortgage Application Review
+----------------------------------------------------------------------------------
 
------------------------------------------------------------------
-
-The top section is not properly visible, it gets cut a little ->
-Cases
-
-20
-
-Scanned
-
-42
-
-High Risk
-
-3
-
-Comparisons
-
-1
-
----------------------------------------------------------------------------------
-
-At the right hand top side where we have options like System | Light | Dark, it does not seem to be working as expected.
-When we click dark the text and various labels become invisible (color combination issue)
-
-------------------------------------------------------------------------------------
-
-After doing this push the code to git and deploy and run the code so that I can go and test it
+Finally push the code to git and deploy and run the code so that I can go and test it myself.

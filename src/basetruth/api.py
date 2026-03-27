@@ -180,6 +180,118 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
             note_author=request.note_author,
         )
 
+    # ── Entity registry endpoints ─────────────────────────────────────────
+
+    @app.get("/api/v1/entities", tags=["Entities"])
+    def list_entities(
+        q: str = Query("", description="Search term — name, PAN, Aadhaar, email, or phone."),
+        field: str = Query("all", description="Field to search: all | name | pan | aadhar | email | phone"),
+        limit: int = Query(100, ge=1, le=1000, description="Maximum rows to return."),
+    ) -> List[Dict[str, Any]]:
+        """Search the entity registry.
+
+        Returns the most-recent entities when no query is supplied.
+        Each result includes scan count and latest risk level for quick triage.
+        """
+        try:
+            from basetruth.store import search_entities
+            return search_entities(query=q, search_field=field, limit=limit)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"DB unavailable: {exc}") from exc
+
+    @app.get("/api/v1/entities/{entity_ref}", tags=["Entities"])
+    def get_entity(entity_ref: str) -> Dict[str, Any]:
+        """Return full detail for one entity including all scans summary."""
+        try:
+            from basetruth.store import get_entity_scans, search_entities
+            matches = search_entities(query=entity_ref, search_field="all", limit=1)
+            if not matches:
+                raise HTTPException(status_code=404, detail=f"Entity not found: {entity_ref}")
+            entity = matches[0]
+            entity["scans"] = get_entity_scans(entity_ref)
+            return entity
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"DB unavailable: {exc}") from exc
+
+    @app.get("/api/v1/entities/{entity_ref}/scans", tags=["Entities"])
+    def list_entity_scans(entity_ref: str) -> List[Dict[str, Any]]:
+        """List all document scans for a specific entity (most-recent first).
+
+        Each item includes the full JSON report so analysts can review the
+        signals that led to a flag without needing to access the filesystem.
+        """
+        try:
+            from basetruth.store import get_entity_scans
+            scans = get_entity_scans(entity_ref)
+            if not scans:
+                # Could be entity not found or just no scans yet — disambiguate
+                from basetruth.store import search_entities
+                if not search_entities(query=entity_ref, search_field="all", limit=1):
+                    raise HTTPException(status_code=404, detail=f"Entity not found: {entity_ref}")
+            return scans
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"DB unavailable: {exc}") from exc
+
+    @app.get("/api/v1/scans/{scan_id}/report.pdf", tags=["Reports"])
+    def download_scan_pdf(scan_id: int) -> Any:
+        """Download the PDF audit report for a specific scan.
+
+        Returns the PDF binary so auditors can save it locally or attach it
+        to a case without needing access to the server filesystem.
+
+        Use this endpoint when explaining a fraud flag to an auditor:
+        look up the entity, find the scan ID, call this endpoint, share the PDF.
+        """
+        try:
+            from fastapi.responses import Response
+            from basetruth.store import get_scan_pdf
+            pdf_bytes = get_scan_pdf(scan_id)
+            if not pdf_bytes:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"PDF report not found for scan {scan_id}. "
+                           "The scan may not have generated a PDF, or the DB is unavailable.",
+                )
+            return Response(
+                content=pdf_bytes,
+                media_type="application/pdf",
+                headers={
+                    "Content-Disposition": f'attachment; filename="scan_{scan_id}_report.pdf"',
+                    "Content-Length": str(len(pdf_bytes)),
+                },
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"DB unavailable: {exc}") from exc
+
+    @app.get("/api/v1/scans/recent", tags=["Reports"])
+    def list_recent_scans(
+        limit: int = Query(50, ge=1, le=500, description="Number of most-recent scans to return."),
+    ) -> List[Dict[str, Any]]:
+        """Return the most-recent scans across all entities with their risk levels.
+
+        Useful for a fraud-monitoring dashboard.
+        """
+        try:
+            from basetruth.store import list_recent_scans as _list
+            return _list(limit=limit)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"DB unavailable: {exc}") from exc
+
+    @app.get("/api/v1/db/stats", tags=["System"])
+    def db_stats() -> Dict[str, Any]:
+        """Return entity, scan, and high-risk counts from the database."""
+        try:
+            from basetruth.store import db_stats as _stats
+            return _stats()
+        except Exception as exc:
+            return {"error": str(exc), "entities": 0, "scans": 0, "high_risk": 0}
+
     return app
 
 

@@ -1,0 +1,25 @@
+# Exclude binary files from GitHub Copilot workspace context.
+# Prevents "Could not process image" (HTTP 400) errors from the Copilot API.
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.bmp
+*.ico
+*.tiff
+*.tif
+*.svg
+*.pdf
+
+# Exclude compiled/cached artifacts
+__pycache__/
+*.pyc
+.venv/
+build/
+artifacts/
+
+# Exclude dynamic user data — uploaded documents (images, PDFs) trigger
+# "Could not process image" errors when Copilot indexes them.
+your_data/
+data/

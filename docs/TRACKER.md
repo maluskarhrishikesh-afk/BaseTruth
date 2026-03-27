@@ -36,6 +36,13 @@
 - [x] professional sidebar-navigation Streamlit UI (Dashboard, Scan, Bulk, Cases, Reports, Datasources, Settings)
 - [x] FastAPI REST layer (`src/basetruth/api.py`) with scan, reports, and case endpoints
 - [x] enriched Markdown report renderer (signal icons, structured tables)
+- [x] PDF audit report generation (FPDF2) — stored in PostgreSQL `scans.pdf_report` (LargeBinary)
+- [x] `GET /api/v1/scans/{id}/report.pdf` — auditor PDF download from database
+- [x] `GET /api/v1/entities` — entity registry search (name / PAN / Aadhaar / email / phone)
+- [x] `GET /api/v1/entities/{ref}` — entity detail with scan history
+- [x] `GET /api/v1/entities/{ref}/scans` — all scans for one entity (full JSON + signals)
+- [x] `GET /api/v1/scans/recent` — monitoring feed of latest scans
+- [x] `GET /api/v1/db/stats` — entity / scan / high-risk counts
 
 ### Phase 5 — SOLID Architecture and Multi-Industry Coverage
 - [x] validation packs refactored into individual industry modules (`src/basetruth/analysis/packs/`)
@@ -73,14 +80,28 @@
 - [x] `packs/__init__.py` extended — mortgage pack registered for all sub-types
 - [x] Synthetic mortgage corpus: 50 cases × 8–9 PDFs = 426 PDFs with `income_inflated`, `employer_fake`, `circular_funds`, `backdated_employment` labels
 - [x] `data/mortgage_docs/metadata.json` + `labels.csv` (ML-ready)
-- [x] `docs/Mortgage_Fraud.md` — full mortgage industry knowledge base:
-  - Indian market structure, underwriting parameters, fraud typology (16 fraud types)
-  - Cross-document consistency checks table
-  - Document-specific forensic checks (payslip, bank statement, employment letter, Form 16)
-  - Risk scoring architecture, rules engine (hard + soft rules), ML features
-  - Regulatory references (RBI, NHB, PMLA, CERSAI, RERA)
-  - Implementation status tracker
+- [x] `docs/Mortgage_Fraud.md` — full mortgage industry knowledge base (fraud typology, cross-document checks, rules engine, ML features)
 - [x] 21 new mortgage-specific tests — 42 total passing
+
+### Phase 7 — Image Document Scanning and Visual Forensics
+- [x] `src/basetruth/analysis/image_forensics.py` — complete multi-layer image forensics module:
+  - `_extract_exif_pillow()` — EXIF via Pillow (always available)
+  - `_extract_exif_exifread()` — richer tag set via exifread library (optional)
+  - `extract_image_metadata()` — merged EXIF + image dimensions
+  - `detect_suspicious_tool()` — matches 25+ suspicious software names including AI generators
+  - `run_ela()` — Error Level Analysis via Pillow + NumPy; returns (ela_score, high_error_frac)
+  - `run_noise_analysis()` — Laplacian CV across 16×16 blocks via OpenCV (optional)
+  - `analyse_image()` — combined entry point returning signals + forensics summary
+- [x] `integrations/pdf.py` extended with image helpers:
+  - `is_image_file()` — extension check
+  - `ocr_image_directly()` — pytesseract OCR on raw images (no Poppler dependency)
+  - `extract_image_file_metadata()` — dimensions, format, SHA-256 for raw images
+- [x] `service.scan_document()` — new `elif is_image_file(path):` branch for `.jpg/.png/.tiff` etc.
+  - OCR → structured summary → image forensics → tamper assessment → PDF report → DB persist
+- [x] `evaluate_tamper_risk()` signature updated: accepts optional `image_forensics` dict
+  - image forensics signals merged into signal list before scoring
+  - `image_forensics_summary` key added to return value when forensics ran
+- [x] All 42 existing tests still pass
 
 ## Immediate Next Milestones
 
@@ -95,7 +116,9 @@
 4. MCA21 CIN registry API stub (`src/basetruth/integrations/mca21.py`)
 5. CERSAI charge lookup stub (`src/basetruth/integrations/cersai.py`)
 6. Add real cryptographic signature verification (`pdfsig` / `qpdf`)
-7. Evidence export package (PDF report with chain-of-custody)
+7. Template matching for image documents (known-good passport/PAN/Aadhaar layout comparison)
+8. GAN / AI-generation artefact detector using pretrained CNN (deepfake document detection)
+9. Perceptual hash drift check across document series (ImageHash)
 
 ## Out Of Scope For Now
 

@@ -8,18 +8,30 @@ BaseTruth runs a micro-DAG style pipeline where each detector contributes signal
 flowchart TD
   A[Input Document] --> B[PDF Metadata Inspector]
   A --> C[LiteParse Extraction]
+  A --> IMG[Image File Branch]
+  IMG --> IMGOCR[Direct OCR pytesseract]
+  IMG --> ELA[ELA Error Level Analysis]
+  IMG --> EXIF[EXIF Metadata Inspector]
+  IMG --> NOISE[Noise Consistency Analysis]
   X[Client Datasource Connectors] --> Y[Snapshot Workspace]
   Y --> A
   C --> D[Structured Summary Builder]
   D --> E[Semantic And Arithmetic Checks]
   B --> F[Signature And Producer Checks]
   D --> G[Cross Document Comparator]
-  E --> H[Signal Aggregator]
+  IMGOCR --> D
+  ELA --> H[Signal Aggregator]
+  EXIF --> H
+  NOISE --> H
+  E --> H
   F --> H
   G --> H
   H --> I[Truth Score And Verdict]
-  I --> J[JSON And Markdown Reports]
+  I --> J[JSON And Markdown And PDF Reports]
   J --> K[Operator UI]
+  J --> DB[(PostgreSQL — Scans + PDF Reports)]
+  DB --> API[REST API — Entity and Scan Retrieval]
+  API --> AUD[Auditor Download PDF]
 ```
 
 ## Layers
@@ -27,6 +39,7 @@ flowchart TD
 ### 1. Ingestion Layer
 
 - accepts PDF files directly
+- accepts raw image files (.jpg, .jpeg, .png, .tiff, .bmp, .webp) directly — no PDF wrapper needed
 - accepts LiteParse JSON outputs directly
 - supports datasource connectors such as folder sync and manifest-driven ingest
 - snapshots client documents into a BaseTruth-managed workspace before scanning
@@ -51,6 +64,7 @@ flowchart TD
 
 - uses LiteParse when available for structure-preserving extraction
 - builds normalized label-value pairs and domain summaries
+- for raw image files: uses pytesseract OCR directly (no Poppler required) then feeds the same normalisation pipeline
 - is intentionally separate from fraud scoring so parsing can be reused elsewhere
 
 ### 3. Metadata Layer
@@ -58,6 +72,7 @@ flowchart TD
 - inspects PDF producer and creator fields
 - captures creation and modification timestamps when available
 - scans for signature markers such as `/Sig`, `/FT /Sig`, `/ByteRange`, and `/Contents`
+- for raw image files: inspects EXIF tags (Make, Model, Software, DateTimeOriginal, etc.) via Pillow and exifread
 
 ### 4. Logic Layer (Validation Packs)
 
@@ -98,13 +113,63 @@ Each pack:
 - currently optimized for monthly payslip analysis
 - designed to expand to invoices, claims, statements, and KYC documents
 
-### 6. Reporting Layer
+### 6. Image Forensics Layer (`src/basetruth/analysis/image_forensics.py`)
+
+Activated automatically when the input is a raw image file (.jpg, .png, .tiff, etc.).
+
+| Check | Tool | What it catches |
+|---|---|---|
+| EXIF suspicious tool detection | Pillow + exifread | Photoshop, GIMP, Canva, AI generators in Software/CreatorTool tags |
+| Missing camera EXIF | Pillow | Screenshots and generated images lacking Make/Model metadata |
+| Timestamp inconsistency | Pillow EXIF | Backdated capture timestamps |
+| Error Level Analysis (ELA) | Pillow + NumPy | Copy-paste, text replacement, region editing |
+| Noise consistency CV | OpenCV + NumPy | Local editing leaving mismatched noise patterns |
+
+ELA works by resaving the image at a known JPEG quality (95 %) and measuring per-pixel differences.  Genuine unedited images show uniform error; edited regions re-compress differently and emit abnormally high pixel deltas.
+
+**Risk scoring thresholds:**
+- ELA score < 8 → no penalty
+- ELA score 8–20 → low penalty (15 pts) — mild artefacts
+- ELA score ≥ 20 → high penalty (40 pts) — strong editing signature
+- Suspicious tool in EXIF → 45 pts
+- Noise CV > 1.5 → 25 pts
+
+### 7. Reporting Layer
 
 - emits JSON for machines
 - emits Markdown for humans and audit trails
+- emits PDF audit reports (FPDF2) for loan officers and non-technical reviewers
+- PDF reports are stored as binary blobs in the `scans.pdf_report` PostgreSQL column
+- auditors can retrieve any historical PDF via `GET /api/v1/scans/{id}/report.pdf`
+
+### 8. Persistence Layer (PostgreSQL)
+
+| Table | Purpose |
+|---|---|
+| `entities` | One row per verified person/organisation; searchable by name, PAN, Aadhaar, email, phone |
+| `scans` | One row per document scan; stores `report_json` (JSONB) + `pdf_report` (LargeBinary) |
+| `cases` | Case-management workflow record linked to an entity |
+| `case_notes` | Timestamped analyst notes on a case |
+
+The application degrades gracefully to file-only mode when `DATABASE_URL` is not set.
+
+### 9. REST API Layer (`src/basetruth/api.py`)
+
+Key endpoints for auditor workflows:
+
+| Endpoint | Description |
+|---|---|
+| `GET /api/v1/entities?q=…` | Search entity registry by name / PAN / Aadhaar |
+| `GET /api/v1/entities/{ref}` | Entity detail with all linked scans |
+| `GET /api/v1/entities/{ref}/scans` | Full scan history with signals for one entity |
+| `GET /api/v1/scans/{id}/report.pdf` | Download the PDF audit report for a specific scan |
+| `GET /api/v1/scans/recent` | Most-recent scans across all entities |
+| `GET /api/v1/db/stats` | Entity / scan / high-risk counts for dashboards |
 
 ## Why This Shape
 
 This architecture lets BaseTruth scale from a local analyst tool into an enterprise service without replacing the core reasoning model.
 
 The key product decision is to keep client data sources read-only and pull from them into BaseTruth snapshots. That is safer than treating a single mutable shared folder as the system of record.
+
+PDF reports are stored in PostgreSQL alongside the JSON so auditors can retrieve the full explanation for any historical flag without needing filesystem access.  This is the foundation for the chain-of-custody export planned in Phase 4.
