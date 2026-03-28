@@ -54,6 +54,9 @@ typing-inspection==0.4.2
 psycopg2-binary>=2.9.0
 sqlalchemy>=2.0.0
 
+# ── Object storage (MinIO / S3-compatible) ────────────────────────────────────
+boto3>=1.37.0
+
 # ── UI (Streamlit dashboard) ─────────────────────────────────────────────────
 streamlit>=1.42.0
 pandas>=2.2.0

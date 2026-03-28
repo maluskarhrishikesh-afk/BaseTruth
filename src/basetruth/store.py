@@ -214,18 +214,56 @@ def _entity_to_dict(entity: Entity, session: Session) -> Dict[str, Any]:
 
 
 def save_scan_to_db(
-    report: Dict[str, Any], pdf_bytes: Optional[bytes] = None
+    report: Dict[str, Any],
+    pdf_bytes: Optional[bytes] = None,
+    forced_entity_ref: Optional[str] = None,
+    extra_identity: Optional[Dict[str, str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Persist a completed verification report (+ optional PDF) to the database.
 
-    Extracts identity fields from the report, finds or creates an entity, then
-    writes a Scan row.  Returns a dict with ``scan_id`` and ``entity_ref``, or
-    None if the DB is unavailable / the save fails.
+    Parameters
+    ----------
+    report:             Full verification report dict.
+    pdf_bytes:          PDF report bytes (optional; loaded from artifact path if absent).
+    forced_entity_ref:  When provided, the scan is linked to this existing entity
+                        and auto-detection is skipped.  Use when the UI operator
+                        explicitly selects a person before scanning.
+    extra_identity:     Additional identity fields (email, pan_number, phone, …)
+                        supplied by the operator. Merged with auto-extracted fields
+                        so that even documents without embedded PAN/Aadhaar get
+                        linked to the right entity.
     """
     try:
         with db_session() as session:
-            identity = extract_identity_fields(report)
-            entity = _find_or_create_entity(session, identity)
+            entity = None
+
+            # ── Force-link to an explicitly chosen entity ─────────────────
+            if forced_entity_ref:
+                entity = (
+                    session.query(Entity)
+                    .filter(Entity.entity_ref == forced_entity_ref)
+                    .first()
+                )
+                if entity:
+                    log.info(
+                        "save_scan_to_db: force-linked to entity",
+                        extra={"entity_ref": forced_entity_ref},
+                    )
+                else:
+                    log.warning(
+                        "save_scan_to_db: forced_entity_ref not found, falling back to auto",
+                        extra={"entity_ref": forced_entity_ref},
+                    )
+
+            # ── Auto-detect / create entity ────────────────────────────────
+            if entity is None:
+                identity = extract_identity_fields(report)
+                # Merge operator-supplied hints: they override empty auto-fields
+                if extra_identity:
+                    for k, v in extra_identity.items():
+                        if v and not identity.get(k):
+                            identity[k] = v
+                entity = _find_or_create_entity(session, identity)
 
             ss = report.get("structured_summary", {})
             tamper = report.get("tamper_assessment", {})
@@ -556,4 +594,123 @@ def reset_db() -> bool:
         return True
     except Exception as exc:
         log.error("reset_db failed: %s", exc)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# MinIO / S3 object-storage helpers
+# ---------------------------------------------------------------------------
+
+import os as _os
+
+
+def _get_minio_s3_client():
+    """Return a boto3 S3 client pointed at the MinIO endpoint, or None."""
+    try:
+        import boto3  # type: ignore
+        from botocore.config import Config  # type: ignore
+        endpoint = _os.environ.get("MINIO_ENDPOINT", "")
+        if not endpoint:
+            return None
+        # Ensure the scheme is present
+        if not endpoint.startswith("http"):
+            endpoint = f"http://{endpoint}"
+        client = boto3.client(
+            "s3",
+            endpoint_url=endpoint,
+            aws_access_key_id=_os.environ.get("MINIO_ACCESS_KEY", "minioadmin"),
+            aws_secret_access_key=_os.environ.get("MINIO_SECRET_KEY", "minioadmin"),
+            config=Config(signature_version="s3v4"),
+            region_name="us-east-1",
+        )
+        return client
+    except Exception as exc:
+        log.debug("_get_minio_s3_client: unavailable — %s", exc)
+        return None
+
+
+def minio_available() -> bool:
+    """Return True if the MinIO service is reachable."""
+    client = _get_minio_s3_client()
+    if client is None:
+        return False
+    try:
+        client.list_buckets()
+        return True
+    except Exception:
+        return False
+
+
+def minio_bucket_stats() -> Dict[str, Any]:
+    """Return summary stats for the configured MinIO bucket."""
+    bucket = _os.environ.get("MINIO_BUCKET", "basetruth-reports")
+    client = _get_minio_s3_client()
+    if client is None:
+        return {"available": False, "bucket": bucket, "object_count": 0, "total_bytes": 0, "error": "MinIO not configured"}
+    try:
+        paginator = client.get_paginator("list_objects_v2")
+        total_count = 0
+        total_bytes = 0
+        for page in paginator.paginate(Bucket=bucket):
+            for obj in page.get("Contents", []):
+                total_count += 1
+                total_bytes += obj.get("Size", 0)
+        return {
+            "available": True,
+            "bucket": bucket,
+            "object_count": total_count,
+            "total_bytes": total_bytes,
+            "total_mb": round(total_bytes / 1024 / 1024, 2),
+        }
+    except Exception as exc:
+        log.warning("minio_bucket_stats failed: %s", exc)
+        return {"available": False, "bucket": bucket, "object_count": 0, "total_bytes": 0, "error": str(exc)}
+
+
+def minio_list_objects(limit: int = 500) -> List[Dict[str, Any]]:
+    """Return a list of objects in the configured bucket (most-recent first)."""
+    bucket = _os.environ.get("MINIO_BUCKET", "basetruth-reports")
+    client = _get_minio_s3_client()
+    if client is None:
+        return []
+    try:
+        paginator = client.get_paginator("list_objects_v2")
+        objects: List[Dict[str, Any]] = []
+        for page in paginator.paginate(Bucket=bucket):
+            for obj in page.get("Contents", []):
+                objects.append({
+                    "key": obj["Key"],
+                    "size_bytes": obj.get("Size", 0),
+                    "size_kb": round(obj.get("Size", 0) / 1024, 1),
+                    "last_modified": obj["LastModified"].isoformat() if obj.get("LastModified") else "",
+                    "etag": obj.get("ETag", "").strip('"'),
+                })
+            if len(objects) >= limit:
+                break
+        # Sort newest first
+        objects.sort(key=lambda o: o["last_modified"], reverse=True)
+        return objects[:limit]
+    except Exception as exc:
+        log.warning("minio_list_objects failed: %s", exc)
+        return []
+
+
+def minio_truncate_bucket() -> bool:
+    """Delete all objects in the configured MinIO bucket."""
+    bucket = _os.environ.get("MINIO_BUCKET", "basetruth-reports")
+    client = _get_minio_s3_client()
+    if client is None:
+        return False
+    try:
+        paginator = client.get_paginator("list_objects_v2")
+        deleted = 0
+        for page in paginator.paginate(Bucket=bucket):
+            objs = [{"Key": o["Key"]} for o in page.get("Contents", [])]
+            if objs:
+                client.delete_objects(Bucket=bucket, Delete={"Objects": objs})
+                deleted += len(objs)
+        log.warning("minio_truncate_bucket: deleted %d objects from bucket '%s'", deleted, bucket)
+        return True
+    except Exception as exc:
+        log.error("minio_truncate_bucket failed: %s", exc)
         return False

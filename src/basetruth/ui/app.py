@@ -21,6 +21,10 @@ try:
         get_entity_scans,
         get_scan_pdf,
         list_recent_scans,
+        minio_available,
+        minio_bucket_stats,
+        minio_list_objects,
+        minio_truncate_bucket,
         reset_db,
         search_entities,
         update_entity,
@@ -991,6 +995,20 @@ def _render_report_summary(report: Dict[str, Any]) -> None:
 def _page_dashboard(service: BaseTruthService) -> None:
     st.markdown("# Dashboard")
 
+    with st.expander("ℹ️ How to use this screen", expanded=False):
+        st.markdown(
+            """
+The Dashboard gives you an **at-a-glance health check** of all document processing.
+
+- **Pending Review** — documents flagged high or medium risk that need your decision. Go to **Cases** to approve or reject them.
+- **Documents Scanned** — total verifications run in the current session (file-based).
+- **High Risk** — documents where the Truth Score is critically low.
+- **Avg Truth Score** — average score across all scans (100 = perfect integrity).
+
+The lower section shows the risk distribution chart and a live list of cases awaiting your review.
+"""
+        )
+
     reports = service.list_reports()
     cases = service.list_cases()
     ver_reports = [r for r in reports if r.get("kind") == "verification"]
@@ -1104,12 +1122,114 @@ def _page_dashboard(service: BaseTruthService) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Entity-linking widget (shared by Scan + Bulk Scan pages)
+# ---------------------------------------------------------------------------
+
+def _render_entity_link_widget(key_prefix: str) -> tuple[str | None, dict | None]:
+    """Render the 'Associate with a person' UI panel.
+
+    Returns
+    -------
+    forced_ref : str | None
+        entity_ref of an existing entity chosen by the user, or None.
+    extra_identity : dict | None
+        Identity fields typed by the user (used as hints when forced_ref is None).
+    """
+    with st.expander("👤 Associate documents with a person (recommended)", expanded=False):
+        st.markdown(
+            """
+Linking documents to an applicant **prevents duplicate entity records** and keeps all
+their documents grouped under one profile in the Records screen.
+
+**How it works:**
+- *Search an existing person* — type their name, PAN, Aadhaar, email, or reference number.  
+  All documents you scan will be linked to that profile.
+- *Or enter identifying details* — if this is a new applicant, type their PAN / email / phone
+  below. BaseTruth will auto-match future documents to the same person using these fields.
+""",
+        )
+
+        link_mode = st.radio(
+            "Link mode",
+            ["Search existing person", "Enter applicant details manually"],
+            horizontal=True,
+            key=f"{key_prefix}_link_mode",
+        )
+
+        forced_ref: str | None = None
+        extra_identity: dict | None = None
+
+        if link_mode == "Search existing person":
+            if _DB_IMPORTS_OK and db_available():
+                search_q = st.text_input(
+                    "Search by name / PAN / Aadhaar / email / phone / BT-ref",
+                    key=f"{key_prefix}_entity_search",
+                    placeholder="e.g. Aarini Parekh, MVWNV2212G, BT-000003…",
+                )
+                if search_q.strip():
+                    matches = search_entities(search_q.strip(), "all", limit=10)
+                    if matches:
+                        opts = {
+                            f"{m['entity_ref']}  —  {m['first_name']} {m['last_name']}  "
+                            f"({m.get('pan_number') or m.get('email') or 'no id'})": m["entity_ref"]
+                            for m in matches
+                        }
+                        chosen_label = st.selectbox(
+                            "Select person",
+                            list(opts.keys()),
+                            key=f"{key_prefix}_entity_select",
+                        )
+                        forced_ref = opts[chosen_label]
+                        st.success(f"✅ Scans will be linked to **{chosen_label.split('—')[0].strip()}**")
+                    else:
+                        st.info("No matching person found. Switch to 'Enter details manually' to create one.")
+            else:
+                st.warning("Database is offline — entity search unavailable.")
+
+        else:  # Manual entry
+            mc1, mc2 = st.columns(2)
+            e_fn = mc1.text_input("First name", key=f"{key_prefix}_ei_fn", placeholder="Aarini")
+            e_ln = mc2.text_input("Last name", key=f"{key_prefix}_ei_ln", placeholder="Parekh")
+            mc3, mc4 = st.columns(2)
+            e_pan = mc3.text_input("PAN number", key=f"{key_prefix}_ei_pan", placeholder="MVWNV2212G")
+            e_aadh = mc4.text_input("Aadhaar number", key=f"{key_prefix}_ei_aadh", placeholder="1234 5678 9012")
+            mc5, mc6 = st.columns(2)
+            e_email = mc5.text_input("Email", key=f"{key_prefix}_ei_email")
+            e_phone = mc6.text_input("Phone", key=f"{key_prefix}_ei_phone")
+            if any([e_fn, e_pan, e_aadh, e_email, e_phone]):
+                extra_identity = {
+                    "first_name": e_fn.strip(),
+                    "last_name": e_ln.strip(),
+                    "pan_number": e_pan.strip().upper(),
+                    "aadhar_number": e_aadh.replace(" ", "").strip(),
+                    "email": e_email.strip().lower(),
+                    "phone": e_phone.strip(),
+                }
+                st.success("✅ Identity hints will be used to group documents under the right person.")
+
+    return forced_ref, extra_identity
+
+
+# ---------------------------------------------------------------------------
 # Scan page (single document)
 # ---------------------------------------------------------------------------
 
 def _page_scan(service: BaseTruthService) -> None:
     st.markdown("# Scan Document")
-    st.markdown("Upload a document or point to an existing file to run a full BaseTruth integrity scan.")
+
+    with st.expander("ℹ️ How to use this screen", expanded=False):
+        st.markdown(
+            """
+**Scan** verifies a single document end-to-end.
+
+1. Upload the file (PDF, image, or LiteParse JSON) or paste a local path.
+2. *(Optional)* Expand **"Associate with a person"** to link the result to an applicant's
+   profile — this prevents duplicate entries in Records when the document doesn't include
+   PAN or Aadhaar.
+3. Hit **Run scan** and review the Truth Score, risk level, and forensic signals.
+4. Download the JSON or PDF report to share with colleagues or attach to a loan file.
+"""
+        )
 
     upload = st.file_uploader(
         "Drop a file here — PDF, JSON (LiteParse or structured), or image",
@@ -1125,6 +1245,8 @@ def _page_scan(service: BaseTruthService) -> None:
         "metadata and structure but cannot read the printed text from image-only pages."
     )
 
+    forced_ref, extra_identity = _render_entity_link_widget("scan")
+
     if st.button("Run scan ->", type="primary"):
         report: Dict[str, Any] | None = None
         scan_error: str = ""
@@ -1133,9 +1255,17 @@ def _page_scan(service: BaseTruthService) -> None:
                 if upload is not None:
                     temp_dir = Path(tempfile.mkdtemp(prefix="bt_upload_"))
                     saved_path = _save_uploaded_files([upload], temp_dir)[0]
-                    report = service.scan_document(saved_path)
+                    report = service.scan_document(
+                        saved_path,
+                        forced_entity_ref=forced_ref or None,
+                        extra_identity=extra_identity or None,
+                    )
                 elif path_input.strip():
-                    report = service.scan_document(path_input.strip())
+                    report = service.scan_document(
+                        path_input.strip(),
+                        forced_entity_ref=forced_ref or None,
+                        extra_identity=extra_identity or None,
+                    )
                 else:
                     st.warning("Provide an uploaded file or a local file path.")
             except FileNotFoundError as exc:
@@ -1247,7 +1377,20 @@ def _page_scan(service: BaseTruthService) -> None:
 
 def _page_bulk(service: BaseTruthService) -> None:
     st.markdown("# Bulk Scan")
-    st.markdown("Scan multiple documents at once and optionally run a cross-month payslip comparison.")
+
+    with st.expander("ℹ️ How to use this screen", expanded=False):
+        st.markdown(
+            """
+**Bulk Scan** lets you process an entire mortgage / loan application folder in one go.
+
+1. Upload all the applicant's documents at once (payslips, bank statements, PAN card, Aadhaar, etc.).
+2. Expand **"Associate documents with a person"** — enter the applicant's PAN, email, or phone so
+   every document in this batch links to the same profile in Records.  Without this, documents
+   that don't embed PAN / Aadhaar may create separate "unknown" entity entries.
+3. Tick **"Run cross-month payslip comparison"** if the batch includes multi-month payslips.
+4. Hit **Run bulk scan**.  A case-report PDF is auto-generated and saved to `artifacts/case_reports/`.
+"""
+        )
 
     uploads = st.file_uploader(
         "Upload multiple documents",
@@ -1256,6 +1399,8 @@ def _page_bulk(service: BaseTruthService) -> None:
     )
     folder_input = st.text_input("Or scan all supported files from a folder on disk")
     compare_payslips = st.checkbox("Run cross-month payslip comparison after scan", value=True)
+
+    bulk_forced_ref, bulk_extra_identity = _render_entity_link_widget("bulk")
 
     if st.button("Run bulk scan →", type="primary"):
         with st.spinner("Scanning…"):
@@ -1274,7 +1419,13 @@ def _page_bulk(service: BaseTruthService) -> None:
             prog = st.progress(0)
             for i, p in enumerate(paths):
                 try:
-                    _new_reports.append(service.scan_document(p))
+                    _new_reports.append(
+                        service.scan_document(
+                            p,
+                            forced_entity_ref=bulk_forced_ref or None,
+                            extra_identity=bulk_extra_identity or None,
+                        )
+                    )
                 except Exception as exc:  # noqa: BLE001
                     _new_errors.append(f"{p.name}: {exc}")
                 prog.progress((i + 1) / len(paths))
@@ -1560,6 +1711,20 @@ def _page_bulk(service: BaseTruthService) -> None:
 
 def _page_cases(service: BaseTruthService) -> None:
     st.markdown("# Cases")
+
+    with st.expander("ℹ️ How to use this screen", expanded=False):
+        st.markdown(
+            """
+A **case** is created automatically whenever a document scores medium or high risk.
+
+- **Needs Review tab** — your action queue. Read the forensic signals, then press **✅ Approve** (document is legitimate) or **❌ Reject** (document is fraudulent).
+- **Resolved tab** — cases you have already decided on.
+- **Auto-Approved tab** — low-risk documents cleared automatically; no action needed.
+
+Advanced options (assignee, labels, analyst notes) are hidden inside each case card — expand them when you need a full audit trail.
+"""
+        )
+
     st.markdown(
         "A case is opened **only when documents carry a medium or high risk signal** "
         "(e.g. tampered metadata, income inconsistency, font anomaly). "
@@ -1750,6 +1915,19 @@ def _render_case_card(service: BaseTruthService, case: Dict[str, Any], *, show_a
 
 def _page_reports(service: BaseTruthService) -> None:
     st.markdown("# Reports")
+
+    with st.expander("ℹ️ How to use this screen", expanded=False):
+        st.markdown(
+            """
+**Reports** are the PDF and JSON outputs produced by BaseTruth after scanning documents.
+
+- **Case Bundle PDFs** — one comprehensive PDF per bulk-scan session, covering all documents, income reconciliation, and an overall fraud verdict. Generated automatically after every Bulk Scan. These are the primary outputs to share with loan officers or compliance teams.
+- **Individual Scan Reports** — one JSON or PDF per document. Download them here or from the **Records** section (filtered by applicant).
+
+Tip: share Case Bundles with regulators; share individual scan PDFs with the applicant if needed.
+"""
+        )
+
     st.markdown(
         "**What is this section?**  \n"
         "Reports are the PDF and JSON outputs produced by BaseTruth after scanning. "
@@ -2010,6 +2188,19 @@ def _page_datasources(service: BaseTruthService) -> None:
 def _page_settings() -> None:
     st.markdown("# Settings")
 
+    with st.expander("ℹ️ How to use this screen", expanded=False):
+        st.markdown(
+            """
+Settings control how BaseTruth stores data and how the service is run.
+
+- **Artifact root** — the local folder where all reports, structured summaries, and case records are written. Change it in the sidebar to point BaseTruth at a different workspace or network share.
+- **Product information** — version numbers, runtime info, and API endpoint details.
+- **Quick start commands** — copy-paste commands to start/stop the service, run tests, or rebuild the Docker containers.
+
+Most settings are controlled via environment variables in `.env`. See the README for a full reference.
+"""
+        )
+
     st.subheader("Artifact root")
     st.markdown(
         "All reports, structured summaries, and case records are stored under this directory. "
@@ -2053,6 +2244,21 @@ def _page_settings() -> None:
 
 def _page_logs() -> None:
     st.markdown("# Log Analyzer")
+
+    with st.expander("ℹ️ How to use this screen", expanded=False):
+        st.markdown(
+            """
+The Log Analyzer reads `logs/basetruth.jsonl` — the structured log file written by every BaseTruth module.
+
+- **Filter by level** — use ERROR or WARNING to surface problems quickly.
+- **Filter by module** — narrow down to a specific component (e.g. `basetruth.service`).
+- **Search message** — free-text search across all log lines.
+- **Download** — export the full log file for offline analysis or sharing with support.
+
+Logs are written in real-time; refresh the page to see the latest entries.
+"""
+        )
+
     st.caption("Structured JSONL logs produced by every BaseTruth module.")
 
     lp = _log_path() if _LOGGER_OK else None
@@ -2167,76 +2373,138 @@ _DB_TABLE_LABELS: dict[str, str] = {
 def _page_database() -> None:
     st.markdown("# Database Viewer")
 
-    if not _DB_IMPORTS_OK or not db_available():
-        st.warning(
-            "PostgreSQL is not available.  Start the `db` Docker service and ensure "
-            "`DATABASE_URL` is set correctly."
-        )
-        return
+    with st.expander("ℹ️ How to use this screen", expanded=False):
+        st.markdown(
+            """
+This screen gives you direct visibility into what is stored in the system.
 
-    # ── Row-count overview ───────────────────────────────────────────────────
-    counts = db_table_counts()
-    cc = st.columns(4)
-    for i, (tbl, lbl) in enumerate(_DB_TABLE_LABELS.items()):
-        cc[i].metric(lbl, f"{counts.get(tbl, 0):,}")
-
-    st.divider()
-
-    # ── Table browser ────────────────────────────────────────────────────────
-    sel_col, _ = st.columns([2, 6])
-    with sel_col:
-        chosen_table = st.selectbox(
-            "Browse table",
-            list(_DB_TABLE_LABELS.keys()),
-            format_func=lambda t: _DB_TABLE_LABELS.get(t) or t,
-            key="db_viewer_table",
+- **PostgreSQL tables** — browse entities, scans, cases, and notes row-by-row.
+- **MinIO object storage** — list PDF reports stored in the S3-compatible bucket.
+- **Danger Zone** — reset (empty) the database or the MinIO bucket; useful during testing.
+  Type `RESET` to confirm before anything is deleted.
+"""
         )
 
-    rows, total = db_table_rows(chosen_table, limit=500)
+    pg_tab, minio_tab, danger_tab = st.tabs(["🐘  PostgreSQL", "🪣  MinIO Storage", "⚠️  Danger Zone"])
 
-    cap = f"**{_DB_TABLE_LABELS[chosen_table]}** — {total:,} rows total"
-    if total > 500:
-        cap += "  ·  showing most-recent 500"
-    st.subheader(cap)
+    # ── PostgreSQL tab ───────────────────────────────────────────────────────
+    with pg_tab:
+        if not _DB_IMPORTS_OK or not db_available():
+            st.warning(
+                "PostgreSQL is not available.  Start the `db` Docker service and ensure "
+                "`DATABASE_URL` is set correctly."
+            )
+        else:
+            counts = db_table_counts()
+            cc = st.columns(4)
+            for i, (tbl, lbl) in enumerate(_DB_TABLE_LABELS.items()):
+                cc[i].metric(lbl, f"{counts.get(tbl, 0):,}")
 
-    if rows:
-        import pandas as pd  # noqa: PLC0415
+            st.divider()
 
-        df = pd.DataFrame(rows)
-        # Convert datetime objects to ISO strings for clean rendering
-        for col in df.select_dtypes(include=["datetimetz", "datetime64[ns, UTC]", "object"]).columns:
-            try:
-                df[col] = df[col].astype(str)
-            except Exception:
-                pass
-        st.dataframe(df, hide_index=True, use_container_width=True, height=480)
-    else:
-        st.info(f"No rows in **{_DB_TABLE_LABELS[chosen_table]}** yet.")
+            sel_col, _ = st.columns([2, 6])
+            with sel_col:
+                chosen_table = st.selectbox(
+                    "Browse table",
+                    list(_DB_TABLE_LABELS.keys()),
+                    format_func=lambda t: _DB_TABLE_LABELS.get(t) or t,
+                    key="db_viewer_table",
+                )
 
-    # ── Danger zone — DB Reset ────────────────────────────────────────────────
-    st.divider()
-    st.markdown("### ⚠️ Danger Zone")
+            rows, total = db_table_rows(chosen_table, limit=500)
+            cap = f"**{_DB_TABLE_LABELS[chosen_table]}** — {total:,} rows total"
+            if total > 500:
+                cap += "  ·  showing most-recent 500"
+            st.subheader(cap)
 
-    with st.expander("🗑️  Reset / Empty Database", expanded=False):
-        st.error(
-            "This permanently deletes **all** entities, scans, cases, and notes. "
-            "There is no undo."
-        )
-        confirm_input = st.text_input(
-            "Type **RESET** to confirm:",
-            key="db_reset_confirm_input",
-            placeholder="RESET",
-        )
-        if st.button("💀  Reset Database", type="primary", key="db_reset_execute_btn"):
-            if confirm_input.strip() == "RESET":
-                ok = reset_db()
-                if ok:
-                    st.success("Database reset complete. All tables are now empty.")
-                    st.rerun()
-                else:
-                    st.error("Reset failed — check the Logs page for details.")
+            if rows:
+                import pandas as pd  # noqa: PLC0415
+
+                df = pd.DataFrame(rows)
+                for col in df.select_dtypes(include=["datetimetz", "datetime64[ns, UTC]", "object"]).columns:
+                    try:
+                        df[col] = df[col].astype(str)
+                    except Exception:
+                        pass
+                st.dataframe(df, hide_index=True, use_container_width=True, height=480)
             else:
-                st.error("Please type exactly `RESET` (all caps) to confirm.")
+                st.info(f"No rows in **{_DB_TABLE_LABELS[chosen_table]}** yet.")
+
+    # ── MinIO tab ────────────────────────────────────────────────────────────
+    with minio_tab:
+        if not _DB_IMPORTS_OK:
+            st.warning("Store module not loaded.")
+        else:
+            minio_up = minio_available()
+            if not minio_up:
+                st.warning(
+                    "MinIO is not reachable. Check that the `minio` Docker service is running "
+                    "and that `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` are set."
+                )
+            else:
+                stats = minio_bucket_stats()
+                mc1, mc2, mc3 = st.columns(3)
+                mc1.metric("Bucket", stats.get("bucket", "—"))
+                mc2.metric("Objects", f"{stats.get('object_count', 0):,}")
+                mc3.metric("Total size", f"{stats.get('total_mb', 0):.1f} MB")
+
+                st.divider()
+                objs = minio_list_objects(limit=500)
+                if objs:
+                    import pandas as pd  # noqa: PLC0415
+
+                    st.subheader(f"{len(objs)} objects (most-recent first)")
+                    obj_df = pd.DataFrame([
+                        {
+                            "Key": o["key"],
+                            "Size (KB)": o["size_kb"],
+                            "Last Modified": o["last_modified"][:19].replace("T", " "),
+                        }
+                        for o in objs
+                    ])
+                    st.dataframe(obj_df, hide_index=True, use_container_width=True, height=400)
+                else:
+                    st.info("The bucket is empty.")
+
+    # ── Danger Zone tab ──────────────────────────────────────────────────────
+    with danger_tab:
+        st.markdown("### ⚠️ Irreversible Operations")
+        st.error(
+            "Actions below **permanently delete data** with no undo. "
+            "Type the exact confirmation word shown before pressing the button."
+        )
+
+        dc1, dc2 = st.columns(2)
+
+        with dc1:
+            st.markdown("#### 🗄️ Reset PostgreSQL")
+            st.caption("Deletes all entities, scans, cases, and notes.")
+            db_confirm = st.text_input("Type RESET to confirm", key="db_reset_confirm_input", placeholder="RESET")
+            if st.button("💀 Empty Database", type="primary", key="db_reset_execute_btn"):
+                if db_confirm.strip() == "RESET":
+                    ok = reset_db()
+                    if ok:
+                        st.success("Database reset complete. All tables are now empty.")
+                        st.rerun()
+                    else:
+                        st.error("Reset failed — check the Logs page for details.")
+                else:
+                    st.error("Type exactly `RESET` (all caps) to confirm.")
+
+        with dc2:
+            st.markdown("#### 🪣 Truncate MinIO Bucket")
+            st.caption("Deletes all PDF/image objects in the storage bucket.")
+            minio_confirm = st.text_input("Type TRUNCATE to confirm", key="minio_truncate_confirm", placeholder="TRUNCATE")
+            if st.button("🗑️ Empty MinIO Bucket", type="primary", key="minio_truncate_btn"):
+                if minio_confirm.strip() == "TRUNCATE":
+                    ok = minio_truncate_bucket()
+                    if ok:
+                        st.success("MinIO bucket cleared.")
+                        st.rerun()
+                    else:
+                        st.error("Truncate failed — MinIO may be offline.  Check the Logs page.")
+                else:
+                    st.error("Type exactly `TRUNCATE` (all caps) to confirm.")
 
 
 # ---------------------------------------------------------------------------
@@ -2247,6 +2515,18 @@ def _page_database() -> None:
 
 def _page_records() -> None:
     st.markdown("# Records")
+
+    with st.expander("ℹ️ How to use this screen", expanded=False):
+        st.markdown(
+            """
+Records shows every **applicant (entity)** in the database and all the documents linked to them.
+
+- **Search** — type a name, PAN, Aadhaar, email, phone number, or BaseTruth reference (BT-XXXXXX) to find the right person.
+- **Entity card** — click a result to expand the full entity card: all identity fields, risk summary, and individual scan results.
+- **Download PDF** — each entity card has a “Download entity report” button that produces a single PDF covering every document scanned for that person.
+- **Linking tip** — if the same person appears multiple times, use the Scan or Bulk Scan page with the entity-linking widget to attach future documents to the correct existing record.
+"""
+        )
 
     if not _DB_IMPORTS_OK or not db_available():
         st.warning(
@@ -2515,21 +2795,37 @@ def _page_records() -> None:
 # ---------------------------------------------------------------------------
 
 def _render_index_metrics() -> None:
-    service = _get_service()
-    reports = service.list_reports()
-    cases = service.list_cases()
-    ver_reports = [r for r in reports if r.get("kind") == "verification"]
-    cols = st.columns(4)
-    cols[0].metric("Cases", len(cases))
-    cols[1].metric("Scanned", len(ver_reports))
-    cols[2].metric(
-        "High Risk",
-        sum(1 for r in ver_reports if r.get("risk_level") == "high"),
-    )
-    cols[3].metric(
-        "Comparisons",
-        sum(1 for r in reports if r.get("kind") == "comparison"),
-    )
+    """Render the slim top-of-page stats bar — uses DB when available."""
+    if _DB_IMPORTS_OK and db_available():
+        stats = db_stats()
+        cols = st.columns(4)
+        cols[0].metric("Entities in DB", stats.get("entities", 0),
+                       help="Unique individuals / organisations stored in PostgreSQL.")
+        cols[1].metric("Scans in DB", stats.get("scans", 0),
+                       help="Total document scans persisted to the database.")
+        cols[2].metric("High-Risk Scans", stats.get("high_risk", 0),
+                       help="Scans flagged high-risk (truth score < 60).")
+        try:
+            from basetruth.db import db_session
+            from basetruth.db import Case as _Case
+            from sqlalchemy import func as _func
+            with db_session() as _s:
+                pending = (
+                    _s.query(_func.count(_Case.id))
+                    .filter(_Case.disposition == "open")
+                    .scalar() or 0
+                )
+            cols[3].metric("Pending Review", pending,
+                           help="Cases still open — go to Cases to approve or reject.")
+        except Exception:  # noqa: BLE001
+            cols[3].metric("Pending Review", "—")
+    else:
+        # DB offline: show a minimal "offline" notice instead of stale file-system counts
+        st.info(
+            "📴 **Database offline** — connect PostgreSQL to see live statistics. "
+            "Document scans still work and are saved to disk.",
+            icon=None,
+        )
 
 
 # ---------------------------------------------------------------------------

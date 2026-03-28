@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from basetruth.logger import get_logger
+from basetruth.logger import get_logger, log_timing
 
 log = get_logger(__name__)
 
@@ -145,7 +145,12 @@ class BaseTruthService:
             parts.append(Path(report.get("source", {}).get("name", "unknown")).stem.lower())
         return "::".join(parts)
 
-    def scan_document(self, input_path: str | Path) -> Dict[str, Any]:
+    def scan_document(
+        self,
+        input_path: str | Path,
+        forced_entity_ref: Optional[str] = None,
+        extra_identity: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
         path = Path(input_path)
         if not path.exists():
             log.error("scan_document: file not found", extra={"path": str(path)})
@@ -238,7 +243,8 @@ class BaseTruthService:
                 liteparse_status = check_liteparse_available()
                 if liteparse_status["available"]:
                     log.info("scan_document: running LiteParse", extra={"cmd_source": liteparse_status.get("source", "?")})
-                    result = parse_document_to_json(path, raw_parse_path)
+                    with log_timing(log, "liteparse", path=str(path)):
+                        result = parse_document_to_json(path, raw_parse_path)
                     liteparse_cmd_used = " ".join(str(c) for c in result.get("command", []))
                     if result["status"] != "success":
                         parse_fallback = True
@@ -326,9 +332,10 @@ class BaseTruthService:
                 "fallback":     parse_fallback,
             },
         )
-        tamper_assessment = evaluate_tamper_risk(
-            structured_summary, pdf_metadata, image_forensics=image_forensics_result
-        )
+        with log_timing(log, "tamper_eval", path=str(path)):
+            tamper_assessment = evaluate_tamper_risk(
+                structured_summary, pdf_metadata, image_forensics=image_forensics_result
+            )
         log.info(
             "scan_document: tamper assessment complete",
             extra={
@@ -368,7 +375,8 @@ class BaseTruthService:
         # Plain-English PDF report for loan officers / non-technical reviewers
         pdf_report_path = artifact_dir / f"{path.stem}_report.pdf"
         try:
-            pdf_bytes = render_scan_report_pdf(report.to_dict())
+            with log_timing(log, "pdf_report_gen", path=str(path)):
+                pdf_bytes = render_scan_report_pdf(report.to_dict())
             pdf_report_path.write_bytes(pdf_bytes)
             report.artifacts["pdf_report_path"] = str(pdf_report_path)
             log.info("scan_document: PDF report generated", extra={"pdf_path": str(pdf_report_path)})
@@ -386,7 +394,12 @@ class BaseTruthService:
             from basetruth.store import save_scan_to_db
             log.info("scan_document: persisting scan to PostgreSQL")
             init_db()
-            db_result = save_scan_to_db(report_dict, pdf_bytes if "pdf_bytes" in dir() else None)
+            db_result = save_scan_to_db(
+                report_dict,
+                pdf_bytes if "pdf_bytes" in dir() else None,
+                forced_entity_ref=forced_entity_ref,
+                extra_identity=extra_identity,
+            )
             if db_result:
                 log.info(
                     "scan_document: DB persist OK",

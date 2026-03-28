@@ -183,3 +183,47 @@ def log_path() -> Optional[Path]:
         if isinstance(h, RotatingFileHandler):
             return Path(h.baseFilename)
     return None
+
+
+# ── Timing context manager ────────────────────────────────────────────────────
+
+from contextlib import contextmanager
+import time
+from typing import Any, Iterator
+
+
+@contextmanager
+def log_timing(
+    logger: logging.Logger,
+    operation: str,
+    **extra: Any,
+) -> Iterator[None]:
+    """Context manager that logs START / DONE with elapsed_ms for any block.
+
+    Usage::
+
+        with log_timing(log, "extract_text", doc="invoice.pdf"):
+            text = extract(path)
+    """
+    t0 = time.perf_counter()
+    logger.debug("%s: START", operation, extra=extra)
+    try:
+        yield
+    except Exception:
+        elapsed = round((time.perf_counter() - t0) * 1000)
+        logger.error(
+            "%s: ERROR after %d ms",
+            operation,
+            elapsed,
+            exc_info=True,
+            extra={**extra, "elapsed_ms": elapsed},
+        )
+        raise
+    else:
+        elapsed = round((time.perf_counter() - t0) * 1000)
+        logger.info(
+            "%s: DONE in %d ms",
+            operation,
+            elapsed,
+            extra={**extra, "elapsed_ms": elapsed},
+        )
