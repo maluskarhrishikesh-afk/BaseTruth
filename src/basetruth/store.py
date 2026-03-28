@@ -282,6 +282,16 @@ def save_scan_to_db(
                             identity[k] = v
                 entity = _find_or_create_entity(session, identity)
 
+            # When the operator explicitly supplied identity fields, force-update
+            # the entity record — even if those fields were already populated from
+            # an earlier (possibly incorrect) scan.  This lets analysts correct
+            # a wrong name or PAN without having to delete and re-create the entity.
+            if extra_identity and entity:
+                for k, v in extra_identity.items():
+                    if v:
+                        setattr(entity, k, v)
+                entity.updated_at = func.now()  # type: ignore[assignment]
+
             ss = report.get("structured_summary", {})
             tamper = report.get("tamper_assessment", {})
 
@@ -843,6 +853,24 @@ def minio_upload(key: str, data: bytes, content_type: str = "application/octet-s
     except Exception as exc:
         log.warning("minio_upload failed for key '%s': %s", key, exc)
         return False
+
+
+def minio_get_object(key: str) -> Optional[bytes]:
+    """Download *key* from the configured MinIO bucket and return its bytes.
+
+    Returns None when the object does not exist or MinIO is unavailable.
+    Never raises.
+    """
+    bucket = _os.environ.get("MINIO_BUCKET", "basetruth-reports")
+    client = _get_minio_s3_client()
+    if client is None:
+        return None
+    try:
+        resp = client.get_object(Bucket=bucket, Key=key)
+        return resp["Body"].read()
+    except Exception as exc:
+        log.debug("minio_get_object: key '%s' not found — %s", key, exc)
+        return None
 
 
 # ---------------------------------------------------------------------------

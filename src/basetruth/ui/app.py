@@ -26,6 +26,7 @@ try:
         list_recent_scans,
         minio_available,
         minio_bucket_stats,
+        minio_get_object,
         minio_list_objects,
         minio_truncate_bucket,
         minio_upload,
@@ -1021,24 +1022,21 @@ Use **Scan** (single file) or **Bulk Scan** (entire loan folder) to add new docu
             st.warning("Could not load dashboard statistics from the database.")
             return
 
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Pending Review", stats.get("pending_review", 0),
-                    help="Open cases requiring your Approve / Reject decision.")
-        col2.metric("Documents Scanned", stats.get("total_scans", 0),
-                    help="Total document scans in the database.")
-        col3.metric("High Risk", stats.get("high_risk", 0),
-                    help="Documents with high tamper risk.")
         avg_s = stats.get("avg_score")
-        col4.metric("Avg Truth Score",
-                    f"{avg_s}/100" if avg_s is not None else "—",
-                    help="Average Truth Score across all scans (100 = perfect).")
-
-        ac1, ac2, ac3 = st.columns(3)
-        ac1.metric("Auto Approved ✅", stats.get("auto_approved", 0),
-                   help="Low-risk documents automatically cleared.")
-        ac2.metric("Rejected ❌", stats.get("rejected", 0),
-                   help="Cases confirmed as fraud or rejected by analyst.")
-        ac3.metric("Total Cases", stats.get("total_cases", 0))
+        m1, m2, m3, m4, m5, m6 = st.columns(6)
+        m1.metric("Entities", stats.get("entities", 0),
+                  help="Unique applicants stored in the database.")
+        m2.metric("Docs Scanned", stats.get("total_scans", 0),
+                  help="Total document scans in the database.")
+        m3.metric("Pending Review", stats.get("pending_review", 0),
+                  help="Open cases requiring Approve / Reject.")
+        m4.metric("High Risk", stats.get("high_risk", 0),
+                  help="Documents with high tamper risk.")
+        m5.metric("Auto Approved", stats.get("auto_approved", 0),
+                  help="Low-risk documents automatically cleared.")
+        m6.metric("Avg Score",
+                  f"{avg_s}/100" if avg_s is not None else "—",
+                  help="Average Truth Score across all scans (100 = perfect).")
 
         st.divider()
 
@@ -1762,24 +1760,35 @@ Falling back to local files when the database is offline.
 
     tabs = st.tabs(tab_labels)
 
+    def _render_grouped(case_list: list, show_actions: bool) -> None:
+        """Group a list of cases by entity and render each entity as a section."""
+        from collections import defaultdict  # noqa: PLC0415
+        by_entity: dict = defaultdict(list)
+        for c in case_list:
+            by_entity[c.get("entity_ref") or "unlinked"].append(c)
+        for ref in sorted(by_entity.keys()):
+            entity_cases = by_entity[ref]
+            name = entity_cases[0].get("entity_name", "") or ref
+            header = f"👤 **{name}** &nbsp; `{ref}` &nbsp;—&nbsp; {len(entity_cases)} case(s)"
+            with st.expander(header, expanded=show_actions):
+                for case in entity_cases:
+                    _render_case_card(service, case, show_actions=show_actions, use_db=use_db)
+
     with tabs[0]:
         if not needs_review:
             st.success("🎉 No cases pending review — all documents have been assessed.")
         else:
-            for case in needs_review:
-                _render_case_card(service, case, show_actions=True, use_db=use_db)
+            _render_grouped(needs_review, show_actions=True)
 
     with tabs[1]:
         if not resolved:
             st.info("No resolved cases yet.")
         else:
-            for case in resolved:
-                _render_case_card(service, case, show_actions=False, use_db=use_db)
+            _render_grouped(resolved, show_actions=False)
 
     if auto_ok:
         with tabs[2]:
-            for case in auto_ok:
-                _render_case_card(service, case, show_actions=False, use_db=use_db)
+            _render_grouped(auto_ok, show_actions=False)
 
 
 def _render_case_card(
@@ -1954,11 +1963,28 @@ scanned for them with individual download buttons.
             st.info("No scans in the database yet. Use **Scan** or **Bulk Scan** to process documents.")
             return
 
-        st.caption(f"{len(entities)} applicant(s) — {sum(len(e['scans']) for e in entities)} document(s) total")
+        # ── Search / filter ──────────────────────────────────────────────
+        search_rpt = st.text_input(
+            "🔍 Filter applicants",
+            placeholder="Name, PAN, email, or BT-reference…",
+            key="rpt_search",
+        ).strip().lower()
+        if search_rpt:
+            filtered = [
+                e for e in entities
+                if search_rpt in (e.get("name") or "").lower()
+                or search_rpt in (e.get("pan_number") or "").lower()
+                or search_rpt in (e.get("email") or "").lower()
+                or search_rpt in (e.get("entity_ref") or "").lower()
+            ]
+        else:
+            filtered = entities
+
+        st.caption(f"{len(filtered)} applicant(s) shown — {sum(len(e['scans']) for e in filtered)} document(s)")
 
         import pandas as pd  # noqa: PLC0415
 
-        for ent in entities:
+        for ent in filtered:
             ref = ent["entity_ref"]
             name = ent["name"] or ref
             scans = ent["scans"]
@@ -1988,24 +2014,39 @@ scanned for them with individual download buttons.
 
                 # Per-scan PDF download buttons
                 st.markdown("**Download individual scan reports:**")
-                pdf_scans = [s for s in scans if s["has_pdf"]]
-                if pdf_scans:
-                    btn_cols = st.columns(min(len(pdf_scans), 3))
-                    for idx, s in enumerate(pdf_scans):
-                        col = btn_cols[idx % 3]
+                all_pdf_candidates = scans  # try all scans — fall back to MinIO
+                pdf_buttons: list[tuple] = []  # (label, data, filename, key)
+                for s in all_pdf_candidates:
+                    stem = Path(s["source_name"]).stem
+                    pdf_data: bytes | None = None
+                    if s["has_pdf"]:
                         pdf_data = get_scan_pdf(s["id"])
-                        if pdf_data:
-                            stem = Path(s["source_name"]).stem
-                            col.download_button(
-                                f"⬇ {Path(s['source_name']).stem[:20]}",
-                                data=pdf_data,
-                                file_name=f"{ref}_{stem}_report.pdf",
-                                mime="application/pdf",
-                                key=f"rpt_pdf_{s['id']}",
-                                use_container_width=True,
-                            )
+                    # MinIO fallback if PDF not in DB
+                    if not pdf_data:
+                        try:
+                            pdf_data = minio_get_object(f"{ref}/{stem}_report.pdf")
+                        except Exception:  # noqa: BLE001
+                            pass
+                    if pdf_data:
+                        pdf_buttons.append((
+                            f"⬇ {stem[:20]}",
+                            pdf_data,
+                            f"{ref}_{stem}_report.pdf",
+                            f"rpt_pdf_{s['id']}",
+                        ))
+                if pdf_buttons:
+                    btn_cols = st.columns(min(len(pdf_buttons), 3))
+                    for idx, (label, data, fname, key) in enumerate(pdf_buttons):
+                        btn_cols[idx % 3].download_button(
+                            label,
+                            data=data,
+                            file_name=fname,
+                            mime="application/pdf",
+                            key=key,
+                            use_container_width=True,
+                        )
                 else:
-                    st.caption("No PDF reports stored for this applicant. Re-scan to generate them.")
+                    st.caption("No PDF reports available for this applicant. Re-scan to generate them.")
     else:
         # ── DB offline fallback (file-based, flat list) ───────────────────
         st.info("📴 Database offline — showing file-based reports. Connect PostgreSQL for entity-grouped view.")
@@ -2543,19 +2584,11 @@ Records shows every **applicant (entity)** in the database and all the documents
     else:
         results = search_entities("", "all", limit=50)
 
-    # ── Summary stats -------------------------------------------------------
-    stats = db_stats()
-    s1, s2, s3 = st.columns(3)
-    s1.metric("Total Entities", stats.get("entities", 0))
-    s2.metric("Total Scans in DB", stats.get("scans", 0))
-    s3.metric("High-Risk Scans", stats.get("high_risk", 0))
-    st.divider()
-
+    # ── Entity table --------------------------------------------------------
     if not results:
         st.info("No records found. Scan some documents first — they will be stored automatically.")
         return
 
-    # ── Entity table --------------------------------------------------------
     st.subheader(f"{len(results)} record{'s' if len(results) != 1 else ''} found")
     try:
         import pandas as pd
@@ -2822,11 +2855,6 @@ def main() -> None:
 
     page = _sidebar()
     service = _get_service()
-
-    # Top-level index metrics strip (shown on every page except settings).
-    if page != "settings":
-        _render_index_metrics()
-        st.divider()
 
     if page == "dashboard":
         _page_dashboard(service)

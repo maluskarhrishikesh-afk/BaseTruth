@@ -391,6 +391,7 @@ class BaseTruthService:
 
         # Plain-English PDF report for loan officers / non-technical reviewers
         pdf_report_path = artifact_dir / f"{path.stem}_report.pdf"
+        pdf_bytes: bytes | None = None
         try:
             with log_timing(log, "pdf_report_gen", path=str(path)):
                 pdf_bytes = render_scan_report_pdf(report.to_dict())
@@ -413,7 +414,7 @@ class BaseTruthService:
             init_db()
             db_result = save_scan_to_db(
                 report_dict,
-                pdf_bytes if "pdf_bytes" in dir() else None,
+                pdf_bytes,
                 forced_entity_ref=forced_entity_ref,
                 extra_identity=extra_identity,
             )
