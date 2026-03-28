@@ -983,13 +983,28 @@ def _page_dashboard(service: BaseTruthService) -> None:
     ver_reports = [r for r in reports if r.get("kind") == "verification"]
     scores = [r.get("truth_score") for r in ver_reports if isinstance(r.get("truth_score"), int)]
 
+    # ── Count only cases that actually need human review ──
+    pending_review = sum(1 for c in cases if c.get("needs_review"))
+    auto_approved  = sum(1 for c in cases if c.get("disposition") == "cleared" and not c.get("needs_review"))
+
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Active Cases", len(cases))
+    col1.metric("Pending Review", pending_review,
+                help="Cases with high or medium risk that require your Approve / Reject decision.")
     col2.metric("Documents Scanned", len(ver_reports))
     high_risk = sum(1 for r in ver_reports if r.get("risk_level") == "high")
-    col3.metric("High Risk", high_risk, delta=None)
+    col3.metric("High Risk", high_risk)
     avg_score = round(sum(scores) / len(scores), 1) if scores else None
     col4.metric("Avg Truth Score", f"{avg_score}/100" if avg_score is not None else "—")
+
+    # ── Quick-action: auto-approved vs pending breakdown ──
+    if cases:
+        resolved = sum(1 for c in cases if c.get("disposition") == "fraud_confirmed")
+        ac1, ac2, ac3 = st.columns(3)
+        ac1.metric("Auto Approved ✅", auto_approved,
+                   help="Low-risk documents automatically cleared — no action needed.")
+        ac2.metric("Rejected ❌", resolved,
+                   help="Cases manually marked as fraud or rejected by an analyst.")
+        ac3.metric("Total Cases", len(cases))
 
     st.divider()
 
@@ -1028,31 +1043,36 @@ def _page_dashboard(service: BaseTruthService) -> None:
             col_b.markdown(badge_html, unsafe_allow_html=True)
             col_c.markdown(score_display)
 
-    if cases:
+    # ── Cases requiring review ──
+    needs_review_cases = [c for c in cases if c.get("needs_review")]
+    if needs_review_cases:
         st.divider()
-        st.subheader("Open Cases")
-        open_cases = [c for c in cases if c.get("disposition") not in {"cleared", "fraud_confirmed"}][:8]
-        if open_cases:
-            try:
-                import pandas as pd
+        st.subheader(f"⛔ Cases Requiring Your Review  ({len(needs_review_cases)})")
+        st.caption(
+            "These documents have high or medium risk signals. "
+            "Go to **Cases** to Approve or Reject each one."
+        )
+        try:
+            import pandas as pd
 
-                rows = [
-                    {
-                        "Case": c.get("case_key", ""),
-                        "Type": c.get("document_type", ""),
-                        "Docs": str(c.get("document_count", 0)),
-                        "Risk": str(c.get("max_risk_level", "low")).title(),
-                        "Status": str(c.get("status", "new")).replace("_", " ").title(),
-                        "Assignee": c.get("assignee", "—"),
-                    }
-                    for c in open_cases
-                ]
-                st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-            except ImportError:
-                for c in open_cases:
-                    st.write(c.get("case_key", ""))
-        else:
-            st.info("No open cases.")
+            rows = [
+                {
+                    "Case": c.get("case_key", ""),
+                    "Type": c.get("document_type", "").replace("_", " ").title(),
+                    "Docs": str(c.get("document_count", 0)),
+                    "Risk": str(c.get("max_risk_level", "low")).title(),
+                    "Status": str(c.get("status", "new")).replace("_", " ").title(),
+                    "Priority": str(c.get("priority", "normal")).title(),
+                }
+                for c in needs_review_cases
+            ]
+            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+        except ImportError:
+            for c in needs_review_cases:
+                st.write(c.get("case_key", ""))
+    elif cases:
+        st.divider()
+        st.success("✅ All cases are resolved — nothing pending your review.")
 
     if len(scores) >= 2:
         st.divider()
@@ -1527,153 +1547,188 @@ def _page_bulk(service: BaseTruthService) -> None:
 
 def _page_cases(service: BaseTruthService) -> None:
     st.markdown("# Cases")
+    st.markdown(
+        "A case is opened **only when documents carry a medium or high risk signal** "
+        "(e.g. tampered metadata, income inconsistency, font anomaly). "
+        "Your job here is to review the evidence and decide: **Approve** or **Reject**.  \n"
+        "Low-risk documents are **auto-approved** and never appear here — they need no action."
+    )
 
     cases = service.list_cases()
     if not cases:
-        st.info("No cases yet. Scan documents first and cases are grouped automatically.")
+        st.info("No cases yet. Scan documents first and flagged cases will appear here automatically.")
         return
 
-    # --- Filters ---
-    fcol1, fcol2, fcol3 = st.columns(3)
-    filter_status = fcol1.selectbox(
-        "Status", ["All"] + ["new", "triage", "investigating", "pending_client", "closed"]
-    )
-    filter_risk = fcol2.selectbox("Risk level", ["All", "high", "medium", "low"])
-    filter_assign = fcol3.text_input("Assignee contains")
+    needs_review = [c for c in cases if c.get("needs_review")]
+    resolved     = [c for c in cases if c.get("disposition") in ("cleared", "fraud_confirmed")]
+    auto_ok      = [c for c in cases if not c.get("needs_review") and c.get("disposition") not in ("cleared", "fraud_confirmed")]
 
-    filtered = cases
-    if filter_status != "All":
-        filtered = [c for c in filtered if c.get("status") == filter_status]
-    if filter_risk != "All":
-        filtered = [c for c in filtered if c.get("max_risk_level") == filter_risk]
-    if filter_assign.strip():
-        filtered = [c for c in filtered if filter_assign.strip().lower() in str(c.get("assignee", "")).lower()]
+    tab_labels = [
+        f"⛔ Needs Review ({len(needs_review)})",
+        f"✅ Resolved ({len(resolved)})",
+    ]
+    if auto_ok:
+        tab_labels.append(f"🔵 Auto-Approved Low-Risk ({len(auto_ok)})")
 
-    st.caption(f"Showing {len(filtered)} of {len(cases)} cases")
+    tabs = st.tabs(tab_labels)
 
-    # --- Case list ---
-    try:
-        import pandas as pd
-
-        case_rows = [
-            {
-                "Case Key": c.get("case_key", ""),
-                "Type": c.get("document_type", ""),
-                "Docs": c.get("document_count", 0),
-                "Risk": str(c.get("max_risk_level", "low")).title(),
-                "Status": str(c.get("status", "new")).replace("_", " ").title(),
-                "Priority": str(c.get("priority", "normal")).title(),
-                "Assignee": c.get("assignee", "—"),
-                "Notes": c.get("note_count", 0),
-            }
-            for c in filtered
-        ]
-        st.dataframe(pd.DataFrame(case_rows), hide_index=True, width="stretch")
-    except ImportError:
-        for c in filtered:
-            st.write(c.get("case_key", ""))
-
-    st.divider()
-
-    if not filtered:
-        return
-
-    case_key_options = [c.get("case_key", "") for c in filtered]
-    selected_key = st.selectbox("Open case for detail / workflow", options=case_key_options)
-
-    try:
-        case_detail = service.get_case_detail(selected_key)
-    except KeyError:
-        st.warning("Case not found.")
-        return
-
-    workflow = case_detail["workflow"]
-    case_meta = case_detail["case"]
-
-    col_meta, col_form = st.columns([1, 2])
-
-    with col_meta:
-        st.markdown("#### Case overview")
-        st.markdown(
-            f"**Type:** {case_meta.get('document_type', '').replace('_', ' ').title()}  \n"
-            f"**Documents:** {case_meta.get('document_count', 0)}  \n"
-            f"**Max risk:** {_badge(case_meta.get('max_risk_level', 'low'))  }",
-            unsafe_allow_html=True,
-        )
-        if workflow.get("labels"):
-            label_html = "  ".join(_badge("review", lab) for lab in workflow["labels"])
-            st.markdown(label_html, unsafe_allow_html=True)
-
-    with col_form:
-        st.markdown("#### Investigator workflow")
-        statuses = ["new", "triage", "investigating", "pending_client", "closed"]
-        dispositions = ["open", "monitor", "escalate", "cleared", "fraud_confirmed"]
-        priorities = ["low", "normal", "high", "critical"]
-
-        with st.form("case_workflow_form"):
-            wf_cols = st.columns(3)
-            current_status = str(workflow.get("status", "new"))
-            current_disp = str(workflow.get("disposition", "open"))
-            current_prio = str(workflow.get("priority", "normal"))
-
-            status = wf_cols[0].selectbox(
-                "Status", statuses,
-                index=statuses.index(current_status) if current_status in statuses else 0,
+    # ── TAB 1: Needs Review ─────────────────────────────────────────────────
+    with tabs[0]:
+        if not needs_review:
+            st.success("🎉 No cases pending review — all documents have been assessed.")
+        else:
+            st.caption(
+                "Each card below shows a flagged case. "
+                "Click **Approve** if the documents are legitimate, or **Reject** if fraud / tampering is confirmed."
             )
-            disposition = wf_cols[1].selectbox(
-                "Disposition", dispositions,
-                index=dispositions.index(current_disp) if current_disp in dispositions else 0,
-            )
-            priority = wf_cols[2].selectbox(
-                "Priority", priorities,
-                index=priorities.index(current_prio) if current_prio in priorities else 1,
-            )
-            assignee = st.text_input("Assignee / Investigator", value=str(workflow.get("assignee", "")))
-            labels_text = st.text_input(
-                "Labels (comma separated)", value=", ".join(workflow.get("labels", []))
-            )
-            note_author = st.text_input("Note author", value="analyst")
-            note_text = st.text_area("Add a note", placeholder="Observations, evidence, next steps…")
+            for case in needs_review:
+                _render_case_card(service, case, show_actions=True)
 
-            if st.form_submit_button("Save workflow update", type="primary"):
-                service.update_case(
-                    selected_key,
-                    status=status,
-                    disposition=disposition,
-                    priority=priority,
-                    assignee=assignee,
-                    labels=[item.strip() for item in labels_text.split(",") if item.strip()],
-                    note_text=note_text,
-                    note_author=note_author,
-                )
-                st.success("Workflow updated.")
-                st.rerun()
+    # ── TAB 2: Resolved ─────────────────────────────────────────────────────
+    with tabs[1]:
+        if not resolved:
+            st.info("No resolved cases yet.")
+        else:
+            for case in resolved:
+                _render_case_card(service, case, show_actions=False)
 
-    # --- Note history ---
-    notes = workflow.get("notes", [])
-    if notes:
-        st.divider()
-        st.markdown(f"#### Notes ({len(notes)})")
-        for note in reversed(notes):
-            ts = str(note.get("created_at", ""))[:19].replace("T", " ")
-            author = note.get("author", "")
+    # ── TAB 3: Auto-Approved (optional) ─────────────────────────────────────
+    if auto_ok:
+        with tabs[2]:
+            st.caption(
+                "These cases came back low-risk and were auto-cleared. "
+                "No action required unless you want to override."
+            )
+            for case in auto_ok:
+                _render_case_card(service, case, show_actions=False)
+
+
+def _render_case_card(service: BaseTruthService, case: Dict[str, Any], *, show_actions: bool) -> None:
+    """Render a single case as an expandable card with Approve / Reject buttons."""
+    case_key    = case.get("case_key", "")
+    risk        = case.get("max_risk_level", "low")
+    disposition = case.get("disposition", "open")
+    doc_type    = case.get("document_type", "").replace("_", " ").title()
+    doc_count   = case.get("document_count", 0)
+    status      = case.get("status", "new").replace("_", " ").title()
+    risk_icon   = {"high": "🚨", "medium": "⚠️", "low": "✅"}.get(risk, "🔷")
+    disp_icon   = _DISPOSITION_ICONS.get(disposition, "")
+
+    header = f"{risk_icon} {case_key}  —  {doc_type}  |  {doc_count} doc(s)  |  {disp_icon} {disposition.title()}"
+
+    with st.expander(header, expanded=show_actions and risk == "high"):
+        col_info, col_act = st.columns([2, 1])
+
+        with col_info:
             st.markdown(
-                f'<div style="background:var(--bt-note-bg);border-left:3px solid var(--bt-note-accent);'
-                f'padding:10px 14px;border-radius:0 8px 8px 0;margin-bottom:10px;">'
-                f'<span style="font-size:11px;color:var(--bt-text-muted);">{ts} · {author}</span><br>'
-                f'{note.get("text", "")}</div>',
+                f"**Risk level:** {_badge(risk)}  \n"
+                f"**Status:** {_status_badge(status)}  \n"
+                f"**Priority:** {case.get('priority', 'normal').title()}  \n"
+                f"**Assignee:** {case.get('assignee') or '—'}",
                 unsafe_allow_html=True,
             )
 
-    # --- Linked reports ---
-    st.divider()
-    st.markdown(f"#### Linked reports ({len(case_detail.get('reports', []))})")
-    for report in case_detail.get("reports", []):
-        with st.expander(
-            f"{_signal_icon({'severity': report.get('tamper_assessment', {}).get('risk_level', 'low'), 'passed': False})} "
-            f"{report.get('source', {}).get('name', 'report')}"
-        ):
-            _render_report_summary(report)
+        with col_act:
+            if show_actions:
+                # Quick Approve / Reject buttons
+                approve_key = f"approve_{case_key}"
+                reject_key  = f"reject_{case_key}"
+                if st.button("✅  Approve", key=approve_key, use_container_width=True, type="primary"):
+                    service.update_case(
+                        case_key,
+                        status="closed",
+                        disposition="cleared",
+                        note_text="Manually approved by analyst.",
+                        note_author="analyst",
+                    )
+                    st.success("Case approved and closed.")
+                    st.rerun()
+                if st.button("❌  Reject", key=reject_key, use_container_width=True):
+                    service.update_case(
+                        case_key,
+                        status="closed",
+                        disposition="fraud_confirmed",
+                        note_text="Rejected by analyst — fraud or document tampering confirmed.",
+                        note_author="analyst",
+                    )
+                    st.error("Case rejected.")
+                    st.rerun()
+            else:
+                verdict_color = "#16a34a" if disposition == "cleared" else "#dc2626" if disposition == "fraud_confirmed" else "#6366f1"
+                verdict_label = {"cleared": "Approved ✅", "fraud_confirmed": "Rejected ❌"}.get(disposition, disposition.title())
+                st.markdown(
+                    f'<div style="text-align:center;font-size:1.1rem;font-weight:700;color:{verdict_color};">'
+                    f'{verdict_label}</div>',
+                    unsafe_allow_html=True,
+                )
+
+        # ── Linked documents ──────────────────────────────────────────────
+        docs = case.get("documents", [])
+        if docs:
+            st.markdown("**Linked documents:**")
+            for doc in docs:
+                src   = doc.get("source_name", "unknown")
+                dlvl  = str(doc.get("risk_level", "low"))
+                dscore = doc.get("truth_score", "")
+                st.markdown(
+                    f"&nbsp;&nbsp;{_badge(dlvl)} {src}  —  Score: **{dscore if isinstance(dscore, int) else '—'}**",
+                    unsafe_allow_html=True,
+                )
+
+        # ── Advanced workflow (collapsible) ───────────────────────────────
+        with st.expander("⚙️  Advanced workflow (assign, labels, notes)", expanded=False):
+            try:
+                case_detail = service.get_case_detail(case_key)
+            except KeyError:
+                st.warning("Case detail not found.")
+                return
+            workflow = case_detail["workflow"]
+            statuses     = ["new", "triage", "investigating", "pending_client", "closed"]
+            dispositions = ["open", "monitor", "escalate", "cleared", "fraud_confirmed"]
+            priorities   = ["low", "normal", "high", "critical"]
+            with st.form(f"adv_form_{case_key}"):
+                wf1, wf2, wf3 = st.columns(3)
+                cur_s = str(workflow.get("status", "new"))
+                cur_d = str(workflow.get("disposition", "open"))
+                cur_p = str(workflow.get("priority", "normal"))
+                status_sel = wf1.selectbox("Status", statuses,
+                    index=statuses.index(cur_s) if cur_s in statuses else 0, key=f"s_{case_key}")
+                disp_sel = wf2.selectbox("Disposition", dispositions,
+                    index=dispositions.index(cur_d) if cur_d in dispositions else 0, key=f"d_{case_key}")
+                prio_sel = wf3.selectbox("Priority", priorities,
+                    index=priorities.index(cur_p) if cur_p in priorities else 1, key=f"p_{case_key}")
+                assignee_val = st.text_input("Assignee", value=str(workflow.get("assignee", "")), key=f"a_{case_key}")
+                labels_val   = st.text_input("Labels (comma-separated)", value=", ".join(workflow.get("labels", [])), key=f"l_{case_key}")
+                note_author  = st.text_input("Note author", value="analyst", key=f"na_{case_key}")
+                note_text    = st.text_area("Add a note", placeholder="Observations, evidence, next steps…", key=f"nt_{case_key}")
+                if st.form_submit_button("Save", type="primary"):
+                    service.update_case(
+                        case_key,
+                        status=status_sel,
+                        disposition=disp_sel,
+                        priority=prio_sel,
+                        assignee=assignee_val,
+                        labels=[i.strip() for i in labels_val.split(",") if i.strip()],
+                        note_text=note_text,
+                        note_author=note_author,
+                    )
+                    st.success("Updated.")
+                    st.rerun()
+
+            # Note history
+            notes = workflow.get("notes", [])
+            if notes:
+                st.markdown(f"**Notes ({len(notes)}):**")
+                for note in reversed(notes):
+                    ts     = str(note.get("created_at", ""))[:19].replace("T", " ")
+                    author = note.get("author", "")
+                    st.markdown(
+                        f'<div style="background:var(--bt-note-bg);border-left:3px solid var(--bt-note-accent);'
+                        f'padding:8px 12px;border-radius:0 8px 8px 0;margin-bottom:8px;">'
+                        f'<span style="font-size:11px;color:var(--bt-text-muted);">{ts} · {author}</span><br>'
+                        f'{note.get("text", "")}</div>',
+                        unsafe_allow_html=True,
+                    )
 
 
 # ---------------------------------------------------------------------------
@@ -1682,13 +1737,62 @@ def _page_cases(service: BaseTruthService) -> None:
 
 def _page_reports(service: BaseTruthService) -> None:
     st.markdown("# Reports")
+    st.markdown(
+        "**What is this section?**  \n"
+        "Reports are the PDF and JSON outputs produced by BaseTruth after scanning. "
+        "Use them to share findings with loan officers, compliance teams, or regulators.  \n\n"
+        "- **Case Bundle PDFs** — one PDF per bulk scan session, covering all documents, "
+        "income reconciliation, and an overall verdict. Generated automatically after every Bulk Scan.\n"
+        "- **Individual Scan Reports** — one JSON or PDF per document. "
+        "Download them here or from the **Records** section (by entity)."
+    )
+    st.divider()
+
+    artifact_root = service.artifact_root
+
+    # ── 1. Case Bundle PDFs (primary — most useful for non-technical users) ──
+    st.subheader("📄 Case Bundle Reports (PDF)")
+    bundle_dir = artifact_root / "case_reports"
+    bundle_pdfs = sorted(bundle_dir.glob("*.pdf"), reverse=True) if bundle_dir.exists() else []
+
+    if not bundle_pdfs:
+        st.info(
+            "No case bundle PDFs yet.  \n"
+            "Run a **Bulk Scan** — a PDF covering all documents will be generated automatically."
+        )
+    else:
+        for pdf_path in bundle_pdfs:
+            size_kb = round(pdf_path.stat().st_size / 1024, 1)
+            mtime   = pdf_path.stat().st_mtime
+            import datetime as _dt
+            ts_str  = _dt.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+            c1, c2, c3 = st.columns([4, 1.5, 1.5])
+            c1.markdown(f"**{pdf_path.name}**  \n<span style='font-size:11px;color:#94a3b8;'>{ts_str} · {size_kb} KB</span>", unsafe_allow_html=True)
+            c2.caption("")
+            c3.download_button(
+                "⬇ Download",
+                data=pdf_path.read_bytes(),
+                file_name=pdf_path.name,
+                mime="application/pdf",
+                key=f"bundle_{pdf_path.stem}",
+                use_container_width=True,
+                type="primary",
+            )
+
+    st.divider()
+
+    # ── 2. Individual scan reports (secondary) ───────────────────────────────
+    st.subheader("📋 Individual Scan Reports")
+    st.caption(
+        "One report per document scan. Filter by kind or risk level below. "
+        "To find reports by person / entity, use the **Records** section instead."
+    )
 
     reports = service.list_reports()
     if not reports:
         st.info("No reports found. Run a scan first.")
         return
 
-    # --- Filters ---
     fc1, fc2 = st.columns(2)
     filter_kind = fc1.selectbox("Kind", ["All", "verification", "comparison"])
     filter_risk = fc2.selectbox("Risk level", ["All", "high", "medium", "low", "review"])
@@ -1717,7 +1821,7 @@ def _page_reports(service: BaseTruthService) -> None:
             for item in filtered
         ]
         display_df = pd.DataFrame([{k: v for k, v in r.items() if k != "path"} for r in rows])
-        st.dataframe(display_df, hide_index=True, width="stretch")
+        st.dataframe(display_df, hide_index=True, use_container_width=True)
     except ImportError:
         for r in filtered:
             st.write(r.get("source_name", ""))
@@ -1733,11 +1837,26 @@ def _page_reports(service: BaseTruthService) -> None:
             payload = json.loads(Path(selected_path).read_text(encoding="utf-8"))
             col_dl, _ = st.columns([1, 4])
             col_dl.download_button(
-                "⬇  Download",
+                "⬇  Download JSON",
                 data=json.dumps(payload, indent=2, ensure_ascii=False),
                 file_name=Path(selected_path).name,
                 mime="application/json",
             )
+            # Check for a sibling PDF
+            pdf_sibling = Path(selected_path).with_name(
+                Path(selected_path).stem.replace("_verification", "") + "_report.pdf"
+            )
+            if not pdf_sibling.exists():
+                # Try common naming: stem_report.pdf
+                pdf_sibling = Path(selected_path).parent / (Path(selected_path).stem.split("_verification")[0] + "_report.pdf")
+            if pdf_sibling.exists():
+                col_dl.download_button(
+                    "⬇  Download PDF",
+                    data=pdf_sibling.read_bytes(),
+                    file_name=pdf_sibling.name,
+                    mime="application/pdf",
+                    key="rpt_pdf_dl",
+                )
             with st.expander("Report JSON", expanded=True):
                 st.json(payload)
 
@@ -2134,47 +2253,57 @@ def _page_records() -> None:
         st.info("No documents scanned for this entity yet.")
         return
 
+    # ── Flat table with inline PDF download — no need to expand ──────────
+    st.caption("Click ⬇ PDF to download the scan report directly, or expand a row to view forensic details.")
     for sc in scans:
-        risk = str(sc.get("risk_level", "low")).lower()
-        score = sc.get("truth_score", "")
-        doc_type = str(sc.get("document_type", "generic")).replace("_", " ").title()
-        fname = sc.get("source_name", "unknown")
-        ts = str(sc.get("generated_at", ""))[:19].replace("T", " ")
+        risk      = str(sc.get("risk_level", "low")).lower()
+        score     = sc.get("truth_score", "")
+        doc_type  = str(sc.get("document_type", "generic")).replace("_", " ").title()
+        fname     = sc.get("source_name", "unknown")
+        ts        = str(sc.get("generated_at", ""))[:19].replace("T", " ")
         risk_icon = {"high": "🚨", "medium": "⚠️", "review": "🔷"}.get(risk, "✅")
-        score_display = f"Score {score}/100" if isinstance(score, int) else ""
+        score_str = f"{score}/100" if isinstance(score, int) else "—"
 
-        with st.expander(
-            f"{risk_icon} {fname}  —  {doc_type}  |  {score_display}  |  {ts}"
-        ):
-            _render_report_summary(sc["report_json"])
+        # Row: icon | name | type | score | risk | date | JSON btn | PDF btn
+        row_c1, row_c2, row_c3, row_c4, row_c5, row_c6, row_c7 = st.columns(
+            [0.4, 3.2, 2, 1, 1.2, 2, 1.2]
+        )
+        row_c1.markdown(risk_icon)
+        row_c2.markdown(f"**{fname}**")
+        row_c3.markdown(doc_type)
+        row_c4.markdown(f"**{score_str}**")
+        row_c4.markdown(_badge(risk), unsafe_allow_html=True)
+        row_c5.caption(ts)
 
-            dl1, dl2 = st.columns(2)
-            dl1.download_button(
-                "⬇ Download JSON report",
-                data=json.dumps(sc["report_json"], indent=2, ensure_ascii=False),
-                file_name=f"{Path(fname).stem}_verification.json",
-                mime="application/json",
-                key=f"rec_json_{sc['id']}",
-                use_container_width=True,
-            )
-            if sc.get("has_pdf"):
-                pdf_data = get_scan_pdf(sc["id"])
-                if pdf_data:
-                    dl2.download_button(
-                        "⬇ Download PDF report",
-                        data=pdf_data,
-                        file_name=f"{Path(fname).stem}_report.pdf",
-                        mime="application/pdf",
-                        key=f"rec_pdf_{sc['id']}",
-                        use_container_width=True,
-                    )
-            else:
-                dl2.button(
-                    "PDF not available",
-                    disabled=True,
-                    key=f"rec_pdf_na_{sc['id']}",
+        row_c6.download_button(
+            "⬇ JSON",
+            data=json.dumps(sc["report_json"], indent=2, ensure_ascii=False),
+            file_name=f"{Path(fname).stem}_verification.json",
+            mime="application/json",
+            key=f"rec_json_{sc['id']}",
+            use_container_width=True,
+        )
+
+        if sc.get("has_pdf"):
+            pdf_data = get_scan_pdf(sc["id"])
+            if pdf_data:
+                row_c7.download_button(
+                    "⬇ PDF",
+                    data=pdf_data,
+                    file_name=f"{Path(fname).stem}_report.pdf",
+                    mime="application/pdf",
+                    key=f"rec_pdf_{sc['id']}",
                     use_container_width=True,
+                    type="primary",
                 )
+            else:
+                row_c7.button("PDF N/A", disabled=True, key=f"rec_pdf_na_{sc['id']}", use_container_width=True)
+        else:
+            row_c7.button("PDF N/A", disabled=True, key=f"rec_pdf_none_{sc['id']}", use_container_width=True)
+
+        # Forensic details still available on demand
+        with st.expander(f"🔬 Forensic details — {fname}", expanded=False):
+            _render_report_summary(sc["report_json"])
 
 
 # ---------------------------------------------------------------------------

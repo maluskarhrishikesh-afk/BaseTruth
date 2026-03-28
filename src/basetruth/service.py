@@ -346,6 +346,38 @@ class BaseTruthService:
         except Exception:  # noqa: BLE001
             pass
 
+        # Auto-manage case lifecycle based on risk level (non-fatal)
+        try:
+            _case_key = self._case_key_for_report(report_dict)
+            _risk = tamper_assessment.get("risk_level", "low")
+            _existing = self._load_case_records()
+            _rec = _existing.get(_case_key)
+            # Never override a case already closed by an analyst
+            if _rec is None or _rec.disposition not in ("cleared", "fraud_confirmed"):
+                if _risk in ("high", "medium"):
+                    self.update_case(
+                        _case_key,
+                        status="triage" if _risk == "high" else "new",
+                        priority="high" if _risk == "high" else "normal",
+                        note_text=(
+                            f"Auto-flagged: {_risk.upper()} risk detected in '{path.name}'. "
+                            "Please review and Approve or Reject."
+                        ),
+                        note_author="system",
+                    )
+                else:
+                    # Low risk — auto-approve if no case record exists yet
+                    if _rec is None:
+                        self.update_case(
+                            _case_key,
+                            status="closed",
+                            disposition="cleared",
+                            note_text=f"Auto-approved: LOW risk scan of '{path.name}'.",
+                            note_author="system",
+                        )
+        except Exception:  # noqa: BLE001
+            pass
+
         return report_dict
 
     def compare_payslip_folder(self, input_dir: str | Path) -> Dict[str, Any]:
@@ -823,6 +855,11 @@ class BaseTruthService:
             case["labels"] = list(record.labels) if record else []
             case["note_count"] = len(record.notes) if record else 0
             case["updated_at"] = record.updated_at if record else case["documents"][0].get("generated_at", "")
+            # needs_review is True when risk is elevated AND the case is not yet resolved
+            case["needs_review"] = (
+                case["max_risk_level"] in ("high", "medium")
+                and case["disposition"] not in ("cleared", "fraud_confirmed")
+            )
         return sorted(cases.values(), key=lambda item: (str(item.get("max_risk_level")), -int(item.get("document_count", 0))), reverse=True)
 
     def get_case_detail(self, case_key: str) -> Dict[str, Any]:
