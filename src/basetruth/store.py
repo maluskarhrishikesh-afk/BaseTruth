@@ -258,10 +258,13 @@ def save_scan_to_db(
             # ── Auto-detect / create entity ────────────────────────────────
             if entity is None:
                 identity = extract_identity_fields(report)
-                # Merge operator-supplied hints: they override empty auto-fields
+                # Operator-supplied fields always WIN over document-extracted fields.
+                # This ensures that when the user types PAN / email / name on the
+                # scan form, those details are used as the authoritative identity
+                # even if the document itself contains different values.
                 if extra_identity:
                     for k, v in extra_identity.items():
-                        if v and not identity.get(k):
+                        if v:
                             identity[k] = v
                 entity = _find_or_create_entity(session, identity)
 
@@ -292,10 +295,20 @@ def save_scan_to_db(
             session.add(scan)
             session.flush()
 
-            return {
+            result = {
                 "scan_id": scan.id,
                 "entity_ref": entity.entity_ref if entity else None,
             }
+
+        # ── Upload PDF to MinIO (non-fatal) ────────────────────────────────
+        entity_ref_for_minio = result.get("entity_ref")
+        if entity_ref_for_minio and pdf_bytes:
+            source_name = report.get("source", {}).get("name", "unknown")
+            stem = Path(source_name).stem
+            minio_key = f"{entity_ref_for_minio}/{stem}_report.pdf"
+            minio_upload(minio_key, pdf_bytes, "application/pdf")
+
+        return result
     except Exception as exc:
         log.warning("save_scan_to_db failed: %s", exc)
         return None
@@ -503,6 +516,62 @@ def db_stats() -> Dict[str, int]:
     except Exception as exc:
         log.warning("db_stats failed: %s", exc)
         return {"entities": 0, "scans": 0, "high_risk": 0}
+
+
+def db_dashboard_stats() -> Dict[str, Any]:
+    """Extended stats for the Dashboard — single round-trip query."""
+    from basetruth.db import Case  # local import to avoid circular deps at module level
+    try:
+        with db_session() as session:
+            total_scans = session.query(func.count(Scan.id)).scalar() or 0
+            high_risk = (
+                session.query(func.count(Scan.id)).filter(Scan.risk_level == "high").scalar() or 0
+            )
+            medium_risk = (
+                session.query(func.count(Scan.id)).filter(Scan.risk_level == "medium").scalar() or 0
+            )
+            low_risk = (
+                session.query(func.count(Scan.id)).filter(Scan.risk_level == "low").scalar() or 0
+            )
+            entities = session.query(func.count(Entity.id)).scalar() or 0
+            avg_score_row = session.query(func.avg(Scan.truth_score)).scalar()
+            avg_score = round(float(avg_score_row), 1) if avg_score_row is not None else None
+            pending = (
+                session.query(func.count(Case.id)).filter(Case.disposition == "open").scalar() or 0
+            )
+            cleared = (
+                session.query(func.count(Case.id)).filter(Case.disposition == "cleared").scalar() or 0
+            )
+            fraud = (
+                session.query(func.count(Case.id)).filter(Case.disposition == "fraud_confirmed").scalar() or 0
+            )
+            total_cases = session.query(func.count(Case.id)).scalar() or 0
+            # Risk distribution per entity (for bar chart)
+            risk_by_entity = []
+            for e in session.query(Entity).order_by(Entity.id.desc()).limit(20).all():
+                scan_count = session.query(func.count(Scan.id)).filter(Scan.entity_id == e.id).scalar() or 0
+                if scan_count:
+                    risk_by_entity.append({
+                        "entity_ref": e.entity_ref,
+                        "name": f"{e.first_name or ''} {e.last_name or ''}".strip() or e.entity_ref,
+                        "scans": scan_count,
+                    })
+            return {
+                "entities": entities,
+                "total_scans": total_scans,
+                "high_risk": high_risk,
+                "medium_risk": medium_risk,
+                "low_risk": low_risk,
+                "avg_score": avg_score,
+                "pending_review": pending,
+                "auto_approved": cleared,
+                "rejected": fraud,
+                "total_cases": total_cases,
+                "risk_by_entity": risk_by_entity,
+            }
+    except Exception as exc:
+        log.warning("db_dashboard_stats failed: %s", exc)
+        return {}
 
 
 def get_entity_latest_pdf(entity_ref: str) -> tuple[Optional[bytes], Optional[str]]:
@@ -714,3 +783,83 @@ def minio_truncate_bucket() -> bool:
     except Exception as exc:
         log.error("minio_truncate_bucket failed: %s", exc)
         return False
+
+
+def minio_upload(key: str, data: bytes, content_type: str = "application/octet-stream") -> bool:
+    """Upload *data* to the configured MinIO bucket under *key*.
+
+    Returns True on success.  Never raises — failures are logged and ignored
+    so that the scan pipeline is not blocked by storage issues.
+    """
+    bucket = _os.environ.get("MINIO_BUCKET", "basetruth-reports")
+    client = _get_minio_s3_client()
+    if client is None:
+        return False
+    try:
+        import io
+        # Ensure the bucket exists (create if missing)
+        try:
+            client.head_bucket(Bucket=bucket)
+        except Exception:  # bucket does not exist or different error
+            try:
+                client.create_bucket(Bucket=bucket)
+                log.info("minio_upload: created bucket '%s'", bucket)
+            except Exception:  # already exists on some MinIO versions
+                pass
+        client.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=io.BytesIO(data),
+            ContentLength=len(data),
+            ContentType=content_type,
+        )
+        log.info("minio_upload: uploaded %d bytes → %s/%s", len(data), bucket, key)
+        return True
+    except Exception as exc:
+        log.warning("minio_upload failed for key '%s': %s", key, exc)
+        return False
+
+
+def get_all_entities_with_scans(limit: int = 200) -> List[Dict[str, Any]]:
+    """Return all entities (most-recent first) with their full scan summaries."""
+    try:
+        with db_session() as session:
+            entities = (
+                session.query(Entity)
+                .order_by(Entity.id.desc())
+                .limit(limit)
+                .all()
+            )
+            result = []
+            for e in entities:
+                scans = (
+                    session.query(Scan)
+                    .filter(Scan.entity_id == e.id)
+                    .order_by(Scan.generated_at.desc())
+                    .all()
+                )
+                result.append({
+                    "entity_ref": e.entity_ref,
+                    "name": f"{e.first_name or ''} {e.last_name or ''}".strip() or e.entity_ref,
+                    "first_name": e.first_name or "",
+                    "last_name": e.last_name or "",
+                    "pan_number": e.pan_number or "",
+                    "email": e.email or "",
+                    "scans": [
+                        {
+                            "id": s.id,
+                            "source_name": s.source_name,
+                            "document_type": s.document_type or "generic",
+                            "truth_score": s.truth_score,
+                            "risk_level": s.risk_level or "low",
+                            "verdict": s.verdict or "",
+                            "generated_at": s.generated_at.isoformat() if s.generated_at else "",
+                            "has_pdf": bool(s.pdf_report),
+                        }
+                        for s in scans
+                    ],
+                })
+            return result
+    except Exception as exc:
+        log.warning("get_all_entities_with_scans failed: %s", exc)
+        return []

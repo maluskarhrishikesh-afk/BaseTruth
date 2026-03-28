@@ -391,7 +391,7 @@ class BaseTruthService:
         # Persist to PostgreSQL (non-fatal — file artefacts are always written first)
         try:
             from basetruth.db import init_db
-            from basetruth.store import save_scan_to_db
+            from basetruth.store import save_scan_to_db, minio_upload
             log.info("scan_document: persisting scan to PostgreSQL")
             init_db()
             db_result = save_scan_to_db(
@@ -405,6 +405,21 @@ class BaseTruthService:
                     "scan_document: DB persist OK",
                     extra={"scan_id": db_result.get("scan_id"), "entity_ref": db_result.get("entity_ref")},
                 )
+                # Upload original source document to MinIO alongside the PDF report
+                _entity_ref = db_result.get("entity_ref")
+                if _entity_ref and source_path.exists():
+                    try:
+                        _src_mime = (
+                            "application/pdf" if source_path.suffix.lower() == ".pdf"
+                            else "application/octet-stream"
+                        )
+                        minio_upload(
+                            f"{_entity_ref}/{source_path.name}",
+                            source_path.read_bytes(),
+                            _src_mime,
+                        )
+                    except Exception:  # noqa: BLE001
+                        log.warning("scan_document: MinIO source-doc upload failed", exc_info=True)
             else:
                 log.warning("scan_document: DB persist returned None (DB may be offline)")
         except Exception:  # noqa: BLE001
