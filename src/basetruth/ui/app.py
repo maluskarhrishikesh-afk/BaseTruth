@@ -22,13 +22,16 @@ try:
         get_entity_latest_pdf,
         get_entity_scans,
         get_scan_pdf,
+        list_cases_from_db,
         list_recent_scans,
         minio_available,
         minio_bucket_stats,
         minio_list_objects,
         minio_truncate_bucket,
+        minio_upload,
         reset_db,
         search_entities,
+        update_case_in_db,
         update_entity,
     )
     _DB_IMPORTS_OK = True
@@ -1408,16 +1411,21 @@ def _page_bulk(service: BaseTruthService) -> None:
 
             _new_reports: List[Dict[str, Any]] = []
             _new_errors: List[str] = []
+            # Track entity_ref: after the first scan we reuse the same entity_ref
+            # for all remaining documents in this batch (prevents duplicate entities).
+            _batch_entity_ref: str | None = bulk_forced_ref or None
             prog = st.progress(0)
             for i, p in enumerate(paths):
                 try:
-                    _new_reports.append(
-                        service.scan_document(
-                            p,
-                            forced_entity_ref=bulk_forced_ref or None,
-                            extra_identity=bulk_extra_identity or None,
-                        )
+                    r = service.scan_document(
+                        p,
+                        forced_entity_ref=_batch_entity_ref or None,
+                        extra_identity=bulk_extra_identity or None,
                     )
+                    _new_reports.append(r)
+                    # Capture entity_ref from first successful scan and reuse it
+                    if _batch_entity_ref is None and r.get("_entity_ref"):
+                        _batch_entity_ref = r["_entity_ref"]
                 except Exception as exc:  # noqa: BLE001
                     _new_errors.append(f"{p.name}: {exc}")
                 prog.progress((i + 1) / len(paths))
@@ -1426,6 +1434,7 @@ def _page_bulk(service: BaseTruthService) -> None:
         st.session_state["bt_bulk_reports"] = _new_reports
         st.session_state["bt_bulk_errors"] = _new_errors
         st.session_state["bt_bulk_compare"] = compare_payslips
+        st.session_state["bt_bulk_entity_ref"] = _batch_entity_ref
         # Clear any previously generated bundle PDF on fresh scan
         st.session_state.pop("bt_bundle_pdf_bytes", None)
         st.session_state.pop("bt_bundle_pdf_path", None)
@@ -1444,7 +1453,7 @@ def _page_bulk(service: BaseTruthService) -> None:
                         reconciliation=_auto_reconciliation,
                         case_title=_auto_title,
                     )
-                # Save to persistent location for regulatory / audit access
+                # Save to filesystem for regulatory / audit access
                 _reports_dir = service.artifact_root / "case_reports"
                 _reports_dir.mkdir(parents=True, exist_ok=True)
                 _pdf_path = _reports_dir / f"{_ts}_case_report.pdf"
@@ -1452,6 +1461,16 @@ def _page_bulk(service: BaseTruthService) -> None:
                 st.session_state["bt_bundle_pdf_bytes"] = _pdf_bytes
                 st.session_state["bt_bundle_pdf_title"] = f"{_ts}_case_report"
                 st.session_state["bt_bundle_pdf_path"] = str(_pdf_path)
+                # Also upload case report to MinIO under entity folder
+                if _DB_IMPORTS_OK and _batch_entity_ref:
+                    try:
+                        minio_upload(
+                            f"{_batch_entity_ref}/case_reports/{_ts}_case_report.pdf",
+                            _pdf_bytes,
+                            "application/pdf",
+                        )
+                    except Exception:
+                        pass  # non-fatal
             except Exception as _pdf_err:
                 st.session_state["bt_bundle_pdf_bytes"] = None
                 st.warning(f"Scan complete — PDF generation failed: {_pdf_err}")
@@ -1707,17 +1726,27 @@ def _page_cases(service: BaseTruthService) -> None:
     with st.expander("ℹ️ How to use this screen", expanded=False):
         st.markdown(
             """
-A **case** is created automatically whenever a document scores medium or high risk.
+A **case** is created automatically whenever a document is scanned.
 
-- **Needs Review** — your action queue. Press **✅ Approve** or **❌ Reject** directly on the card.
-- **Resolved** — cases you have already decided on.
+- **Needs Review** — your action queue for high / medium risk documents.
+  Press **✅ Approve** or **❌ Reject** directly on the card.
+- **Resolved** — cases you have already decided on (Approved or Rejected).
 - **Auto-Approved** — low-risk documents cleared automatically; no action needed.
+
+When PostgreSQL is connected, cases are read from the database (accurate, reset-safe).
+Falling back to local files when the database is offline.
 """
         )
 
-    cases = service.list_cases()
+    # Prefer DB-driven cases when available
+    use_db = _DB_IMPORTS_OK and db_available()
+    if use_db:
+        cases = list_cases_from_db()
+    else:
+        cases = service.list_cases()
+
     if not cases:
-        st.info("No cases yet. Scan documents first and flagged cases will appear here automatically.")
+        st.info("No cases yet. Scan documents first and cases will appear here automatically.")
         return
 
     needs_review = [c for c in cases if c.get("needs_review")]
@@ -1738,36 +1767,51 @@ A **case** is created automatically whenever a document scores medium or high ri
             st.success("🎉 No cases pending review — all documents have been assessed.")
         else:
             for case in needs_review:
-                _render_case_card(service, case, show_actions=True)
+                _render_case_card(service, case, show_actions=True, use_db=use_db)
 
     with tabs[1]:
         if not resolved:
             st.info("No resolved cases yet.")
         else:
             for case in resolved:
-                _render_case_card(service, case, show_actions=False)
+                _render_case_card(service, case, show_actions=False, use_db=use_db)
 
     if auto_ok:
         with tabs[2]:
             for case in auto_ok:
-                _render_case_card(service, case, show_actions=False)
+                _render_case_card(service, case, show_actions=False, use_db=use_db)
 
 
-def _render_case_card(service: BaseTruthService, case: Dict[str, Any], *, show_actions: bool) -> None:
+def _render_case_card(
+    service: BaseTruthService,
+    case: Dict[str, Any],
+    *,
+    show_actions: bool,
+    use_db: bool = False,
+) -> None:
     """Render a single case as an expandable card with Approve / Reject buttons.
 
-    The Advanced workflow form is loaded lazily only when the user clicks the
-    '⚙️ Advanced' button, so that the page renders fast even with many cases.
+    When *use_db* is True the Advanced panel is populated from data already
+    present in the case dict (no file-system read needed), making page render
+    very fast even with many cases.
     """
     case_key    = case.get("case_key", "")
     risk        = case.get("max_risk_level", "low")
     disposition = case.get("disposition", "open")
     doc_type    = case.get("document_type", "").replace("_", " ").title()
     doc_count   = case.get("document_count", 0)
+    entity_ref  = case.get("entity_ref", "")
+    entity_name = case.get("entity_name", "")
     risk_icon   = {"high": "🚨", "medium": "⚠️", "low": "✅"}.get(risk, "🔷")
     disp_icon   = _DISPOSITION_ICONS.get(disposition, "")
 
-    header = f"{risk_icon} {case_key}  —  {doc_type}  |  {doc_count} doc(s)  |  {disp_icon} {disposition.title()}"
+    # Rich header: show person name when available
+    name_part = f"  —  {entity_name}" if entity_name else ""
+    ref_part  = f"  ({entity_ref})" if entity_ref and entity_ref != "unlinked" else ""
+    header = (
+        f"{risk_icon} {doc_type}{name_part}{ref_part}"
+        f"  |  {doc_count} doc(s)  |  {disp_icon} {disposition.replace('_', ' ').title()}"
+    )
 
     with st.expander(header, expanded=show_actions and risk == "high"):
         # ── Approve / Reject buttons at the very top ──────────────────────
@@ -1776,17 +1820,17 @@ def _render_case_card(service: BaseTruthService, case: Dict[str, Any], *, show_a
             if btn_c1.button("✅  Approve", key=f"approve_{case_key}", use_container_width=True, type="primary"):
                 service.update_case(case_key, status="closed", disposition="cleared",
                                     note_text="Manually approved by analyst.", note_author="analyst")
-                st.success("Approved ✅")
+                st.toast("✅ Case approved.", icon="✅")
                 st.rerun()
             if btn_c2.button("❌  Reject", key=f"reject_{case_key}", use_container_width=True):
                 service.update_case(case_key, status="closed", disposition="fraud_confirmed",
                                     note_text="Rejected by analyst — fraud confirmed.", note_author="analyst")
-                st.error("Rejected ❌")
+                st.toast("❌ Case rejected.", icon="❌")
                 st.rerun()
             st.divider()
         else:
             verdict_color = "#16a34a" if disposition == "cleared" else "#dc2626" if disposition == "fraud_confirmed" else "#6366f1"
-            verdict_label = {"cleared": "Approved ✅", "fraud_confirmed": "Rejected ❌"}.get(disposition, disposition.title())
+            verdict_label = {"cleared": "Approved ✅", "fraud_confirmed": "Rejected ❌"}.get(disposition, disposition.replace("_", " ").title())
             st.markdown(
                 f'<div style="font-size:1rem;font-weight:700;color:{verdict_color};margin-bottom:8px;">'
                 f'{verdict_label}</div>',
@@ -1824,12 +1868,25 @@ def _render_case_card(service: BaseTruthService, case: Dict[str, Any], *, show_a
             if st.button("▲ Hide advanced", key=f"adv_hide_{case_key}", use_container_width=False):
                 st.session_state[adv_key] = False
                 st.rerun()
-            try:
-                case_detail = service.get_case_detail(case_key)
-            except KeyError:
-                st.warning("Case detail not found.")
-                return
-            workflow = case_detail["workflow"]
+
+            # Load workflow data — from case dict (DB mode) OR file (legacy mode)
+            if use_db:
+                workflow = {
+                    "status":      case.get("status", "new"),
+                    "disposition": case.get("disposition", "open"),
+                    "priority":    case.get("priority", "normal"),
+                    "assignee":    case.get("assignee", ""),
+                    "labels":      case.get("labels", []),
+                    "notes":       case.get("notes", []),
+                }
+            else:
+                try:
+                    case_detail = service.get_case_detail(case_key)
+                    workflow = case_detail["workflow"]
+                except KeyError:
+                    st.warning("Case detail not found.")
+                    return
+
             statuses     = ["new", "triage", "investigating", "pending_client", "closed"]
             dispositions = ["open", "monitor", "escalate", "cleared", "fraud_confirmed"]
             priorities   = ["low", "normal", "high", "critical"]
@@ -2401,7 +2458,7 @@ This screen gives you direct visibility into what is stored in the system.
                 if db_confirm.strip() == "RESET":
                     ok = reset_db()
                     if ok:
-                        st.success("Database reset complete. All tables are now empty.")
+                        st.toast("✅ Database reset — all tables cleared.", icon="✅")
                         st.rerun()
                     else:
                         st.error("Reset failed — check the Logs page for details.")
@@ -2416,10 +2473,10 @@ This screen gives you direct visibility into what is stored in the system.
                 if minio_confirm.strip() == "RESET":
                     ok = minio_truncate_bucket()
                     if ok:
-                        st.success("MinIO bucket cleared.")
+                        st.toast("✅ MinIO bucket cleared — all objects deleted.", icon="✅")
                         st.rerun()
                     else:
-                        st.error("Truncate failed — MinIO may be offline.  Check the Logs page.")
+                        st.error("Reset failed — MinIO may be offline or misconfigured. Check the Logs page.")
                 else:
                     st.error("Type exactly `RESET` (all caps) to confirm.")
 

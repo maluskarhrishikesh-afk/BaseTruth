@@ -153,6 +153,20 @@ def _find_or_create_entity(
             .first()
         )
 
+    # Name-based fallback: match (first_name, last_name) when no unique identifier is available.
+    # Prevents duplicate entity rows when the analyst enters a name but no PAN/Aadhaar.
+    if entity is None and identity.get("first_name") and identity.get("last_name"):
+        fn = identity["first_name"].strip().lower()
+        ln = identity["last_name"].strip().lower()
+        entity = (
+            session.query(Entity)
+            .filter(
+                func.lower(Entity.first_name) == fn,
+                func.lower(Entity.last_name) == ln,
+            )
+            .first()
+        )
+
     if entity is not None:
         # Enrich empty fields from the new scan
         for field_name in ("first_name", "last_name", "email", "phone", "pan_number", "aadhar_number"):
@@ -765,12 +779,23 @@ def minio_list_objects(limit: int = 500) -> List[Dict[str, Any]]:
 
 
 def minio_truncate_bucket() -> bool:
-    """Delete all objects in the configured MinIO bucket."""
+    """Delete all objects in the configured MinIO bucket.
+
+    Returns True when the bucket is empty (either because objects were deleted
+    or the bucket did not exist).  Returns False only on unexpected errors.
+    """
     bucket = _os.environ.get("MINIO_BUCKET", "basetruth-reports")
     client = _get_minio_s3_client()
     if client is None:
+        log.warning("minio_truncate_bucket: no S3 client — MinIO not configured")
         return False
     try:
+        # Check bucket existence first; if missing, there is nothing to delete.
+        try:
+            client.head_bucket(Bucket=bucket)
+        except Exception:
+            log.info("minio_truncate_bucket: bucket '%s' does not exist — nothing to delete", bucket)
+            return True
         paginator = client.get_paginator("list_objects_v2")
         deleted = 0
         for page in paginator.paginate(Bucket=bucket):
@@ -818,6 +843,207 @@ def minio_upload(key: str, data: bytes, content_type: str = "application/octet-s
     except Exception as exc:
         log.warning("minio_upload failed for key '%s': %s", key, exc)
         return False
+
+
+# ---------------------------------------------------------------------------
+# DB-driven case management
+# ---------------------------------------------------------------------------
+
+
+def update_case_in_db(
+    case_key: str,
+    *,
+    entity_ref: Optional[str] = None,
+    document_type: Optional[str] = None,
+    status: Optional[str] = None,
+    disposition: Optional[str] = None,
+    priority: Optional[str] = None,
+    assignee: Optional[str] = None,
+    labels: Optional[List[str]] = None,
+    max_risk_level: Optional[str] = None,
+    note_text: str = "",
+    note_author: str = "system",
+) -> Optional[Dict[str, Any]]:
+    """Upsert a case record in the DB cases table.
+
+    Returns {case_id, case_key} on success, None on failure.
+    """
+    try:
+        with db_session() as session:
+            case = session.query(Case).filter(Case.case_key == case_key).first()
+            if case is None:
+                # Try to derive entity_id and doc_type from the case_key
+                # Expected format: ``doc_type::entity_ref`` (e.g. payslip::BT-000001)
+                eid: Optional[int] = None
+                dtype = document_type or ""
+                if entity_ref:
+                    ent = session.query(Entity).filter(Entity.entity_ref == entity_ref).first()
+                    eid = ent.id if ent else None
+                elif "::" in case_key:
+                    parts = case_key.rsplit("::", 1)
+                    dtype = dtype or parts[0]
+                    potential_ref = parts[1]
+                    if potential_ref.startswith("BT-"):
+                        ent = session.query(Entity).filter(Entity.entity_ref == potential_ref).first()
+                        eid = ent.id if ent else None
+                case = Case(
+                    case_key=case_key,
+                    entity_id=eid,
+                    document_type=dtype,
+                    status=status or "new",
+                    disposition=disposition or "open",
+                    priority=priority or "normal",
+                    assignee=assignee or "",
+                    labels=labels or [],
+                    max_risk_level=max_risk_level or "low",
+                )
+                session.add(case)
+                session.flush()
+            else:
+                if status is not None:
+                    case.status = status
+                if disposition is not None:
+                    case.disposition = disposition
+                if priority is not None:
+                    case.priority = priority
+                if assignee is not None:
+                    case.assignee = assignee
+                if labels is not None:
+                    case.labels = labels
+                if max_risk_level is not None:
+                    case.max_risk_level = max_risk_level
+
+            if note_text.strip():
+                note = CaseNote(  # type: ignore[call-arg]  # ORM model, not dataclass
+                    case_id=case.id,
+                    author=note_author or "system",
+                    text=note_text.strip(),
+                )
+                session.add(note)
+
+            return {"case_id": case.id, "case_key": case_key}
+    except Exception as exc:
+        log.warning("update_case_in_db failed for '%s': %s", case_key, exc)
+        return None
+
+
+def list_cases_from_db() -> List[Dict[str, Any]]:
+    """Build the case list from DB scans grouped by (entity, document_type).
+
+    Case state (status, disposition, priority, notes) is loaded from the DB
+    cases table.  This replaces the file-based list_cases() so counts are
+    always accurate and are automatically cleared when the DB is reset.
+    """
+    try:
+        with db_session() as session:
+            # Fetch all scans with entity info in a single query
+            scans = session.query(Scan).order_by(Scan.generated_at.desc()).all()
+
+            entity_cache: Dict[int, Optional[Entity]] = {}
+
+            # Group scans by (entity_ref, document_type) → case_key
+            groups: Dict[str, Dict] = {}
+            for s in scans:
+                if s.entity_id:
+                    if s.entity_id not in entity_cache:
+                        entity_cache[s.entity_id] = (
+                            session.query(Entity).filter(Entity.id == s.entity_id).first()
+                        )
+                    entity = entity_cache[s.entity_id]
+                else:
+                    entity = None
+
+                entity_ref = entity.entity_ref if entity else "unlinked"
+                doc_type = s.document_type or "generic"
+                case_key = f"{doc_type}::{entity_ref}"
+
+                if case_key not in groups:
+                    ename = (
+                        f"{entity.first_name or ''} {entity.last_name or ''}".strip()
+                        if entity
+                        else ""
+                    )
+                    groups[case_key] = {
+                        "case_key": case_key,
+                        "entity_ref": entity_ref,
+                        "entity_name": ename,
+                        "document_type": doc_type,
+                        "documents": [],
+                        "max_risk_level": "low",
+                        "min_truth_score": 100,
+                    }
+
+                groups[case_key]["documents"].append(
+                    {
+                        "source_name": s.source_name,
+                        "document_type": doc_type,
+                        "truth_score": s.truth_score,
+                        "risk_level": s.risk_level or "low",
+                        "verdict": s.verdict or "",
+                        "generated_at": s.generated_at.isoformat() if s.generated_at else "",
+                        "scan_id": s.id,
+                    }
+                )
+                r = s.risk_level or "low"
+                cur = groups[case_key]["max_risk_level"]
+                if r == "high" or (r == "medium" and cur == "low"):
+                    groups[case_key]["max_risk_level"] = r
+                if s.truth_score is not None:
+                    groups[case_key]["min_truth_score"] = min(
+                        groups[case_key]["min_truth_score"], s.truth_score
+                    )
+
+            # Load case state from DB cases table
+            db_states: Dict[str, Case] = {
+                c.case_key: c for c in session.query(Case).all()
+            }
+
+            result = []
+            for case_key, group in groups.items():
+                state = db_states.get(case_key)
+                group["document_count"] = len(group["documents"])
+                group["status"] = state.status if state else "new"
+                group["disposition"] = state.disposition if state else "open"
+                group["priority"] = state.priority if state else "normal"
+                group["assignee"] = state.assignee if state else ""
+                group["labels"] = list(state.labels) if state and state.labels else []
+                group["notes"] = []
+                group["note_count"] = 0
+                if state:
+                    db_notes = (
+                        session.query(CaseNote)  # type: ignore[attr-defined]
+                        .filter(CaseNote.case_id == state.id)  # type: ignore[attr-defined]
+                        .order_by(CaseNote.created_at.asc())  # type: ignore[attr-defined]
+                        .all()
+                    )
+                    group["notes"] = [
+                        {
+                            "created_at": n.created_at.isoformat() if n.created_at else "",
+                            "author": n.author,
+                            "text": n.text,
+                        }
+                        for n in db_notes
+                    ]
+                    group["note_count"] = len(group["notes"])
+                group["needs_review"] = (
+                    group["max_risk_level"] in ("high", "medium")
+                    and group["disposition"] not in ("cleared", "fraud_confirmed")
+                )
+                if group["min_truth_score"] == 100 and not group["documents"]:
+                    group["min_truth_score"] = None
+                result.append(group)
+
+            return sorted(
+                result,
+                key=lambda c: (
+                    0 if c["needs_review"] else 1,
+                    {"high": 0, "medium": 1, "low": 2}.get(c["max_risk_level"], 3),
+                    -c["document_count"],
+                ),
+            )
+    except Exception as exc:
+        log.warning("list_cases_from_db failed: %s", exc)
+        return []
 
 
 def get_all_entities_with_scans(limit: int = 200) -> List[Dict[str, Any]]:

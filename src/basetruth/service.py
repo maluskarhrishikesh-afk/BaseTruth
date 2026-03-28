@@ -115,6 +115,23 @@ class BaseTruthService:
             record.created_at = timestamp
         records[case_key] = record
         self._save_case_records(records)
+
+        # Sync to PostgreSQL (non-fatal — file remains the source of truth when DB is down)
+        try:
+            from basetruth.store import update_case_in_db
+            update_case_in_db(
+                case_key,
+                status=record.status,
+                disposition=record.disposition,
+                priority=record.priority,
+                assignee=record.assignee,
+                labels=list(record.labels),
+                note_text=note_text,
+                note_author=note_author or "analyst",
+            )
+        except Exception:  # noqa: BLE001
+            log.debug("update_case: DB sync skipped (DB unavailable)", exc_info=True)
+
         return record.__dict__ | {"notes": [note.__dict__ for note in record.notes]}
 
     def collect_supported_files(self, input_dir: str | Path) -> List[Path]:
@@ -405,6 +422,8 @@ class BaseTruthService:
                     "scan_document: DB persist OK",
                     extra={"scan_id": db_result.get("scan_id"), "entity_ref": db_result.get("entity_ref")},
                 )
+                # Store entity_ref in report dict for caller use (e.g. bulk scan entity reuse)
+                report_dict["_entity_ref"] = db_result.get("entity_ref")
                 # Upload original source document to MinIO alongside the PDF report
                 _entity_ref = db_result.get("entity_ref")
                 if _entity_ref and source_path.exists():
@@ -427,8 +446,15 @@ class BaseTruthService:
 
         # Auto-manage case lifecycle based on risk level (non-fatal)
         try:
-            _case_key = self._case_key_for_report(report_dict)
             _risk = tamper_assessment.get("risk_level", "low")
+            _doc_type = report_dict.get("structured_summary", {}).get("document", {}).get("type", "generic")
+            _entity_ref_for_case = report_dict.get("_entity_ref")
+            # Prefer DB-style case key (doc_type::entity_ref) when we have an entity_ref;
+            # fall back to the legacy key derived from report fields.
+            if _entity_ref_for_case:
+                _case_key = f"{_doc_type}::{_entity_ref_for_case}"
+            else:
+                _case_key = self._case_key_for_report(report_dict)
             _existing = self._load_case_records()
             _rec = _existing.get(_case_key)
             # Never override a case already closed by an analyst
@@ -449,7 +475,7 @@ class BaseTruthService:
                         extra={"case_key": _case_key, "risk": _risk},
                     )
                 else:
-                    # Low risk — auto-approve if no case record exists yet
+                    # Low risk — auto-approve only when no case record exists yet
                     if _rec is None:
                         self.update_case(
                             _case_key,

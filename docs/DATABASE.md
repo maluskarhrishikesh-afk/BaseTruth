@@ -1,53 +1,203 @@
 # BaseTruth — Database Design
 
 **Engine:** PostgreSQL 16 (running as the `db` service in `docker-compose.yml`)  
-**ORM:** SQLAlchemy 2.x (async-compatible)  
-**Connection string:** `postgresql://basetruth:basetruth_secret@db:5432/basetruth`
+**ORM:** SQLAlchemy 2.x  
+**Connection string:** `postgresql://basetruth:basetruth_secret@db:5432/basetruth`  
+**Object Storage:** MinIO (S3-compatible) — files stored at `http://minio:9000`, bucket `basetruth-reports`
 
 ---
 
 ## Design Principles
 
-1. **One row = one document scan.** Each time a file is scanned a row is
-   inserted into `scans`.  Re-scanning the same file appends a new row (full
-   audit trail).
-2. **Signals stored relationally.** Each fraud signal (pass/fail check) is its
-   own row in `signals`, FK'd to its parent scan.  This lets you query
-   "all scans that failed rule X" without parsing JSON.
-3. **Cases are separate from scans.** A `case` groups one or more scans that
-   belong to the same mortgage application.  The link is a many-to-many join
-   table `case_scans`.
-4. **Original JSON preserved.** A `report_json` JSONB column on `scans` stores
-   the full `_verification.json` so nothing is lost.
-5. **Soft deletes only.** Rows are never hard-deleted; `deleted_at` timestamps
-   are used instead.
+1. **One person → one entity.** The `entities` table is the canonical Person record. It is created (or matched) when documents are scanned. All documents for the same person share a single entity row.
+2. **One row = one document scan.** Each file scan inserts one row in `scans`, linked back to the entity. Re-scanning appends a new row for a full audit trail.
+3. **Cases are workflow state only.** A `cases` row records the analyst's decision (approve / reject) for a *document-type group per entity*. Document counts and risk are computed live from `scans`.
+4. **Notes are append-only.** Analyst observations attach to a case via `case_notes`. Notes are never deleted.
+5. **Full JSON preserved.** `scans.report_json` (JSONB) stores the complete verification report so nothing is lost.
+6. **MinIO mirrors the DB.** Every scan auto-uploads the source file and the PDF report to MinIO under `{entity_ref}/{filename}`. Case bundle PDFs go to `{entity_ref}/case_reports/{timestamp}_case_report.pdf`. The DB is the source of truth; MinIO is the file-storage layer.
 
 ---
 
-## Entity-Relationship Overview
+## Entity-Relationship Diagram
 
 ```
-cases  ─────< case_scans >───── scans ─────< signals
-  │                               │
-  └──< case_notes              document_types (lookup)
+┌─────────────────────────────────────────────────────────────────┐
+│                        entities                                 │
+│  id (PK)  entity_ref (UNIQUE)  first_name  last_name           │
+│  email    phone    pan_number  aadhar_number                    │
+│  created_at  updated_at                                         │
+└───────────────┬────────────────────────┬────────────────────────┘
+                │ 1                      │ 1
+                │                        │
+          ┌─────▼──────┐          ┌──────▼──────┐
+          │   scans    │          │   cases     │
+          │  id (PK)   │          │  id (PK)    │
+          │  entity_id │          │  entity_id  │
+          │  source_name│         │  case_key   │
+          │  document_type│       │  document_type│
+          │  truth_score│         │  status     │
+          │  risk_level │         │  disposition│
+          │  verdict    │         │  priority   │
+          │  report_json│         │  assignee   │
+          │  pdf_report │         │  labels[]   │
+          │  generated_at│        │  max_risk_level│
+          └────────────┘         │  document_count│
+                                  │  created_at │
+                                  │  updated_at │
+                                  └──────┬──────┘
+                                         │ 1
+                                   ┌─────▼──────┐
+                                   │ case_notes │
+                                   │  id (PK)   │
+                                   │  case_id   │
+                                   │  author    │
+                                   │  text      │
+                                   │  created_at│
+                                   └────────────┘
+```
+
+**MinIO Path Convention:**
+```
+{entity_ref}/
+  {source_document.pdf}          ← original uploaded file
+  {stem}_report.pdf              ← per-scan PDF report
+  case_reports/
+    {timestamp}_case_report.pdf  ← full case bundle PDF
 ```
 
 ---
 
 ## Table Definitions
 
-### `document_types`  *(lookup / seed table)*
+### `entities` — Persons / Applicants
 
-Enumerated set of document types BaseTruth can classify.
+One row per person being verified. Created automatically on first document scan, or explicitly via the "Associate documents with a person" widget. Matched by PAN, Aadhaar, or (first_name, last_name) pair.
 
-| Column        | Type        | Constraints          | Description                          |
-|---------------|-------------|----------------------|--------------------------------------|
-| `id`          | SERIAL      | PK                   | Surrogate key                        |
-| `code`        | VARCHAR(50) | UNIQUE NOT NULL      | Machine name, e.g. `payslip`         |
-| `label`       | VARCHAR(100)| NOT NULL             | Human label, e.g. `Pay Slip`         |
-| `description` | TEXT        |                      | One-line description                 |
+| Column         | Type          | Constraints     | Description                         |
+|----------------|---------------|-----------------|-------------------------------------|
+| `id`           | SERIAL        | PK              | Internal surrogate key              |
+| `entity_ref`   | VARCHAR(20)   | UNIQUE NOT NULL | Human reference: `BT-000001`        |
+| `first_name`   | VARCHAR(255)  |                 | Given name                          |
+| `last_name`    | VARCHAR(255)  |                 | Family name                         |
+| `email`        | VARCHAR(255)  |                 | Email address                       |
+| `phone`        | VARCHAR(50)   |                 | Contact phone                       |
+| `pan_number`   | VARCHAR(20)   |                 | Indian PAN (strong unique ID)       |
+| `aadhar_number`| VARCHAR(20)   |                 | Aadhaar UID (strong unique ID)      |
+| `created_at`   | TIMESTAMPTZ   | default now()   | Row creation time                   |
+| `updated_at`   | TIMESTAMPTZ   | default now()   | Last field update                   |
 
-**Seed values:** `payslip`, `bank_statement`, `employment_letter`, `form16`,
+**Identity matching order (first match wins):**
+1. `pan_number` exact match
+2. `aadhar_number` exact match
+3. `(first_name, last_name)` case-insensitive match
+4. If no match → new entity created
+
+---
+
+### `scans` — Document Verification Results
+
+One row per document scan. Never updated after creation (immutable audit log).
+
+| Column          | Type        | Constraints             | Description                        |
+|-----------------|-------------|-------------------------|------------------------------------|
+| `id`            | SERIAL      | PK                      | Surrogate key                      |
+| `entity_id`     | INTEGER     | FK → entities(id) NULL  | Owning person (NULL if undetected) |
+| `source_name`   | VARCHAR(500)| NOT NULL                | Original filename                  |
+| `source_sha256` | VARCHAR(64) |                         | File SHA-256 hash                  |
+| `document_type` | VARCHAR(100)|                         | `payslip`, `bank_statement`, etc.  |
+| `truth_score`   | INTEGER     | nullable                | 0–100 integrity score              |
+| `risk_level`    | VARCHAR(20) |                         | `low`, `medium`, `high`            |
+| `verdict`       | TEXT        |                         | Plain-English verdict string       |
+| `parse_method`  | VARCHAR(100)|                         | How the document was parsed        |
+| `report_json`   | JSONB       | NOT NULL                | Full verification report           |
+| `pdf_report`    | BYTEA       | nullable                | Inline PDF report bytes            |
+| `generated_at`  | TIMESTAMPTZ | default now()           | Scan timestamp                     |
+
+---
+
+### `cases` — Workflow State
+
+Stores analyst decisions per (entity × document_type) group. The case_key format is `{document_type}::{entity_ref}` (e.g. `payslip::BT-000001`). Document counts and risk levels are computed live from `scans`.
+
+| Column           | Type        | Constraints             | Description                        |
+|------------------|-------------|-------------------------|------------------------------------|
+| `id`             | SERIAL      | PK                      | Surrogate key                      |
+| `case_key`       | VARCHAR(500)| UNIQUE NOT NULL         | `payslip::BT-000001`               |
+| `entity_id`      | INTEGER     | FK → entities(id) NULL  | Linked person                      |
+| `document_type`  | VARCHAR(100)|                         | Document category                  |
+| `status`         | VARCHAR(50) | default 'new'           | `new`, `triage`, `investigating`, `closed` |
+| `disposition`    | VARCHAR(50) | default 'open'          | `open`, `cleared`, `fraud_confirmed`, etc. |
+| `priority`       | VARCHAR(20) | default 'normal'        | `low`, `normal`, `high`, `critical`|
+| `assignee`       | VARCHAR(255)|                         | Analyst name or email              |
+| `labels`         | TEXT[]      | default {}              | Free-form tags                     |
+| `max_risk_level` | VARCHAR(20) |                         | Cached highest risk in group       |
+| `document_count` | INTEGER     |                         | Cached document count              |
+| `created_at`     | TIMESTAMPTZ | default now()           | Case creation time                 |
+| `updated_at`     | TIMESTAMPTZ | default now()           | Last update time                   |
+
+---
+
+### `case_notes` — Analyst Notes (Append-Only)
+
+| Column      | Type        | Constraints          | Description               |
+|-------------|-------------|----------------------|---------------------------|
+| `id`        | SERIAL      | PK                   | Surrogate key             |
+| `case_id`   | INTEGER     | FK → cases(id) CASCADE| Parent case               |
+| `author`    | VARCHAR(255)| default 'analyst'    | Note author               |
+| `text`      | TEXT        |                      | Note body                 |
+| `created_at`| TIMESTAMPTZ | default now()        | Note timestamp            |
+
+---
+
+## MinIO Storage Layout
+
+Files are organised under the MinIO bucket (`basetruth-reports` by default):
+
+```
+BT-000001/
+  bank_statement.pdf            ← original source document
+  bank_statement_report.pdf     ← per-scan PDF report
+  payslip_2026_jan.pdf
+  payslip_2026_jan_report.pdf
+  case_reports/
+    20260328_115546_case_report.pdf   ← bulk-scan bundle PDF
+
+BT-000002/
+  employment_letter.pdf
+  employment_letter_report.pdf
+  ...
+```
+
+All files are downloadable from:
+1. **Reports page** — per-entity listing with per-scan download buttons
+2. **Database → MinIO Storage tab** — full object list with sizes
+3. **MinIO console** at `http://localhost:9001` (admin/admin)
+
+---
+
+## Case Key Convention
+
+Cases are identified by `{document_type}::{entity_ref}`:
+
+| Case Key                      | Meaning                                          |
+|-------------------------------|--------------------------------------------------|
+| `payslip::BT-000001`          | All payslips for person BT-000001                |
+| `bank_statement::BT-000002`   | All bank statements for person BT-000002         |
+| `form16::BT-000001`           | All Form 16s for person BT-000001                |
+
+This grouping means **one case per document type per person**, regardless of how many documents were uploaded.
+
+---
+
+## Reset Behaviour
+
+| Operation          | Effect                                                    |
+|--------------------|-----------------------------------------------------------|
+| **RESET Database** | Truncates `case_notes`, `cases`, `scans`, `entities` with CASCADE. Sequences restarted. |
+| **RESET MinIO**    | Deletes all objects in the `basetruth-reports` bucket.    |
+
+Both operations are available in **Database → Danger Zone** and require typing `RESET` to confirm.
+
 `pan_card`, `aadhar`, `utility_bill`, `gift_letter`, `property_agreement`,
 `offer_letter`, `increment_letter`, `generic`
 
