@@ -6,6 +6,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from basetruth.logger import get_logger
+
+log = get_logger(__name__)
+
 from basetruth.analysis.payslip import compare_payslip_summaries
 from basetruth.analysis.structured import build_structured_summary
 from basetruth.analysis.tamper import evaluate_tamper_risk
@@ -144,7 +148,13 @@ class BaseTruthService:
     def scan_document(self, input_path: str | Path) -> Dict[str, Any]:
         path = Path(input_path)
         if not path.exists():
+            log.error("scan_document: file not found", extra={"path": str(path)})
             raise FileNotFoundError(path)
+
+        log.info(
+            "scan_document: START",
+            extra={"path": str(path), "size_bytes": path.stat().st_size, "suffix": path.suffix.lower()},
+        )
 
         artifact_dir = self._document_artifact_dir(path.name)
         raw_parse_path = artifact_dir / f"{path.stem}_liteparse.json"
@@ -164,6 +174,7 @@ class BaseTruthService:
         image_forensics_result: Optional[Dict[str, Any]] = None  # populated for raw image files
 
         if path.suffix.lower() == ".json" and path.name.endswith("_structured.json"):
+            log.info("scan_document: loading pre-built structured JSON", extra={"path": str(path)})
             structured_summary = json.loads(path.read_text(encoding="utf-8"))
             pdf_metadata = {}
             raw_parse_written = ""
@@ -171,10 +182,12 @@ class BaseTruthService:
 
         elif is_image_file(path):
             # ── Raw image file branch (JPEG, PNG, TIFF, BMP, WebP) ──────────
+            log.info("scan_document: detected raw image file — running direct OCR", extra={"path": str(path)})
             # 1. OCR the image directly with pytesseract (no Poppler needed)
             ocr_text, ocr_engine = ocr_image_directly(path)
             if ocr_engine == "pytesseract":
                 parse_method = "ocr_pytesseract_direct"
+                log.info("scan_document: OCR succeeded via pytesseract", extra={"chars": len(ocr_text or "")})
             else:
                 parse_method = "no_text_extracted"
                 parse_fallback = True
@@ -182,6 +195,7 @@ class BaseTruthService:
                     "Direct image OCR unavailable (install pytesseract + Tesseract binary). "
                     "Image forensics signals will still be generated."
                 )
+                log.warning("scan_document: OCR unavailable for image file", extra={"ocr_engine": ocr_engine})
 
             # 2. Build the same structured JSON that the rest of the pipeline expects
             fallback_json = build_liteparse_json_from_text(ocr_text or "", path.name)
@@ -208,43 +222,49 @@ class BaseTruthService:
             try:
                 from basetruth.analysis.image_forensics import analyse_image
                 image_forensics_result = analyse_image(path)
+                log.info("scan_document: image forensics complete", extra={"signals": len(image_forensics_result or {})})
             except Exception:  # noqa: BLE001
                 image_forensics_result = None
+                log.warning("scan_document: image forensics failed", exc_info=True)
 
         else:
             # ── PDF / JSON input branch ──────────────────────────────────────
             if path.suffix.lower() == ".json":
                 raw_parse_path = path
                 parse_method = "json_input"
+                log.info("scan_document: JSON input detected", extra={"path": str(path)})
             else:
-                # Track whether we fell back to the plain-text extraction path so
-                # callers can surface a warning in the UI / report.
+                log.info("scan_document: checking LiteParse availability")
                 liteparse_status = check_liteparse_available()
                 if liteparse_status["available"]:
+                    log.info("scan_document: running LiteParse", extra={"cmd_source": liteparse_status.get("source", "?")})
                     result = parse_document_to_json(path, raw_parse_path)
                     liteparse_cmd_used = " ".join(str(c) for c in result.get("command", []))
                     if result["status"] != "success":
-                        # LiteParse reported a failure (e.g. ImageMagick missing).
-                        # Fall back to pypdf plain-text extraction so the rest of
-                        # the pipeline can still produce a useful (if partial) report.
                         parse_fallback = True
                         parse_fallback_reason = str(result.get("message", "LiteParse parse failed"))
                         parse_method = "pypdf_fallback"
+                        log.warning(
+                            "scan_document: LiteParse failed — falling back to pypdf",
+                            extra={"reason": parse_fallback_reason},
+                        )
                     else:
                         parse_method = f"liteparse({result.get('command_source', '?')})"
+                        log.info("scan_document: LiteParse succeeded", extra={"parse_method": parse_method})
                 else:
-                    # LiteParse binary is not available at all on this machine.
                     parse_fallback = True
                     parse_fallback_reason = str(liteparse_status.get("message", "LiteParse not available"))
                     parse_method = "pypdf_fallback"
+                    log.warning(
+                        "scan_document: LiteParse not available — falling back to pypdf",
+                        extra={"reason": parse_fallback_reason},
+                    )
 
                 if parse_fallback:
-                    # First try PyMuPDF / pypdf for text-layer PDFs; this is
-                    # fast and works without any external binary.
+                    log.info("scan_document: extracting text via pypdf fallback")
                     extracted_text = extract_text_from_pdf(path) if path.suffix.lower() == ".pdf" else ""
+                    log.debug("scan_document: text extracted", extra={"chars": len(extracted_text)})
 
-                    # Detect image-only PDFs (Aadhaar, PAN cards, scanned docs).
-                    # When the page has no text layer at all, try OCR.
                     page_count = 1
                     try:
                         from pypdf import PdfReader  # type: ignore
@@ -254,13 +274,14 @@ class BaseTruthService:
 
                     if is_image_only_pdf(extracted_text, page_count):
                         image_only_pdf = True
+                        log.info("scan_document: detected image-only PDF — attempting OCR", extra={"pages": page_count})
                         ocr_text, ocr_engine = extract_text_via_ocr(path)
                         if ocr_text.strip():
                             extracted_text = ocr_text
                             parse_fallback_reason += " | OCR via pytesseract succeeded."
                             parse_method = "ocr_pytesseract"
+                            log.info("scan_document: OCR succeeded", extra={"chars": len(ocr_text)})
                         else:
-                            # OCR unavailable or returned nothing (image-only, no OCR).
                             if ocr_engine == "unavailable":
                                 parse_fallback_reason += " | OCR unavailable (install Tesseract + pdf2image)."
                             elif ocr_engine == "error":
@@ -268,6 +289,10 @@ class BaseTruthService:
                             else:
                                 parse_fallback_reason += " | Image-only PDF: no text layer found."
                             parse_method = "no_text_extracted"
+                            log.warning(
+                                "scan_document: OCR produced no text",
+                                extra={"ocr_engine": ocr_engine, "reason": parse_fallback_reason},
+                            )
 
                     fallback_json = build_liteparse_json_from_text(extracted_text, path.name)
                     raw_parse_path.write_text(
@@ -293,8 +318,24 @@ class BaseTruthService:
 
         if path.suffix.lower() == ".json" and path.name.endswith("_structured.json"):
             structured_path = path
+        log.info(
+            "scan_document: running tamper risk evaluation",
+            extra={
+                "doc_type":     structured_summary.get("document", {}).get("type", "generic"),
+                "parse_method": parse_method,
+                "fallback":     parse_fallback,
+            },
+        )
         tamper_assessment = evaluate_tamper_risk(
             structured_summary, pdf_metadata, image_forensics=image_forensics_result
+        )
+        log.info(
+            "scan_document: tamper assessment complete",
+            extra={
+                "truth_score": tamper_assessment.get("truth_score"),
+                "risk_level":  tamper_assessment.get("risk_level"),
+                "verdict":     tamper_assessment.get("verdict"),
+            },
         )
 
         source = {
@@ -330,8 +371,10 @@ class BaseTruthService:
             pdf_bytes = render_scan_report_pdf(report.to_dict())
             pdf_report_path.write_bytes(pdf_bytes)
             report.artifacts["pdf_report_path"] = str(pdf_report_path)
+            log.info("scan_document: PDF report generated", extra={"pdf_path": str(pdf_report_path)})
         except Exception:  # noqa: BLE001 — PDF generation is non-fatal
             report.artifacts["pdf_report_path"] = ""
+            log.warning("scan_document: PDF generation failed", exc_info=True)
 
         # Re-write verification JSON now that pdf_report_path is populated
         report_dict = report.to_dict()
@@ -341,10 +384,18 @@ class BaseTruthService:
         try:
             from basetruth.db import init_db
             from basetruth.store import save_scan_to_db
+            log.info("scan_document: persisting scan to PostgreSQL")
             init_db()
-            save_scan_to_db(report_dict, pdf_bytes if "pdf_bytes" in dir() else None)
+            db_result = save_scan_to_db(report_dict, pdf_bytes if "pdf_bytes" in dir() else None)
+            if db_result:
+                log.info(
+                    "scan_document: DB persist OK",
+                    extra={"scan_id": db_result.get("scan_id"), "entity_ref": db_result.get("entity_ref")},
+                )
+            else:
+                log.warning("scan_document: DB persist returned None (DB may be offline)")
         except Exception:  # noqa: BLE001
-            pass
+            log.warning("scan_document: DB persist failed", exc_info=True)
 
         # Auto-manage case lifecycle based on risk level (non-fatal)
         try:
@@ -365,6 +416,10 @@ class BaseTruthService:
                         ),
                         note_author="system",
                     )
+                    log.info(
+                        "scan_document: case auto-flagged for review",
+                        extra={"case_key": _case_key, "risk": _risk},
+                    )
                 else:
                     # Low risk — auto-approve if no case record exists yet
                     if _rec is None:
@@ -375,8 +430,23 @@ class BaseTruthService:
                             note_text=f"Auto-approved: LOW risk scan of '{path.name}'.",
                             note_author="system",
                         )
+                        log.info(
+                            "scan_document: case auto-approved (low risk)",
+                            extra={"case_key": _case_key},
+                        )
         except Exception:  # noqa: BLE001
-            pass
+            log.warning("scan_document: auto-case management failed", exc_info=True)
+
+        log.info(
+            "scan_document: DONE",
+            extra={
+                "file": path.name,
+                "doc_type": structured_summary.get("document", {}).get("type", "generic"),
+                "truth_score": tamper_assessment.get("truth_score"),
+                "risk_level": tamper_assessment.get("risk_level"),
+                "parse_method": parse_method,
+            },
+        )
 
         return report_dict
 

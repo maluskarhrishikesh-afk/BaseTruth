@@ -19,6 +19,10 @@ import os
 from contextlib import contextmanager
 from typing import Generator, Optional
 
+from basetruth.logger import get_logger
+
+log = get_logger(__name__)
+
 from sqlalchemy import (
     BigInteger,
     Column,
@@ -34,8 +38,6 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Session, relationship, sessionmaker
 from sqlalchemy.sql import func
-
-log = logging.getLogger(__name__)
 
 DATABASE_URL: str = os.environ.get("DATABASE_URL", "")
 
@@ -59,6 +61,7 @@ def get_engine():
                 max_overflow=10,
                 connect_args={"connect_timeout": 5},
             )
+            log.info("DB engine created", extra={"url": DATABASE_URL.split("@")[-1]})
         except Exception as exc:
             log.warning("Could not create DB engine: %s", exc)
     return _engine
@@ -67,12 +70,14 @@ def get_engine():
 def db_available() -> bool:
     engine = get_engine()
     if engine is None:
+        log.debug("db_available: no engine (DATABASE_URL not set?)")
         return False
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         return True
-    except Exception:
+    except Exception as exc:
+        log.warning("db_available: connection check failed", extra={"error": str(exc)})
         return False
 
 

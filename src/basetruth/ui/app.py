@@ -15,9 +15,13 @@ try:
     from basetruth.db import db_available, init_db
     from basetruth.store import (
         db_stats,
+        db_table_counts,
+        db_table_rows,
+        get_entity_latest_pdf,
         get_entity_scans,
         get_scan_pdf,
         list_recent_scans,
+        reset_db,
         search_entities,
         update_entity,
     )
@@ -26,6 +30,13 @@ except Exception:  # noqa: BLE001
     _DB_IMPORTS_OK = False
     def db_available() -> bool: return False  # type: ignore[misc]
     def init_db() -> bool: return False  # type: ignore[misc]
+
+try:
+    from basetruth.logger import log_path as _log_path
+    _LOGGER_OK = True
+except Exception:
+    _LOGGER_OK = False
+    def _log_path(): return None  # type: ignore[misc,return-value]
 
 
 # ---------------------------------------------------------------------------
@@ -877,6 +888,8 @@ _PAGES: Dict[str, str] = {
     "🗂️  Records": "records",
     "📊  Reports": "reports",
     "🔗  Datasources": "datasources",
+    "📋  Logs": "logs",
+    "🗄️  Database": "database",
     "⚙️  Settings": "settings",
 }
 
@@ -2034,6 +2047,199 @@ def _page_settings() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Log Analyzer page
+# ---------------------------------------------------------------------------
+
+
+def _page_logs() -> None:
+    st.markdown("# Log Analyzer")
+    st.caption("Structured JSONL logs produced by every BaseTruth module.")
+
+    lp = _log_path() if _LOGGER_OK else None
+    if lp is None or not lp.exists():
+        st.info(
+            "No log file found yet. Run some scans and the log file will appear here.\n\n"
+            f"Expected location: `{lp}`"
+        )
+        return
+
+    # ── Read + parse ────────────────────────────────────────────────────────
+    raw_lines: list[str] = []
+    try:
+        with open(lp, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    raw_lines.append(line)
+    except Exception as exc:
+        st.error(f"Could not read log file: {exc}")
+        return
+
+    records: list[dict] = []
+    for line in raw_lines:
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            records.append({"ts": "", "level": "RAW", "msg": line, "module": "", "func": "", "logger": ""})
+
+    if not records:
+        st.info("Log file exists but is empty.")
+        return
+
+    import pandas as pd  # noqa: PLC0415
+
+    df = pd.DataFrame(records)
+    for col in ["ts", "level", "logger", "module", "func", "line", "msg"]:
+        if col not in df.columns:
+            df[col] = ""
+    df = df.fillna("")
+
+    # ── Summary stats ────────────────────────────────────────────────────────
+    sc1, sc2, sc3, sc4 = st.columns(4)
+    sc1.metric("Total entries", len(df))
+    sc2.metric("Errors", int((df["level"] == "ERROR").sum()))
+    sc3.metric("Warnings", int((df["level"] == "WARNING").sum()))
+    sc4.metric("Info / Debug", int(((df["level"] == "INFO") | (df["level"] == "DEBUG")).sum()))
+
+    st.divider()
+
+    # ── Filters ─────────────────────────────────────────────────────────────
+    f1, f2, f3 = st.columns([1.4, 2, 3])
+    level_opts = ["ALL"] + sorted(df["level"].unique().tolist())
+    module_opts = ["ALL"] + sorted([m for m in df["module"].unique() if m])
+    chosen_level = f1.selectbox("Level", level_opts, key="log_level_filter")
+    chosen_module = f2.selectbox("Module", module_opts, key="log_module_filter")
+    search_text = f3.text_input("Search message", placeholder="keyword…", key="log_search")
+
+    view = df.copy()
+    if chosen_level != "ALL":
+        view = view[view["level"] == chosen_level]
+    if chosen_module != "ALL":
+        view = view[view["module"] == chosen_module]
+    if search_text:
+        view = view[view["msg"].str.contains(search_text, case=False, na=False)]
+
+    st.subheader(f"Showing {len(view):,} of {len(df):,} entries")
+
+    # Colour-code the level column with a pandas Styler
+    _LEVEL_COLORS: dict[str, str] = {
+        "ERROR":   "background-color:#fee2e2;color:#991b1b;font-weight:600",
+        "WARNING": "background-color:#fef9c3;color:#854d0e;font-weight:600",
+        "INFO":    "background-color:#f0fdf4;color:#166534",
+        "DEBUG":   "background-color:#f8fafc;color:#64748b",
+    }
+
+    def _style_level(val: str) -> str:
+        return _LEVEL_COLORS.get(val, "")
+
+    display_cols = [c for c in ["ts", "level", "module", "func", "msg"] if c in view.columns]
+    rename_map = {"ts": "Timestamp", "level": "Level", "module": "Module", "func": "Function", "msg": "Message"}
+    styled = (
+        view[display_cols]
+        .rename(columns=rename_map)
+        .style.map(_style_level, subset=["Level"])
+    )
+    st.dataframe(styled, hide_index=True, use_container_width=True, height=520)
+
+    st.divider()
+    with open(lp, "rb") as fh:
+        st.download_button(
+            "⬇ Download full log file",
+            data=fh.read(),
+            file_name="basetruth.jsonl",
+            mime="application/x-ndjson",
+            key="log_download_btn",
+        )
+
+
+# ---------------------------------------------------------------------------
+# DB Viewer page
+# ---------------------------------------------------------------------------
+
+_DB_TABLE_LABELS: dict[str, str] = {
+    "entities":   "Entities",
+    "scans":      "Scans",
+    "cases":      "Cases",
+    "case_notes": "Case Notes",
+}
+
+
+def _page_database() -> None:
+    st.markdown("# Database Viewer")
+
+    if not _DB_IMPORTS_OK or not db_available():
+        st.warning(
+            "PostgreSQL is not available.  Start the `db` Docker service and ensure "
+            "`DATABASE_URL` is set correctly."
+        )
+        return
+
+    # ── Row-count overview ───────────────────────────────────────────────────
+    counts = db_table_counts()
+    cc = st.columns(4)
+    for i, (tbl, lbl) in enumerate(_DB_TABLE_LABELS.items()):
+        cc[i].metric(lbl, f"{counts.get(tbl, 0):,}")
+
+    st.divider()
+
+    # ── Table browser ────────────────────────────────────────────────────────
+    sel_col, _ = st.columns([2, 6])
+    with sel_col:
+        chosen_table = st.selectbox(
+            "Browse table",
+            list(_DB_TABLE_LABELS.keys()),
+            format_func=lambda t: _DB_TABLE_LABELS.get(t) or t,
+            key="db_viewer_table",
+        )
+
+    rows, total = db_table_rows(chosen_table, limit=500)
+
+    cap = f"**{_DB_TABLE_LABELS[chosen_table]}** — {total:,} rows total"
+    if total > 500:
+        cap += "  ·  showing most-recent 500"
+    st.subheader(cap)
+
+    if rows:
+        import pandas as pd  # noqa: PLC0415
+
+        df = pd.DataFrame(rows)
+        # Convert datetime objects to ISO strings for clean rendering
+        for col in df.select_dtypes(include=["datetimetz", "datetime64[ns, UTC]", "object"]).columns:
+            try:
+                df[col] = df[col].astype(str)
+            except Exception:
+                pass
+        st.dataframe(df, hide_index=True, use_container_width=True, height=480)
+    else:
+        st.info(f"No rows in **{_DB_TABLE_LABELS[chosen_table]}** yet.")
+
+    # ── Danger zone — DB Reset ────────────────────────────────────────────────
+    st.divider()
+    st.markdown("### ⚠️ Danger Zone")
+
+    with st.expander("🗑️  Reset / Empty Database", expanded=False):
+        st.error(
+            "This permanently deletes **all** entities, scans, cases, and notes. "
+            "There is no undo."
+        )
+        confirm_input = st.text_input(
+            "Type **RESET** to confirm:",
+            key="db_reset_confirm_input",
+            placeholder="RESET",
+        )
+        if st.button("💀  Reset Database", type="primary", key="db_reset_execute_btn"):
+            if confirm_input.strip() == "RESET":
+                ok = reset_db()
+                if ok:
+                    st.success("Database reset complete. All tables are now empty.")
+                    st.rerun()
+                else:
+                    st.error("Reset failed — check the Logs page for details.")
+            else:
+                st.error("Please type exactly `RESET` (all caps) to confirm.")
+
+
+# ---------------------------------------------------------------------------
 # Index metrics (sidebar summary)
 # ---------------------------------------------------------------------------
 # Records page  (PostgreSQL entity search + scan history)
@@ -2215,6 +2421,21 @@ def _page_records() -> None:
         unsafe_allow_html=True,
     )
 
+    # ---- Entity-level PDF download ----------------------------------------
+    _entity_pdf, _entity_pdf_src = get_entity_latest_pdf(selected_ref)
+    if _entity_pdf:
+        _pdf_label = f"{Path(_entity_pdf_src).stem}_report.pdf" if _entity_pdf_src else f"{selected_ref}_report.pdf"
+        st.download_button(
+            "📥  Download Latest PDF Report",
+            data=_entity_pdf,
+            file_name=_pdf_label,
+            mime="application/pdf",
+            key=f"entity_pdf_{selected_ref}",
+            type="primary",
+        )
+    else:
+        st.caption("No PDF report available yet for this entity.")
+
     # ---- Edit identity fields inline --------------------------------------
     with st.expander("✏️  Edit identity details", expanded=False):
         with st.form(f"edit_entity_{selected_ref}"):
@@ -2253,8 +2474,8 @@ def _page_records() -> None:
         st.info("No documents scanned for this entity yet.")
         return
 
-    # ── Flat table with inline PDF download — no need to expand ──────────
-    st.caption("Click ⬇ PDF to download the scan report directly, or expand a row to view forensic details.")
+    # ── Flat table with inline JSON download — expand row for forensic details
+    st.caption("Expand a row to view forensic details. Download the entity PDF report above.")
     for sc in scans:
         risk      = str(sc.get("risk_level", "low")).lower()
         score     = sc.get("truth_score", "")
@@ -2264,9 +2485,9 @@ def _page_records() -> None:
         risk_icon = {"high": "🚨", "medium": "⚠️", "review": "🔷"}.get(risk, "✅")
         score_str = f"{score}/100" if isinstance(score, int) else "—"
 
-        # Row: icon | name | type | score | risk | date | JSON btn | PDF btn
-        row_c1, row_c2, row_c3, row_c4, row_c5, row_c6, row_c7 = st.columns(
-            [0.4, 3.2, 2, 1, 1.2, 2, 1.2]
+        # Row: icon | name | type | score | date | JSON btn
+        row_c1, row_c2, row_c3, row_c4, row_c5, row_c6 = st.columns(
+            [0.4, 3.2, 2, 1, 2, 1.4]
         )
         row_c1.markdown(risk_icon)
         row_c2.markdown(f"**{fname}**")
@@ -2283,23 +2504,6 @@ def _page_records() -> None:
             key=f"rec_json_{sc['id']}",
             use_container_width=True,
         )
-
-        if sc.get("has_pdf"):
-            pdf_data = get_scan_pdf(sc["id"])
-            if pdf_data:
-                row_c7.download_button(
-                    "⬇ PDF",
-                    data=pdf_data,
-                    file_name=f"{Path(fname).stem}_report.pdf",
-                    mime="application/pdf",
-                    key=f"rec_pdf_{sc['id']}",
-                    use_container_width=True,
-                    type="primary",
-                )
-            else:
-                row_c7.button("PDF N/A", disabled=True, key=f"rec_pdf_na_{sc['id']}", use_container_width=True)
-        else:
-            row_c7.button("PDF N/A", disabled=True, key=f"rec_pdf_none_{sc['id']}", use_container_width=True)
 
         # Forensic details still available on demand
         with st.expander(f"🔬 Forensic details — {fname}", expanded=False):
@@ -2368,6 +2572,10 @@ def main() -> None:
         _page_reports(service)
     elif page == "datasources":
         _page_datasources(service)
+    elif page == "logs":
+        _page_logs()
+    elif page == "database":
+        _page_database()
     elif page == "settings":
         _page_settings()
     else:

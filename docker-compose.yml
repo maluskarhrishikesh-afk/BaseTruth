@@ -50,6 +50,7 @@ services:
       # rebuilding the image. PYTHONPATH below ensures Python prefers this over
       # the installed package in site-packages.
       - ./src:/app/src
+      - ./logs:/app/logs
     environment:
       TESSERACT_CMD: /usr/bin/tesseract
       EXIFTOOL_PATH: /usr/bin/exiftool
@@ -62,6 +63,8 @@ services:
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
       MINIO_BUCKET: basetruth-reports
+      BT_LOG_LEVEL: INFO
+      BT_LOG_DIR: /app/logs
     depends_on:
       db:
         condition: service_healthy
@@ -96,6 +99,7 @@ services:
       - ./artifacts:/app/artifacts
       - ./your_data:/app/your_data
       - ./src:/app/src
+      - ./logs:/app/logs
     environment:
       TESSERACT_CMD: /usr/bin/tesseract
       EXIFTOOL_PATH: /usr/bin/exiftool
@@ -106,6 +110,8 @@ services:
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
       MINIO_BUCKET: basetruth-reports
+      BT_LOG_LEVEL: INFO
+      BT_LOG_DIR: /app/logs
     depends_on:
       db:
         condition: service_healthy

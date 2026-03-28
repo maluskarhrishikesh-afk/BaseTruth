@@ -6,17 +6,17 @@ the application continues to work in file-only mode.
 """
 from __future__ import annotations
 
-import logging
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, text
 from sqlalchemy.orm import Session
 
 from basetruth.db import Case, CaseNote, Entity, Scan, db_session
+from basetruth.logger import get_logger
 
-log = logging.getLogger(__name__)
+log = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -465,3 +465,95 @@ def db_stats() -> Dict[str, int]:
     except Exception as exc:
         log.warning("db_stats failed: %s", exc)
         return {"entities": 0, "scans": 0, "high_risk": 0}
+
+
+def get_entity_latest_pdf(entity_ref: str) -> tuple[Optional[bytes], Optional[str]]:
+    """Return (pdf_bytes, source_name) for the most recent scan with a PDF for this entity."""
+    try:
+        with db_session() as session:
+            entity = (
+                session.query(Entity)
+                .filter(Entity.entity_ref == entity_ref)
+                .first()
+            )
+            if not entity:
+                return None, None
+            scan = (
+                session.query(Scan)
+                .filter(Scan.entity_id == entity.id, Scan.pdf_report.isnot(None))
+                .order_by(Scan.generated_at.desc())
+                .first()
+            )
+            if scan and scan.pdf_report:
+                return bytes(scan.pdf_report), scan.source_name
+            return None, None
+    except Exception as exc:
+        log.warning("get_entity_latest_pdf failed: %s", exc)
+        return None, None
+
+
+_DB_VIEWER_TABLES = {"entities", "scans", "cases", "case_notes"}
+
+
+def db_table_counts() -> Dict[str, int]:
+    """Return row counts for all four application tables."""
+    counts: Dict[str, int] = {}
+    try:
+        with db_session() as session:
+            for tbl in ("entities", "scans", "cases", "case_notes"):
+                counts[tbl] = session.execute(text(f"SELECT COUNT(*) FROM {tbl}")).scalar() or 0  # noqa: S608
+    except Exception as exc:
+        log.warning("db_table_counts failed: %s", exc)
+        counts = {t: 0 for t in ("entities", "scans", "cases", "case_notes")}
+    return counts
+
+
+def db_table_rows(table: str, limit: int = 500) -> tuple[List[Dict[str, Any]], int]:
+    """Return (rows_as_dicts, total_count) for one of the four app tables.
+
+    Large binary columns (pdf_report) are excluded automatically.
+    """
+    if table not in _DB_VIEWER_TABLES:
+        return [], 0
+    try:
+        with db_session() as session:
+            total: int = session.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar() or 0  # noqa: S608
+            if table == "scans":
+                # Exclude pdf_report (large binary) from display
+                rows_raw = session.execute(
+                    text(
+                        "SELECT id, entity_id, source_name, source_sha256, document_type, "
+                        "truth_score, risk_level, verdict, parse_method, generated_at "
+                        "FROM scans ORDER BY generated_at DESC LIMIT :lim"
+                    ),
+                    {"lim": limit},
+                ).mappings().all()
+            else:
+                rows_raw = session.execute(
+                    text(f"SELECT * FROM {table} ORDER BY id DESC LIMIT :lim"),  # noqa: S608
+                    {"lim": limit},
+                ).mappings().all()
+            return [dict(r) for r in rows_raw], total
+    except Exception as exc:
+        log.warning("db_table_rows failed for %s: %s", table, exc)
+        return [], 0
+
+
+def reset_db() -> bool:
+    """Truncate all application tables and restart identity sequences.
+
+    This is an irreversible operation — use only in dev / testing.
+    """
+    try:
+        with db_session() as session:
+            session.execute(
+                text(
+                    "TRUNCATE TABLE case_notes, cases, scans, entities "
+                    "RESTART IDENTITY CASCADE"
+                )
+            )
+        log.warning("reset_db: all tables truncated by user request")
+        return True
+    except Exception as exc:
+        log.error("reset_db failed: %s", exc)
+        return False
