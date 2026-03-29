@@ -893,6 +893,7 @@ def _display_truth_score(value: Any) -> str:
 _PAGES: Dict[str, str] = {
     "🏠  Dashboard": "dashboard",
     "🧑‍💻  Identity": "identity",
+    "🎥  Video KYC": "video_kyc",
     "🔍  Scan": "scan",
     "📦  Bulk Scan": "bulk",
     "📁  Cases": "cases",
@@ -3254,6 +3255,73 @@ def _page_identity_verification() -> None:
                     st.image(result["selfie_annotated_rgb"], caption="Detected Face (Selfie)", use_container_width=True)
 
 # ---------------------------------------------------------------------------
+# Video KYC Page
+# ---------------------------------------------------------------------------
+
+def _page_video_kyc() -> None:
+    st.title("🎥 Video KYC (Real-Time)")
+    st.caption("Perform live liveness detection and Face Matching via WebRTC.")
+    
+    with st.expander("ℹ️ How it works", expanded=False):
+        st.markdown(
+            "This interface streams your webcam to the secure BaseTruth backend. "
+            "It runs the **RetinaFace** + **ArcFace** pipeline at 15 FPS directly on the video frames. "
+            "To test Liveness Detection, simply **turn your head left and right**."
+        )
+
+    # 1) Upload Reference Document
+    st.subheader("1. Setup Reference ID")
+    doc_file = st.file_uploader("Upload ID Document", type=["jpg", "jpeg", "png", "webp"], key="vk_doc")
+    
+    reference_emb = None
+    if doc_file:
+        from basetruth.vision.face import get_face_analyzer
+        import numpy as np
+        import cv2
+        
+        # Parse once
+        app = get_face_analyzer()
+        nparr = np.frombuffer(doc_file.getvalue(), np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        faces = app.get(img)
+        
+        if len(faces) > 0:
+            face = max(faces, key=lambda f: (f.bbox[2]-f.bbox[0]) * (f.bbox[3]-f.bbox[1]))
+            reference_emb = face.normed_embedding
+            st.success("✅ ID Subject successfully extracted. You may begin the live stream.")
+        else:
+            st.error("❌ No face detected in ID Document.")
+
+    # 2) Live Stream WebRTC
+    st.divider()
+    st.subheader("2. Live Liveness Test & Face Match")
+    
+    try:
+        from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
+        from basetruth.vision.video_kyc import VideoKYCProcessor
+    except ImportError:
+        st.error("`streamlit-webrtc` is not installed. Please rebuild the Docker container to access the Video KYC panel.")
+        return
+
+    # Public STUN servers to bypass Docker network barriers easily
+    rtc_config = RTCConfiguration(
+        {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+    )
+    
+    ctx = webrtc_streamer(
+        key="kyc_stream",
+        mode=WebRtcMode.SENDRECV,
+        rtc_configuration=rtc_config,
+        video_processor_factory=VideoKYCProcessor,
+        media_stream_constraints={"video": True, "audio": False},
+        async_processing=True,
+    )
+    
+    # Inject the reference embedding into the running WebRTC thread lock
+    if ctx.video_processor and reference_emb is not None:
+        ctx.video_processor.reference_embedding = reference_emb
+
+# ---------------------------------------------------------------------------
 # Main entrypoint
 # ---------------------------------------------------------------------------
 
@@ -3296,6 +3364,8 @@ def main() -> None:
         _page_settings()
     elif page == "identity":
         _page_identity_verification()
+    elif page == "video_kyc":
+        _page_video_kyc()
     else:
         st.warning(f"Unknown page: {page}")
 

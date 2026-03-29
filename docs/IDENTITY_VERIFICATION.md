@@ -15,15 +15,21 @@ The pipeline runs locally without making any external API calls, ensuring high p
 
 ## Workflow
 
+BaseTruth offers two variants of Identity Verification:
+
+### 1. Static Verification (ID vs Selfie)
 1. **Ingestion**: The operator uploads an ID document and a Selfie via the `🧑‍💻 Identity` screen.
 2. **Decoding**: OpenCV translates the inputs into mathematical arrays.
-3. **Detection & Alignment**: `src/basetruth/vision/face.py` invokes the FaceAnalyzer. RetinaFace isolates the largest face in both images. If no face is found (e.g. they uploaded the back of a blank card), it immediately rejects the scan.
-4. **Vectorization**: ArcFace converts both cropped faces into embedding vectors.
-5. **Comparison**: The system calculates the **Cosine Similarity** (the mathematical distance/angle) between the ID vector and the Selfie vector.
-6. **Verdict**: 
-   - A threshold of `> 0.40` is generally accepted globally for ArcFace's normalized embeddings to confirm a match.
-   - The UI transforms this raw metric into an intuitive 0-100% confidence score.
-   - A visual evidence image is generated using OpenCV to trace exactly which face the engine locked onto.
+3. **Detection & Vectorization**: RetinaFace isolates the largest face. ArcFace converts it into an embedding vector.
+4. **Comparison**: The system calculates the **Cosine Similarity** (threshold > 0.40).
+
+### 2. Video KYC (Live Stream)
+Designed specifically to prevent impersonation or photo-spoofing fraud.
+
+1. **Reference Extraction**: The user provides the base truth ID document. The AI extracts the face embedding safely.
+2. **WebRTC Stream Setup**: The browser intercepts the user's webcam at 15 FPS and streams packets down to the backend `VideoKYCProcessor`.
+3. **Liveness Detection**: The system calculates the lateral projection angle between the nose and eyes (using the RetinaFace spatial ratio). By asking the user to turn their head `Left` or `Right`, the system validates physical 3D presence rather than a flat, static printed photo.
+4. **Continuous Matching**: Alongside tracking movement, ArcFace verifies every single frame against the Reference ID document in real time, projecting `VERIFIED MATCH` or `FRAUD ALERT` directly over the user's face stream.
 
 ## Why Not External APIs?
 
