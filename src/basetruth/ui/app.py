@@ -1747,6 +1747,24 @@ Falling back to local files when the database is offline.
         st.info("No cases yet. Scan documents first and cases will appear here automatically.")
         return
 
+    # ── Filter ────────────────────────────────────────────────────────────────
+    cases_filter = st.text_input(
+        "🔍 Filter cases",
+        placeholder="Entity name, BT-reference, case key, or document type…",
+        key="cases_filter",
+    ).strip().lower()
+    if cases_filter:
+        cases = [
+            c for c in cases
+            if cases_filter in (c.get("entity_name") or "").lower()
+            or cases_filter in (c.get("entity_ref") or "").lower()
+            or cases_filter in (c.get("document_type") or "").lower()
+            or cases_filter in (c.get("case_key") or "").lower()
+        ]
+        if not cases:
+            st.info("No cases match your filter.")
+            return
+
     needs_review = [c for c in cases if c.get("needs_review")]
     resolved     = [c for c in cases if c.get("disposition") in ("cleared", "fraud_confirmed")]
     auto_ok      = [c for c in cases if not c.get("needs_review") and c.get("disposition") not in ("cleared", "fraud_confirmed")]
@@ -2551,8 +2569,6 @@ Records shows every **applicant (entity)** in the database and all the documents
         return
 
     # ── Search bar ----------------------------------------------------------
-    st.markdown('<div class="bt-search-card">', unsafe_allow_html=True)
-    st.markdown('<span class="bt-search-label">Search individuals by name, PAN, Aadhaar, email, phone or reference number</span>', unsafe_allow_html=True)
     sc1, sc2, sc3 = st.columns([4, 1.5, 1])
     with sc1:
         search_query = st.text_input(
@@ -2576,7 +2592,6 @@ Records shows every **applicant (entity)** in the database and all the documents
     search_field = field_opts[search_field_label]
     with sc3:
         do_search = st.button("Search →", use_container_width=True, type="primary", key="rec_do_search")
-    st.markdown('</div>', unsafe_allow_html=True)
 
     # Trigger on button click or when query changes
     if do_search or search_query:

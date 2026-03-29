@@ -52,6 +52,19 @@
 - CERSAI charge lookup stub — pending
 - Graph ring detection engine — pending
 
+## Phase 8: UI Reliability and Correctness ✅
+
+- **[DONE]** Dashboard: DB stats strip removed; metrics compacted to single 6-column row
+- **[DONE]** Cases: entities grouped into expandable cards per applicant
+- **[DONE]** Reports: search / filter bar (name, PAN, email, BT-reference)
+- **[DONE]** Reports: MinIO PDF fallback when `scans.pdf_report` is NULL
+- **[DONE]** Records: entity fields force-overwrite fix; `update_entity` now sets `updated_at`
+- **[DONE]** Records: stray empty `<div>` placeholder removed from search area
+- **[DONE]** Cases: text filter (entity name, reference, case key, document type)
+- **[DONE]** Cases: auto-approve guard — checks `case_exists_in_db()` before clearing a LOW-risk scan when a prior HIGH/MEDIUM case exists in PostgreSQL
+- **[DONE]** All screens: latest records shown first (entities by id DESC, scans by generated_at DESC, cases by risk + recency)
+- **[DONE]** PDF reports: `multi_cell` crash fixed — all reports now generate without crashes
+
 ## Phase 7: Image Document Scanning and Visual Forensics ✅
 
 - **[DONE]** Raw image file scanning pipeline (`.jpg`, `.jpeg`, `.png`, `.tiff`, `.bmp`, `.webp`) in `scan_document()`

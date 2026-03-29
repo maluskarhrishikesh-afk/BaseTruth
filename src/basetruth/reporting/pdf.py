@@ -571,9 +571,10 @@ def render_scan_report_pdf(report: Dict[str, Any]) -> bytes:
         pdf.section_title("Notes for the reviewer")
         pdf.set_font("Helvetica", "", 8)
         pdf.set_text_color(80, 80, 80)
+        page_w = pdf.w - pdf.l_margin - pdf.r_margin
         for lim in limitations:
-            pdf.cell(5, 5, "-")
-            pdf.multi_cell(0, 5, _safe(str(lim)))
+            pdf.set_x(pdf.l_margin)
+            pdf.multi_cell(page_w, 5, _safe("- " + str(lim)))
         pdf.set_text_color(*_C_TEXT_DARK)
 
     # ── Output ───────────────────────────────────────────────────────────────

@@ -517,10 +517,23 @@ def update_entity(entity_ref: str, fields: Dict[str, str]) -> Optional[Dict[str,
             for k, v in fields.items():
                 if k in allowed:
                     setattr(entity, k, _clean(v))
+            entity.updated_at = func.now()  # type: ignore[assignment]
             return _entity_to_dict(entity, session)
     except Exception as exc:
         log.warning("update_entity failed: %s", exc)
         return None
+
+
+def case_exists_in_db(case_key: str) -> bool:
+    """Return True if any Case row exists for this case_key (open or closed)."""
+    from basetruth.db import Case  # local import to avoid circular deps  # noqa: PLC0415
+    try:
+        with db_session() as session:
+            return (
+                session.query(Case).filter(Case.case_key == case_key).first() is not None
+            )
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def db_stats() -> Dict[str, int]:
@@ -1061,12 +1074,23 @@ def list_cases_from_db() -> List[Dict[str, Any]]:
                     group["min_truth_score"] = None
                 result.append(group)
 
+            def _latest_scan_neg(c: Dict[str, Any]) -> float:
+                """Return negated timestamp so that most-recently-scanned sorts first."""
+                import datetime as _dt
+                dates = [d["generated_at"] for d in c.get("documents", []) if d.get("generated_at")]
+                if not dates:
+                    return 0.0
+                try:
+                    return -max(_dt.datetime.fromisoformat(d) for d in dates).timestamp()
+                except Exception:
+                    return 0.0
+
             return sorted(
                 result,
                 key=lambda c: (
                     0 if c["needs_review"] else 1,
                     {"high": 0, "medium": 1, "low": 2}.get(c["max_risk_level"], 3),
-                    -c["document_count"],
+                    _latest_scan_neg(c),
                 ),
             )
     except Exception as exc:

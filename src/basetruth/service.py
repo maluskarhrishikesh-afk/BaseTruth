@@ -476,19 +476,30 @@ class BaseTruthService:
                         extra={"case_key": _case_key, "risk": _risk},
                     )
                 else:
-                    # Low risk — auto-approve only when no case record exists yet
+                    # Low risk — auto-approve only when no prior record exists in file OR DB
                     if _rec is None:
-                        self.update_case(
-                            _case_key,
-                            status="closed",
-                            disposition="cleared",
-                            note_text=f"Auto-approved: LOW risk scan of '{path.name}'.",
-                            note_author="system",
-                        )
-                        log.info(
-                            "scan_document: case auto-approved (low risk)",
-                            extra={"case_key": _case_key},
-                        )
+                        try:
+                            from basetruth.store import case_exists_in_db  # noqa: PLC0415
+                            _db_exists = case_exists_in_db(_case_key)
+                        except Exception:  # noqa: BLE001
+                            _db_exists = False
+                        if not _db_exists:
+                            self.update_case(
+                                _case_key,
+                                status="closed",
+                                disposition="cleared",
+                                note_text=f"Auto-approved: LOW risk scan of '{path.name}'.",
+                                note_author="system",
+                            )
+                            log.info(
+                                "scan_document: case auto-approved (low risk)",
+                                extra={"case_key": _case_key},
+                            )
+                        else:
+                            log.info(
+                                "scan_document: low risk but case already exists in DB, skipping auto-approve",
+                                extra={"case_key": _case_key},
+                            )
         except Exception:  # noqa: BLE001
             log.warning("scan_document: auto-case management failed", exc_info=True)
 

@@ -103,6 +103,21 @@
   - `image_forensics_summary` key added to return value when forensics ran
 - [x] All 42 existing tests still pass
 
+### Phase 8 — UI Reliability and Correctness
+
+- [x] DB stats strip removed from all pages (was consuming vertical space on every screen)
+- [x] Dashboard metrics section compacted to a single 6-column row for cleaner layout
+- [x] Cases page: applicants now grouped by entity with expandable cards per entity
+- [x] Reports page: search / filter bar added (name, PAN, email, BT-reference)
+- [x] Reports page: MinIO / object-storage PDF fallback — if `pdf_report` not in DB, attempt to fetch from configured object store before showing "not available"
+- [x] Records page: entity field force-overwrite fixed — editing a field via the Records form now persists correctly and no longer silently ignores updates when the value was previously set
+- [x] Records page: empty placeholder `<div>` (between the How-to expander and the search inputs) removed — was appearing as a blank white box occupying vertical space
+- [x] Cases page: text filter added — filter by entity name, BT-reference, case key, or document type; live filtering across all tabs (Needs Review / Resolved / Auto-Approved)
+- [x] Cases page: auto-approve guard strengthened — was auto-approving newly uploaded LOW-risk scans even when the entity already had an open HIGH/MEDIUM-risk case in PostgreSQL; fixed by checking `case_exists_in_db()` before auto-approve fires
+- [x] All pages: latest records always shown first — entities ordered by `id DESC`, scans ordered by `generated_at DESC`, cases ordered by `(needs_review, risk_level, -latest_scan_timestamp)`
+- [x] `store.py — update_entity()`: now correctly stamps `updated_at` on each entity edit
+- [x] `reporting/pdf.py`: critical crash fixed — `pdf.multi_cell(0, ...)` after `pdf.cell(5, ...)` produced zero/negative remaining width, causing ALL PDF reports to fail silently; fixed to `set_x(l_margin)` and explicit `page_width` multi_cell call
+
 ## Immediate Next Milestones
 
 1. Cross-document reconciliation engine (`src/basetruth/analysis/cross_doc.py`)
