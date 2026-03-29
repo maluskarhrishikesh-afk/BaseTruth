@@ -180,6 +180,54 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
             note_author=request.note_author,
         )
 
+    # ── Video KYC endpoints ─────────────────────────────────────────
+    
+    import uuid
+    from fastapi import WebSocket, WebSocketDisconnect
+    from basetruth.vision.video_kyc import VideoKYCProcessor
+    import numpy as np
+    
+    # Global memory cache for in-flight KYC sessions
+    _kyc_sessions: Dict[str, Any] = {}
+
+    class KYCSessionRequest(BaseModel):
+        embedding: List[float]
+
+    @app.post("/api/v1/kyc/session", tags=["VideoKYC"])
+    def create_kyc_session(req: KYCSessionRequest) -> Dict[str, Any]:
+        """Creates a secure session referencing a parsed face embedding."""
+        session_id = str(uuid.uuid4())
+        _kyc_sessions[session_id] = np.array(req.embedding, dtype=np.float32)
+        return {"session_id": session_id}
+
+    @app.websocket("/ws/video_kyc/{session_id}")
+    async def websocket_video_kyc(websocket: WebSocket, session_id: str):
+        """Standard HTTP/TCP WebSocket for 15 FPS Video processing (Bypasses Docker UDP)."""
+        await websocket.accept()
+        if session_id not in _kyc_sessions:
+            await websocket.close(code=1008)
+            return
+            
+        processor = VideoKYCProcessor()
+        processor.set_reference_embedding(_kyc_sessions[session_id])
+        
+        try:
+            while True:
+                # Receive base64 frame string from JS client
+                b64_str = await websocket.receive_text()
+                
+                # Send frame into OpenCV + ArcFace pipeline
+                out_b64 = processor.process_base64_frame(b64_str)
+                
+                # Echo annotated frame back to the browser
+                if out_b64:
+                    await websocket.send_text(out_b64)
+        except WebSocketDisconnect:
+            pass
+        finally:
+            if session_id in _kyc_sessions:
+                del _kyc_sessions[session_id]
+
     # ── Entity registry endpoints ─────────────────────────────────────────
 
     @app.get("/api/v1/entities", tags=["Entities"])

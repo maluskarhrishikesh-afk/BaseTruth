@@ -62,7 +62,6 @@ boto3>=1.37.0
 # ── UI (Streamlit dashboard) ─────────────────────────────────────────────────
 streamlit>=1.42.0
 pandas>=2.2.0
-streamlit-webrtc==0.47.0
 
 # ── Output / formatting ───────────────────────────────────────────────────────
 rich==14.3.3

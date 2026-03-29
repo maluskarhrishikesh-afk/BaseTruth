@@ -1,31 +1,17 @@
-"""Video KYC module for real-time WebRTC streaming and face verification.
-
-Captures live video frames from the browser, runs RetinaFace to locate facial
-landmarks, and ArcFace to cross-reference identity against the 
-provided reference document.
-"""
-
 import logging
 import math
 from typing import Any, Optional
+import base64
 
-import av
 import cv2
 import numpy as np
-
-# Check for streamlit_webrtc gracefully in case it fails to import in CI/CD
-try:
-    from streamlit_webrtc import VideoProcessorBase
-except ImportError:
-    class VideoProcessorBase: # type: ignore
-        pass
 
 from basetruth.vision.face import get_face_analyzer
 
 log = logging.getLogger(__name__)
 
-class VideoKYCProcessor(VideoProcessorBase):
-    """Real-time WebRTC processor for active Video KYC."""
+class VideoKYCProcessor:
+    """Real-time TCP/WebSocket processor for active Video KYC."""
     
     def __init__(self) -> None:
         self.reference_embedding: Optional[np.ndarray] = None
@@ -35,10 +21,6 @@ class VideoKYCProcessor(VideoProcessorBase):
         # State tracking
         self.current_score: float = 0.0
         self.is_match: bool = False
-        
-        # Simple Liveness: Track if they turned left or right
-        # (Since we only have 5 landmarks, EAR blink detection is unreliable,
-        #  so we use horizontal head rotation as our passive liveness check).
         self.liveness_state: str = "Center"
         self.head_turn_passed: bool = False
 
@@ -46,11 +28,20 @@ class VideoKYCProcessor(VideoProcessorBase):
         """Injects the ArcFace embedding of the ID Document user."""
         self.reference_embedding = embedding
         
-    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
-        """Process incoming video frames from the browser via WebRTC."""
-        # Convert PyAV frame to OpenCV BGR matrix
-        img = frame.to_ndarray(format="bgr24")
+    def process_base64_frame(self, b64_str: str) -> str:
+        """Process an incoming base64 jpeg string and return an annotated base64 jpeg."""
+        # Clean prefix if it exists (e.g. data:image/jpeg;base64,...)
+        if "," in b64_str:
+            b64_str = b64_str.split(",", 1)[1]
+            
+        # Decode base64 to OpenCV image
+        img_data = base64.b64decode(b64_str)
+        nparr = np.frombuffer(img_data, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         
+        if img is None:
+            return ""
+            
         try:
             # Detect faces using RetinaFace
             faces = self.face_app.get(img)
@@ -82,19 +73,17 @@ class VideoKYCProcessor(VideoProcessorBase):
                     
                     if self.is_match:
                         color = (0, 255, 0) # Green for match
-                        text = f"VERIFIED MATCH: {self.current_score:.1f}%"
+                        text = f"VERIFIED: {self.current_score:.1f}%"
                     else:
-                        text = f"FRAUD ALERT: {self.current_score:.1f}%"
+                        text = f"FRAUD: {self.current_score:.1f}%"
                 
                 # Draw bounding box
                 cv2.rectangle(img, (box[0], box[1]), (box[2], box[3]), color, 3)
                 
                 # Render UI Text onto the frame
-                # Match Status
                 cv2.putText(img, text, (box[0], box[1] - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
                 
-                # Liveness Status
-                live_text = f"Liveness Check: {self.liveness_state} {'(PASSED)' if self.head_turn_passed else ''}"
+                live_text = f"Live: {self.liveness_state} {'(PASS)' if self.head_turn_passed else ''}"
                 cv2.putText(img, live_text, (box[0], box[1] - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
                 
             else:
@@ -103,8 +92,10 @@ class VideoKYCProcessor(VideoProcessorBase):
         except Exception as e:
             log.exception("Error in video KYC frame processing: %s", e)
             
-        # Return mutated frame to browser
-        return av.VideoFrame.from_ndarray(img, format="bgr24")
+        # Re-encode to base64 jpeg
+        _, buffer = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), 60])
+        out_b64 = base64.b64encode(buffer).decode('utf-8')
+        return "data:image/jpeg;base64," + out_b64
 
     def _update_liveness(self, landmarks: np.ndarray) -> None:
         """Detect side-to-side head movement based on 2D facial point ratios.
@@ -124,8 +115,6 @@ class VideoKYCProcessor(VideoProcessorBase):
             
         ratio = dist_left / dist_right
         
-        # Based on basic 2D rigid projection logic:
-        # If nose is mapped strongly towards one eye, head is turning.
         if ratio > 1.6:
             self.liveness_state = "Turned Right"
             self.head_turn_passed = True
@@ -133,4 +122,4 @@ class VideoKYCProcessor(VideoProcessorBase):
             self.liveness_state = "Turned Left"
             self.head_turn_passed = True
         else:
-            self.liveness_state = "Facing Center"
+            self.liveness_state = "Center"

@@ -3292,34 +3292,129 @@ def _page_video_kyc() -> None:
         else:
             st.error("❌ No face detected in ID Document.")
 
-    # 2) Live Stream WebRTC
+    # 2) Live Stream TCP/WebSocket
     st.divider()
     st.subheader("2. Live Liveness Test & Face Match")
     
-    try:
-        from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
-        from basetruth.vision.video_kyc import VideoKYCProcessor
-    except ImportError:
-        st.error("`streamlit-webrtc` is not installed. Please rebuild the Docker container to access the Video KYC panel.")
-        return
+    if reference_emb is not None:
+        # Cache the embedding in the FastAPI backend
+        import requests
+        try:
+            resp = requests.post(
+                "http://basetruth-api:8000/api/v1/kyc/session",
+                json={"embedding": reference_emb.tolist()},
+                timeout=5
+            )
+            
+            if resp.status_code == 200:
+                session_id = resp.json()["session_id"]
+                
+                # Render standard TCP/WS streamer in JS
+                st.components.v1.html(f"""
+                <style>
+                    body {{ color: white; font-family: sans-serif; text-align: center; margin: 0; padding: 0; }}
+                    #video {{ display: none; }}
+                    #canvas {{ display: none; }}
+                    #output {{ width: 100%; max-width: 600px; border-radius: 8px; border: 2px solid #555; }}
+                    .controls {{ margin-top: 10px; }}
+                    button {{ padding: 10px 20px; font-weight: bold; cursor: pointer; border-radius: 5px; border: none; }}
+                    #startBtn {{ background-color: #00CC66; color: white; }}
+                    #stopBtn {{ background-color: #CC2222; color: white; }}
+                    #status {{ margin-top: 10px; font-size: 14px; color: #aaa; }}
+                </style>
+                <div>
+                    <video id="video" autoplay playsinline></video>
+                    <canvas id="canvas"></canvas>
+                    <img id="output" alt="Waiting for stream..." />
+                    
+                    <div class="controls">
+                        <button id="startBtn">Start Live TCP Stream</button>
+                        <button id="stopBtn" disabled>Stop</button>
+                    </div>
+                    <div id="status">Status: Disconnected</div>
+                </div>
 
-    # Public STUN servers to bypass Docker network barriers easily
-    rtc_config = RTCConfiguration(
-        {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
-    )
-    
-    ctx = webrtc_streamer(
-        key="kyc_stream",
-        mode=WebRtcMode.SENDRECV,
-        rtc_configuration=rtc_config,
-        video_processor_factory=VideoKYCProcessor,
-        media_stream_constraints={"video": True, "audio": False},
-        async_processing=True,
-    )
-    
-    # Inject the reference embedding into the running WebRTC thread lock
-    if ctx.video_processor and reference_emb is not None:
-        ctx.video_processor.reference_embedding = reference_emb
+                <script>
+                    const video = document.getElementById('video');
+                    const canvas = document.getElementById('canvas');
+                    const ctx = canvas.getContext('2d');
+                    const output = document.getElementById('output');
+                    const status = document.getElementById('status');
+                    
+                    let ws;
+                    let localStream;
+                    let isStreaming = false;
+
+                    document.getElementById('startBtn').addEventListener('click', async () => {{
+                        try {{
+                            localStream = await navigator.mediaDevices.getUserMedia({{ video: {{ facingMode: "user" }} }});
+                            video.srcObject = localStream;
+                            
+                            // Let the video load dimensions
+                            await new Promise(r => video.onloadedmetadata = r);
+                            
+                            // Scale down for latency
+                            canvas.width = 640; 
+                            canvas.height = Math.floor(video.videoHeight * (640 / video.videoWidth));
+                            
+                            // Connect WS
+                            // Notice: we dynamically map to window.location.hostname in case docker is remote
+                            const wsUrl = `ws://${{window.location.hostname}}:8000/ws/video_kyc/{session_id}`;
+                            ws = new WebSocket(wsUrl);
+                            
+                            ws.onopen = () => {{
+                                status.innerText = "Status: Connected (TCP WebSocket)";
+                                isStreaming = true;
+                                document.getElementById('startBtn').disabled = true;
+                                document.getElementById('stopBtn').disabled = false;
+                                sendFrame();
+                            }};
+                            
+                            ws.onmessage = (event) => {{
+                                // Draw the analyzed frame to the img tag
+                                output.src = event.data;
+                                // Automatically queue the next frame for smooth UX
+                                if (isStreaming) {{
+                                    sendFrame();
+                                }}
+                            }};
+                            
+                            ws.onerror = (e) => {{ status.innerText = "Status: TCP WebSocket Error!"; console.error(e); }};
+                            ws.onclose = () => {{ stopStream(); }};
+                            
+                        }} catch (e) {{
+                            status.innerText = "Error: Camera access denied or unavailable.";
+                            console.error(e);
+                        }}
+                    }});
+
+                    function sendFrame() {{
+                        if (!isStreaming || ws.readyState !== WebSocket.OPEN) return;
+                        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                        // Encode highly-compressed jpeg wrapper
+                        const b64 = canvas.toDataURL('image/jpeg', 0.6);
+                        ws.send(b64);
+                    }}
+
+                    function stopStream() {{
+                        isStreaming = false;
+                        if (ws) ws.close();
+                        if (localStream) {{
+                            localStream.getTracks().forEach(track => track.stop());
+                        }}
+                        status.innerText = "Status: Disconnected";
+                        document.getElementById('startBtn').disabled = false;
+                        document.getElementById('stopBtn').disabled = true;
+                    }}
+                    
+                    document.getElementById('stopBtn').addEventListener('click', stopStream);
+                </script>
+                """, height=530)
+
+        except Exception as e:
+            st.error(f"Failed to communicate with API Server: {e}")
+    else:
+        st.warning("Please upload a Reference ID Document first to generate the cryptographic session.")
 
 # ---------------------------------------------------------------------------
 # Main entrypoint
