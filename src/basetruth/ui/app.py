@@ -892,6 +892,7 @@ def _display_truth_score(value: Any) -> str:
 
 _PAGES: Dict[str, str] = {
     "🏠  Dashboard": "dashboard",
+    "🧑‍💻  Identity": "identity",
     "🔍  Scan": "scan",
     "📦  Bulk Scan": "bulk",
     "📁  Cases": "cases",
@@ -3202,6 +3203,57 @@ def _render_index_metrics() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Identity Verification Page
+# ---------------------------------------------------------------------------
+
+def _page_identity_verification() -> None:
+    st.title("🧑‍💻 Identity Verification")
+    st.caption("Offline face matching using OpenCV, RetinaFace, and ArcFace (ONNX) to detect identity fraud.")
+    
+    with st.expander("ℹ️ How it works", expanded=False):
+        st.markdown(
+            "Upload an ID Document (e.g. Aadhaar, PAN) and a Selfie.\\n"
+            "The system uses **RetinaFace** to locate the faces and facial landmarks, "
+            "then uses **ArcFace** to generate identity embeddings and calculates the cosine similarity. "
+            "It runs 100% locally and offline."
+        )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("ID Document")
+        doc_file = st.file_uploader("Upload ID Photo", type=["jpg", "jpeg", "png", "webp"], key="doc_img")
+    
+    with col2:
+        st.subheader("Selfie Image")
+        selfie_file = st.file_uploader("Upload Selfie Photo", type=["jpg", "jpeg", "png", "webp"], key="selfie_img")
+
+    if doc_file and selfie_file:
+        st.markdown("---")
+        if st.button("Run Face Match (ArcFace) 🔍", type="primary", use_container_width=True):
+            with st.spinner("Initializing models and running inference..."):
+                from basetruth.vision.face import compare_faces
+                result = compare_faces(doc_file.getvalue(), selfie_file.getvalue())
+
+            if "error" in result:
+                st.error(f"Error: {result['error']}")
+            else:
+                score = result["display_score"]
+                is_match = result["match"]
+                
+                if is_match:
+                    st.success(f"### ✅ MATCH: {score:.1f}% Confidence\\nThe faces appear to belong to the same person.")
+                else:
+                    st.error(f"### 🚨 FRAUD ALERT: {score:.1f}% Confidence\\nThe faces DO NOT match.")
+                    
+                st.write(f"Raw Cosine Similarity: {result['confidence']:.3f} / Threshold: {result['threshold']:.2f}")
+
+                res_col1, res_col2 = st.columns(2)
+                with res_col1:
+                    st.image(result["doc_annotated_rgb"], caption="Detected Face (ID Document)", use_container_width=True)
+                with res_col2:
+                    st.image(result["selfie_annotated_rgb"], caption="Detected Face (Selfie)", use_container_width=True)
+
+# ---------------------------------------------------------------------------
 # Main entrypoint
 # ---------------------------------------------------------------------------
 
@@ -3242,6 +3294,8 @@ def main() -> None:
         _page_database()
     elif page == "settings":
         _page_settings()
+    elif page == "identity":
+        _page_identity_verification()
     else:
         st.warning(f"Unknown page: {page}")
 

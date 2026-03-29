@@ -134,6 +134,18 @@ ELA works by resaving the image at a known JPEG quality (95 %) and measuring per
 - Suspicious tool in EXIF → 45 pts
 - Noise CV > 1.5 → 25 pts
 
+### 6.1 Identity Verification Layer (`src/basetruth/vision/face.py`)
+
+A standalone offline deep-learning engine dedicated to verifying the identity of individuals across multiple documents (e.g., Aadhaar card vs. Live Selfie).
+
+| Component | Purpose |
+|---|---|
+| RetinaFace (ONNX) | Detects facial boundaries and extracts 5-point alignment landmarks securely. |
+| ArcFace (ONNX) | Encodes the aligned face into a 512-dimensional vector. |
+| OpenCV (`cv2`) | Handles bounding box tracing, BGR/RGB mapping, and image byte decoding prior to analysis. |
+
+*Detailed workflow and thresholds are documented in [Identity Verification](IDENTITY_VERIFICATION.md).*
+
 ### 7. Reporting Layer
 
 - emits JSON for machines
