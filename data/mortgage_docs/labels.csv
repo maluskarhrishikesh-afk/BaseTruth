@@ -1,0 +1,61 @@
+case_id,name,city,employer,annual_ctc,property_value,loan_amount,is_tampered,tamper_types
+case_001,Samesh Gade,Pune,HCL Technologies Ltd,670000,12400000,8250641,True,circular_funds
+case_002,Widisha Thaker,Kolkata,Tata Consultancy Services Ltd,1110000,3250000,2399300,True,income_inflated
+case_003,Harrison Sampath,Ahmedabad,Tata Consultancy Services Ltd,910000,14550000,9782810,True,circular_funds|employer_fake
+case_004,Mekhala Wadhwa,Ahmedabad,Larsen & Toubro Infotech Ltd,1470000,6300000,4805429,True,employer_fake|backdated_employment
+case_005,Laban Master,Pune,Larsen & Toubro Infotech Ltd,1270000,10800000,8102465,True,employer_fake
+case_006,Bhavika Biswas,Mumbai,Larsen & Toubro Infotech Ltd,750000,11300000,8094578,True,employer_fake
+case_007,Bhavna Pandit,Pune,Tech Mahindra Limited,1340000,8400000,6329795,True,circular_funds|backdated_employment
+case_008,Jairaj Kar,Mumbai,Tata Consultancy Services Ltd,1730000,3800000,2741460,True,backdated_employment
+case_009,Yoshita Hegde,Ahmedabad,Persistent Systems Limited,1190000,11550000,8904241,True,circular_funds
+case_010,Maanav Ahluwalia,Delhi,Cognizant Technology Solutions,1460000,5050000,3419490,True,backdated_employment|circular_funds
+case_011,Harita Bhalla,Hyderabad,Capgemini India Pvt. Ltd.,620000,9550000,6777955,True,circular_funds|backdated_employment
+case_012,Raksha Lala,Mumbai,Tech Mahindra Limited,1460000,5050000,3526915,True,income_inflated
+case_013,Farhan Shah,Hyderabad,Wipro Technologies Pvt. Ltd.,870000,11050000,8377860,True,circular_funds|backdated_employment
+case_014,Samar Parmar,Hyderabad,Tech Mahindra Limited,1240000,12250000,9015162,True,employer_fake
+case_015,Oviya Bala,Chennai,Persistent Systems Limited,1790000,8300000,6088822,True,backdated_employment|employer_fake
+case_016,Bimala Mammen,Bengaluru,Wipro Technologies Pvt. Ltd.,640000,6050000,4446776,False,
+case_017,Jalsa Shukla,Pune,Wipro Technologies Pvt. Ltd.,1110000,10800000,7091760,False,
+case_018,Lajita Goel,Kolkata,Tata Consultancy Services Ltd,1170000,13600000,10173490,False,
+case_019,Theodore Hans,Bengaluru,HCL Technologies Ltd,990000,14450000,9610258,False,
+case_020,Waida Doshi,Delhi,Capgemini India Pvt. Ltd.,790000,9400000,7059389,False,
+case_021,Yash Bhargava,Chennai,Larsen & Toubro Infotech Ltd,1420000,4100000,2837062,False,
+case_022,Yasti Sarraf,Kolkata,Mphasis Limited,770000,5000000,3290166,False,
+case_023,Rushil Sampath,Hyderabad,Larsen & Toubro Infotech Ltd,650000,14750000,10384829,False,
+case_024,Jacob Kumer,Kolkata,Tata Consultancy Services Ltd,1600000,7250000,5398748,False,
+case_025,Nakul Gandhi,Kolkata,Capgemini India Pvt. Ltd.,1640000,7350000,4979113,False,
+case_026,Keya Garde,Hyderabad,Tech Mahindra Limited,1200000,13300000,8911076,False,
+case_027,Mohini Munshi,Mumbai,Cognizant Technology Solutions,1060000,4300000,2927598,False,
+case_028,Dayita Bobal,Bengaluru,Wipro Technologies Pvt. Ltd.,1070000,10200000,8081529,False,
+case_029,Yashodhara Madan,Pune,Larsen & Toubro Infotech Ltd,680000,5950000,4679751,False,
+case_030,Vedhika Dhingra,Mumbai,Tata Consultancy Services Ltd,1010000,11600000,8842891,False,
+case_031,Sanya Divan,Hyderabad,Wipro Technologies Pvt. Ltd.,800000,4300000,2856632,False,
+case_032,Lohit Sibal,Pune,Larsen & Toubro Infotech Ltd,1750000,11700000,9291930,False,
+case_033,Gunbir Manda,Bengaluru,Persistent Systems Limited,1900000,11400000,7680481,False,
+case_034,Ekanta Dani,Chennai,Tech Mahindra Limited,710000,9000000,5880709,False,
+case_035,Ekani Gera,Kolkata,HCL Technologies Ltd,1150000,8150000,6246422,False,
+case_036,Bhavna Sawhney,Kolkata,Larsen & Toubro Infotech Ltd,1700000,5300000,4147512,False,
+case_037,Vyanjana Edwin,Delhi,Wipro Technologies Pvt. Ltd.,1460000,9000000,7069444,False,
+case_038,Aditya Verma,Mumbai,Wipro Technologies Pvt. Ltd.,1820000,4750000,3545098,False,
+case_039,Darika Ramakrishnan,Hyderabad,Capgemini India Pvt. Ltd.,1330000,3100000,2327852,False,
+case_040,Avni Borde,Bengaluru,Infosys Limited,1590000,4800000,3472004,False,
+case_041,Aayush Batta,Bengaluru,Tech Mahindra Limited,860000,4400000,3422089,False,
+case_042,Farhan Ravel,Mumbai,Wipro Technologies Pvt. Ltd.,1230000,7400000,5276344,False,
+case_043,Gayathri Shroff,Chennai,Cognizant Technology Solutions,1050000,9250000,7270675,False,
+case_044,Samarth Grover,Delhi,Persistent Systems Limited,1390000,9300000,7108371,False,
+case_045,Nidhi Comar,Ahmedabad,Tech Mahindra Limited,1950000,11900000,8573414,False,
+case_046,Nirja Suresh,Chennai,Persistent Systems Limited,1370000,11950000,9468064,False,
+case_047,Owen Kara,Ahmedabad,Tech Mahindra Limited,1230000,10900000,7822346,False,
+case_048,Bhavani Narasimhan,Ahmedabad,Tech Mahindra Limited,890000,13250000,9471812,False,
+case_049,Raagini Bhatt,Kolkata,Cognizant Technology Solutions,1570000,11600000,8675350,False,
+case_050,Gavin Dave,Chennai,Persistent Systems Limited,1510000,9650000,6765676,False,
+case_051,Isaiah Bajwa,Hyderabad,Cognizant Technology Solutions,1520000,6150000,4120417,True,ifsc_account_mismatch
+case_052,Lohit Reddy,Kolkata,Mphasis Limited,1000000,14350000,9752956,True,salary_cross_doc_mismatch
+case_053,Osha Nayak,Ahmedabad,Infosys Limited,1100000,8650000,6573571,True,bank_date_range_fabricated
+case_054,Agastya Prabhakar,Pune,Tech Mahindra Limited,1700000,5900000,4443081,True,bank_address_mismatch
+case_055,Aarini Parekh,Pune,Tata Consultancy Services Ltd,1300000,4600000,3603012,True,bank_arithmetic_error
+case_056,Unni Sekhon,Pune,Wipro Technologies Pvt. Ltd.,1000000,11200000,8837347,True,salary_structure_low_basic
+case_057,Tejas Bal,Pune,Mphasis Limited,720000,8800000,5974442,True,hra_exceeds_basic
+case_058,Ishaan Mann,Hyderabad,HCL Technologies Ltd,1360000,12150000,8295988,True,extreme_backdating
+case_059,Falguni Issac,Pune,Tech Mahindra Limited,1690000,9550000,7419321,True,pan_mismatch
+case_060,Ekta Johal,Hyderabad,Cognizant Technology Solutions,1410000,2000000,1600000,True,gift_letter_loan_disguise

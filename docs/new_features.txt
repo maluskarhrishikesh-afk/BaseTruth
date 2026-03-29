@@ -1,0 +1,19 @@
+Database was still not able to capture it properly ->
+Entities — 1 rows total
+1	BT-000001	Hrishikesh	Mann					2026-03-29 14:09:21.621767+00:00	2026-03-29 14:09:25.117101+00:00
+
+Nothing was captured in Document Extractions table ->
+Document Extractions — 0 rows total
+No rows in Document Extractions yet.
+
+-----------------------------------------------------------------------------
+
+I have truncated the tables, now can you also try from your end and make sure all the screens
+are working properly and all the tables capture the right data?
+
+Also change the log Analyzer screen and make it more modern, elegant and classy.
+Feel free to delete the existing code as that looks quite old fashioned and not at all user friendly.
+
+Yu can also change the loggers in all the files and make them easy to trace and debug.
+
+-----------------------------------------------------------------------------   

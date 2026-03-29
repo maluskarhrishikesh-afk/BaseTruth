@@ -1,0 +1,170 @@
+# BaseTruth — Docker Compose
+#
+# Services:
+#   basetruth-cli  — one-shot CLI runner (scan / compare-payslips)
+#   basetruth-api  — FastAPI REST server (port 8000)
+#
+# Usage:
+#   docker compose build
+#   docker compose run --rm basetruth-cli scan --input /app/your_data/doc.pdf
+#   docker compose up basetruth-api
+#
+# Environment overrides: create a `.env` file in this directory.
+# Required: none. All paths default to bind-mounts below.
+
+services:
+
+  # ── CLI — run any basetruth command ─────────────────────────────────────────
+  basetruth-cli:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: basetruth:latest
+    volumes:
+      # Mount your local data in; scan results come back here
+      - ./artifacts:/app/artifacts
+      - ./your_data:/app/your_data
+    environment:
+      TESSERACT_CMD: /usr/bin/tesseract
+      EXIFTOOL_PATH: /usr/bin/exiftool
+      BASETRUTH_ARTIFACT_ROOT: /app/artifacts
+    # Override at `docker compose run` time:
+    #   docker compose run --rm basetruth-cli scan --input /app/your_data/doc.pdf
+    entrypoint: ["python", "-m", "basetruth.cli"]
+    command: ["--help"]
+
+  # ── UI — Streamlit operator dashboard ─────────────────────────────────────────
+  basetruth-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: basetruth:latest
+    ports:
+      - "${UI_PORT:-8501}:8501"
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./your_data:/app/your_data
+      # DEV: mount the local src directory so code changes are reflected without
+      # rebuilding the image. PYTHONPATH below ensures Python prefers this over
+      # the installed package in site-packages.
+      - ./src:/app/src
+      - ./logs:/app/logs
+    environment:
+      TESSERACT_CMD: /usr/bin/tesseract
+      EXIFTOOL_PATH: /usr/bin/exiftool
+      BASETRUTH_ARTIFACT_ROOT: /app/artifacts
+      # Prepend /app/src so the live source files take precedence over the
+      # installed wheel baked into the image.
+      PYTHONPATH: /app/src
+      DATABASE_URL: postgresql://basetruth:basetruth_secret@db:5432/basetruth
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_BUCKET: basetruth-reports
+      BT_LOG_LEVEL: INFO
+      BT_LOG_DIR: /app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+    entrypoint:
+      - python
+      - -m
+      - streamlit
+      - run
+      - src/basetruth/ui/app.py
+      - --server.port=8501
+      - --server.address=0.0.0.0
+      - --server.headless=true
+      - --browser.gatherUsageStats=false
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+  # ── API — FastAPI REST server ────────────────────────────────────────────────
+  basetruth-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: basetruth:latest
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./your_data:/app/your_data
+      - ./src:/app/src
+      - ./logs:/app/logs
+    environment:
+      TESSERACT_CMD: /usr/bin/tesseract
+      EXIFTOOL_PATH: /usr/bin/exiftool
+      BASETRUTH_ARTIFACT_ROOT: /app/artifacts
+      PYTHONPATH: /app/src
+      DATABASE_URL: postgresql://basetruth:basetruth_secret@db:5432/basetruth
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_BUCKET: basetruth-reports
+      BT_LOG_LEVEL: INFO
+      BT_LOG_DIR: /app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+    entrypoint: ["python", "-m", "uvicorn", "basetruth.api:app",
+                 "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # ── Database — PostgreSQL 16 ─────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: basetruth
+      POSTGRES_USER: basetruth
+      POSTGRES_PASSWORD: basetruth_secret
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U basetruth"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "${DB_PORT:-5432}:5432"
+
+  # ── Object storage — MinIO (S3-compatible) ────────────────────────────────
+  # Stores PDF reports, scanned images, and case bundle files.
+  # Access the web console at http://localhost:9001 (user: minioadmin / minioadmin)
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  postgres_data:
+  minio_data:

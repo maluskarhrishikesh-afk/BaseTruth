@@ -1,0 +1,2876 @@
+[
+  {
+    "case_id": "case_001",
+    "applicant": {
+      "name": "Samesh Gade",
+      "age": 48,
+      "pan": "XCKAF5016R",
+      "city": "Pune",
+      "phone": "+917096865712",
+      "email": "siddharthpalan@example.net"
+    },
+    "employer": {
+      "name": "HCL Technologies Ltd",
+      "cin": "L74140DL1994PLC055219",
+      "city": "Noida",
+      "designation": "Software Engineer",
+      "department": "Engineering",
+      "join_date": "2023-12-12",
+      "employee_id": "EMP64987",
+      "annual_ctc": 670000,
+      "monthly_gross": 55833,
+      "monthly_net": 49488
+    },
+    "bank": {
+      "name": "ICICI Bank",
+      "ifsc": "ICIC0001234",
+      "account_no": "XXXX XXXX 8685"
+    },
+    "property": {
+      "type": "2BHK Apartment",
+      "address": "824, Shankar Street, Pune",
+      "value": 12400000,
+      "loan_amount": 8250641
+    },
+    "is_tampered": true,
+    "tamper_types": [
+      "circular_funds"
+    ],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_001\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_001\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_001\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_001\\bank_statement.pdf",
+      "employment_letter": "cases\\case_001\\employment_letter.pdf",
+      "form16": "cases\\case_001\\form16.pdf",
+      "utility_bill": "cases\\case_001\\utility_bill.pdf",
+      "gift_letter": "cases\\case_001\\gift_letter.pdf",
+      "property_agreement": "cases\\case_001\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_002",
+    "applicant": {
+      "name": "Widisha Thaker",
+      "age": 32,
+      "pan": "PASBB0352P",
+      "city": "Kolkata",
+      "phone": "5144359469",
+      "email": "ichatterjee@example.net"
+    },
+    "employer": {
+      "name": "Tata Consultancy Services Ltd",
+      "cin": "L22210MH1995PLC084781",
+      "city": "Mumbai",
+      "designation": "Senior Software Engineer",
+      "department": "Engineering",
+      "join_date": "2021-09-20",
+      "employee_id": "EMP38080",
+      "annual_ctc": 1110000,
+      "monthly_gross": 92500,
+      "monthly_net": 81460
+    },
+    "bank": {
+      "name": "ICICI Bank",
+      "ifsc": "ICIC0001234",
+      "account_no": "XXXX XXXX 5114"
+    },
+    "property": {
+      "type": "2BHK Apartment",
+      "address": "905, Mahal Circle, Kolkata",
+      "value": 3250000,
+      "loan_amount": 2399300
+    },
+    "is_tampered": true,
+    "tamper_types": [
+      "income_inflated"
+    ],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_002\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_002\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_002\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_002\\bank_statement.pdf",
+      "employment_letter": "cases\\case_002\\employment_letter.pdf",
+      "form16": "cases\\case_002\\form16.pdf",
+      "utility_bill": "cases\\case_002\\utility_bill.pdf",
+      "property_agreement": "cases\\case_002\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_003",
+    "applicant": {
+      "name": "Harrison Sampath",
+      "age": 26,
+      "pan": "VPDDI8788G",
+      "city": "Ahmedabad",
+      "phone": "6068134367",
+      "email": "mekhalabhatti@example.org"
+    },
+    "employer": {
+      "name": "Tata Consultancy Services Ltd",
+      "cin": "L22210MH1995PLC084781",
+      "city": "Mumbai",
+      "designation": "DevOps Engineer",
+      "department": "Engineering",
+      "join_date": "2017-10-05",
+      "employee_id": "EMP99399",
+      "annual_ctc": 910000,
+      "monthly_gross": 75833,
+      "monthly_net": 66928
+    },
+    "bank": {
+      "name": "HDFC Bank",
+      "ifsc": "HDFC0001234",
+      "account_no": "XXXX XXXX 7188"
+    },
+    "property": {
+      "type": "3BHK Apartment",
+      "address": "44/53\nBose, Ahmedabad",
+      "value": 14550000,
+      "loan_amount": 9782810
+    },
+    "is_tampered": true,
+    "tamper_types": [
+      "circular_funds",
+      "employer_fake"
+    ],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_003\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_003\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_003\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_003\\bank_statement.pdf",
+      "employment_letter": "cases\\case_003\\employment_letter.pdf",
+      "form16": "cases\\case_003\\form16.pdf",
+      "utility_bill": "cases\\case_003\\utility_bill.pdf",
+      "gift_letter": "cases\\case_003\\gift_letter.pdf",
+      "property_agreement": "cases\\case_003\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_004",
+    "applicant": {
+      "name": "Mekhala Wadhwa",
+      "age": 51,
+      "pan": "QTNQH0223R",
+      "city": "Ahmedabad",
+      "phone": "3446157098",
+      "email": "krishekavir@example.org"
+    },
+    "employer": {
+      "name": "Larsen & Toubro Infotech Ltd",
+      "cin": "L72900GJ1997PLC032016",
+      "city": "Mumbai",
+      "designation": "DevOps Engineer",
+      "department": "Engineering",
+      "join_date": "2020-06-18",
+      "employee_id": "EMP20561",
+      "annual_ctc": 1470000,
+      "monthly_gross": 122500,
+      "monthly_net": 107620
+    },
+    "bank": {
+      "name": "ICICI Bank",
+      "ifsc": "ICIC0001234",
+      "account_no": "XXXX XXXX 9475"
+    },
+    "property": {
+      "type": "Row House",
+      "address": "875\nNagarajan Ganj, Ahmedabad",
+      "value": 6300000,
+      "loan_amount": 4805429
+    },
+    "is_tampered": true,
+    "tamper_types": [
+      "employer_fake",
+      "backdated_employment"
+    ],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_004\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_004\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_004\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_004\\bank_statement.pdf",
+      "employment_letter": "cases\\case_004\\employment_letter.pdf",
+      "form16": "cases\\case_004\\form16.pdf",
+      "utility_bill": "cases\\case_004\\utility_bill.pdf",
+      "property_agreement": "cases\\case_004\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_005",
+    "applicant": {
+      "name": "Laban Master",
+      "age": 35,
+      "pan": "AWEFU3872A",
+      "city": "Pune",
+      "phone": "+916184902862",
+      "email": "yahvi45@example.net"
+    },
+    "employer": {
+      "name": "Larsen & Toubro Infotech Ltd",
+      "cin": "L72900GJ1997PLC032016",
+      "city": "Mumbai",
+      "designation": "Business Analyst",
+      "department": "Consulting",
+      "join_date": "2019-02-13",
+      "employee_id": "EMP77715",
+      "annual_ctc": 1270000,
+      "monthly_gross": 105833,
+      "monthly_net": 93088
+    },
+    "bank": {
+      "name": "ICICI Bank",
+      "ifsc": "ICIC0001234",
+      "account_no": "XXXX XXXX 2211"
+    },
+    "property": {
+      "type": "2BHK Apartment",
+      "address": "95\nParmer Road, Pune",
+      "value": 10800000,
+      "loan_amount": 8102465
+    },
+    "is_tampered": true,
+    "tamper_types": [
+      "employer_fake"
+    ],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_005\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_005\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_005\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_005\\bank_statement.pdf",
+      "employment_letter": "cases\\case_005\\employment_letter.pdf",
+      "form16": "cases\\case_005\\form16.pdf",
+      "utility_bill": "cases\\case_005\\utility_bill.pdf",
+      "property_agreement": "cases\\case_005\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_006",
+    "applicant": {
+      "name": "Bhavika Biswas",
+      "age": 33,
+      "pan": "EPQMC3368K",
+      "city": "Mumbai",
+      "phone": "02063618066",
+      "email": "ekiyanath@example.com"
+    },
+    "employer": {
+      "name": "Larsen & Toubro Infotech Ltd",
+      "cin": "L72900GJ1997PLC032016",
+      "city": "Mumbai",
+      "designation": "Business Analyst",
+      "department": "Consulting",
+      "join_date": "2019-09-10",
+      "employee_id": "EMP63955",
+      "annual_ctc": 750000,
+      "monthly_gross": 62500,
+      "monthly_net": 55300
+    },
+    "bank": {
+      "name": "ICICI Bank",
+      "ifsc": "ICIC0001234",
+      "account_no": "XXXX XXXX 2594"
+    },
+    "property": {
+      "type": "Resale Flat",
+      "address": "H.No. 80\nAmble Zila, Mumbai",
+      "value": 11300000,
+      "loan_amount": 8094578
+    },
+    "is_tampered": true,
+    "tamper_types": [
+      "employer_fake"
+    ],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_006\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_006\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_006\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_006\\bank_statement.pdf",
+      "employment_letter": "cases\\case_006\\employment_letter.pdf",
+      "form16": "cases\\case_006\\form16.pdf",
+      "utility_bill": "cases\\case_006\\utility_bill.pdf",
+      "gift_letter": "cases\\case_006\\gift_letter.pdf",
+      "property_agreement": "cases\\case_006\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_007",
+    "applicant": {
+      "name": "Bhavna Pandit",
+      "age": 39,
+      "pan": "VFKMG5592V",
+      "city": "Pune",
+      "phone": "5350779660",
+      "email": "shankerchasmum@example.org"
+    },
+    "employer": {
+      "name": "Tech Mahindra Limited",
+      "cin": "L64200MH1986PLC041953",
+      "city": "Pune",
+      "designation": "Senior Data Analyst",
+      "department": "Analytics",
+      "join_date": "2018-05-06",
+      "employee_id": "EMP61879",
+      "annual_ctc": 1340000,
+      "monthly_gross": 111666,
+      "monthly_net": 98174
+    },
+    "bank": {
+      "name": "Kotak Mahindra Bank",
+      "ifsc": "KKBK0001234",
+      "account_no": "XXXX XXXX 6345"
+    },
+    "property": {
+      "type": "3BHK Apartment",
+      "address": "H.No. 353\nDass Chowk, Pune",
+      "value": 8400000,
+      "loan_amount": 6329795
+    },
+    "is_tampered": true,
+    "tamper_types": [
+      "circular_funds",
+      "backdated_employment"
+    ],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_007\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_007\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_007\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_007\\bank_statement.pdf",
+      "employment_letter": "cases\\case_007\\employment_letter.pdf",
+      "form16": "cases\\case_007\\form16.pdf",
+      "utility_bill": "cases\\case_007\\utility_bill.pdf",
+      "gift_letter": "cases\\case_007\\gift_letter.pdf",
+      "property_agreement": "cases\\case_007\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_008",
+    "applicant": {
+      "name": "Jairaj Kar",
+      "age": 49,
+      "pan": "JPLFP7963U",
+      "city": "Mumbai",
+      "phone": "+919513807926",
+      "email": "ekantikamangat@example.org"
+    },
+    "employer": {
+      "name": "Tata Consultancy Services Ltd",
+      "cin": "L22210MH1995PLC084781",
+      "city": "Mumbai",
+      "designation": "Technical Lead",
+      "department": "Engineering",
+      "join_date": "2017-02-23",
+      "employee_id": "EMP14082",
+      "annual_ctc": 1730000,
+      "monthly_gross": 144166,
+      "monthly_net": 126514
+    },
+    "bank": {
+      "name": "Kotak Mahindra Bank",
+      "ifsc": "KKBK0001234",
+      "account_no": "XXXX XXXX 8677"
+    },
+    "property": {
+      "type": "3BHK Apartment",
+      "address": "09/58\nWable Chowk, Mumbai",
+      "value": 3800000,
+      "loan_amount": 2741460
+    },
+    "is_tampered": true,
+    "tamper_types": [
+      "backdated_employment"
+    ],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_008\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_008\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_008\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_008\\bank_statement.pdf",
+      "employment_letter": "cases\\case_008\\employment_letter.pdf",
+      "form16": "cases\\case_008\\form16.pdf",
+      "utility_bill": "cases\\case_008\\utility_bill.pdf",
+      "property_agreement": "cases\\case_008\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_009",
+    "applicant": {
+      "name": "Yoshita Hegde",
+      "age": 27,
+      "pan": "KTLLC3446J",
+      "city": "Ahmedabad",
+      "phone": "+916128488225",
+      "email": "chadhamanya@example.org"
+    },
+    "employer": {
+      "name": "Persistent Systems Limited",
+      "cin": "L72300PN1990PLC056696",
+      "city": "Pune",
+      "designation": "DevOps Engineer",
+      "department": "Engineering",
+      "join_date": "2016-03-01",
+      "employee_id": "EMP25096",
+      "annual_ctc": 1190000,
+      "monthly_gross": 99166,
+      "monthly_net": 87274
+    },
+    "bank": {
+      "name": "Kotak Mahindra Bank",
+      "ifsc": "KKBK0001234",
+      "account_no": "XXXX XXXX 7396"
+    },
+    "property": {
+      "type": "3BHK Apartment",
+      "address": "85/27\nBoase Road, Ahmedabad",
+      "value": 11550000,
+      "loan_amount": 8904241
+    },
+    "is_tampered": true,
+    "tamper_types": [
+      "circular_funds"
+    ],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_009\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_009\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_009\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_009\\bank_statement.pdf",
+      "employment_letter": "cases\\case_009\\employment_letter.pdf",
+      "form16": "cases\\case_009\\form16.pdf",
+      "utility_bill": "cases\\case_009\\utility_bill.pdf",
+      "gift_letter": "cases\\case_009\\gift_letter.pdf",
+      "property_agreement": "cases\\case_009\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_010",
+    "applicant": {
+      "name": "Maanav Ahluwalia",
+      "age": 47,
+      "pan": "UVELK6242X",
+      "city": "Delhi",
+      "phone": "+912210180520",
+      "email": "dyohannan@example.org"
+    },
+    "employer": {
+      "name": "Cognizant Technology Solutions",
+      "cin": "U72200TN1994PLC031108",
+      "city": "Chennai",
+      "designation": "Project Manager",
+      "department": "Delivery",
+      "join_date": "2023-10-13",
+      "employee_id": "EMP68841",
+      "annual_ctc": 1460000,
+      "monthly_gross": 121666,
+      "monthly_net": 106894
+    },
+    "bank": {
+      "name": "Kotak Mahindra Bank",
+      "ifsc": "KKBK0001234",
+      "account_no": "XXXX XXXX 9751"
+    },
+    "property": {
+      "type": "2BHK Apartment",
+      "address": "H.No. 60\nKulkarni Road, Delhi",
+      "value": 5050000,
+      "loan_amount": 3419490
+    },
+    "is_tampered": true,
+    "tamper_types": [
+      "backdated_employment",
+      "circular_funds"
+    ],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_010\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_010\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_010\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_010\\bank_statement.pdf",
+      "employment_letter": "cases\\case_010\\employment_letter.pdf",
+      "form16": "cases\\case_010\\form16.pdf",
+      "utility_bill": "cases\\case_010\\utility_bill.pdf",
+      "property_agreement": "cases\\case_010\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_011",
+    "applicant": {
+      "name": "Harita Bhalla",
+      "age": 51,
+      "pan": "OGTEJ7831L",
+      "city": "Hyderabad",
+      "phone": "+912897256895",
+      "email": "divya49@example.com"
+    },
+    "employer": {
+      "name": "Capgemini India Pvt. Ltd.",
+      "cin": "U72200MH1997FTC106896",
+      "city": "Mumbai",
+      "designation": "Software Engineer",
+      "department": "Engineering",
+      "join_date": "2022-01-12",
+      "employee_id": "EMP67272",
+      "annual_ctc": 620000,
+      "monthly_gross": 51666,
+      "monthly_net": 45854
+    },
+    "bank": {
+      "name": "HDFC Bank",
+      "ifsc": "HDFC0001234",
+      "account_no": "XXXX XXXX 4630"
+    },
+    "property": {
+      "type": "Independent House",
+      "address": "H.No. 51\nBajaj, Hyderabad",
+      "value": 9550000,
+      "loan_amount": 6777955
+    },
+    "is_tampered": true,
+    "tamper_types": [
+      "circular_funds",
+      "backdated_employment"
+    ],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_011\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_011\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_011\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_011\\bank_statement.pdf",
+      "employment_letter": "cases\\case_011\\employment_letter.pdf",
+      "form16": "cases\\case_011\\form16.pdf",
+      "utility_bill": "cases\\case_011\\utility_bill.pdf",
+      "property_agreement": "cases\\case_011\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_012",
+    "applicant": {
+      "name": "Raksha Lala",
+      "age": 47,
+      "pan": "FYNHC1926T",
+      "city": "Mumbai",
+      "phone": "04919900344",
+      "email": "anita69@example.org"
+    },
+    "employer": {
+      "name": "Tech Mahindra Limited",
+      "cin": "L64200MH1986PLC041953",
+      "city": "Pune",
+      "designation": "Senior Software Engineer",
+      "department": "Engineering",
+      "join_date": "2023-08-31",
+      "employee_id": "EMP79924",
+      "annual_ctc": 1460000,
+      "monthly_gross": 121666,
+      "monthly_net": 106894
+    },
+    "bank": {
+      "name": "ICICI Bank",
+      "ifsc": "ICIC0001234",
+      "account_no": "XXXX XXXX 5632"
+    },
+    "property": {
+      "type": "Resale Flat",
+      "address": "H.No. 17, Viswanathan Ganj, Mumbai",
+      "value": 5050000,
+      "loan_amount": 3526915
+    },
+    "is_tampered": true,
+    "tamper_types": [
+      "income_inflated"
+    ],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_012\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_012\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_012\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_012\\bank_statement.pdf",
+      "employment_letter": "cases\\case_012\\employment_letter.pdf",
+      "form16": "cases\\case_012\\form16.pdf",
+      "utility_bill": "cases\\case_012\\utility_bill.pdf",
+      "gift_letter": "cases\\case_012\\gift_letter.pdf",
+      "property_agreement": "cases\\case_012\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_013",
+    "applicant": {
+      "name": "Farhan Shah",
+      "age": 49,
+      "pan": "VDRAY1031W",
+      "city": "Hyderabad",
+      "phone": "00453200590",
+      "email": "ghoseniharika@example.org"
+    },
+    "employer": {
+      "name": "Wipro Technologies Pvt. Ltd.",
+      "cin": "U72200KA1945C000221",
+      "city": "Bengaluru",
+      "designation": "Software Engineer",
+      "department": "Engineering",
+      "join_date": "2019-08-19",
+      "employee_id": "EMP36724",
+      "annual_ctc": 870000,
+      "monthly_gross": 72500,
+      "monthly_net": 64020
+    },
+    "bank": {
+      "name": "Axis Bank",
+      "ifsc": "UTIB0001234",
+      "account_no": "XXXX XXXX 6125"
+    },
+    "property": {
+      "type": "3BHK Apartment",
+      "address": "H.No. 860\nSama Path, Hyderabad",
+      "value": 11050000,
+      "loan_amount": 8377860
+    },
+    "is_tampered": true,
+    "tamper_types": [
+      "circular_funds",
+      "backdated_employment"
+    ],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_013\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_013\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_013\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_013\\bank_statement.pdf",
+      "employment_letter": "cases\\case_013\\employment_letter.pdf",
+      "form16": "cases\\case_013\\form16.pdf",
+      "utility_bill": "cases\\case_013\\utility_bill.pdf",
+      "property_agreement": "cases\\case_013\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_014",
+    "applicant": {
+      "name": "Samar Parmar",
+      "age": 33,
+      "pan": "QSBDH4587J",
+      "city": "Hyderabad",
+      "phone": "3170232310",
+      "email": "sapte@example.org"
+    },
+    "employer": {
+      "name": "Tech Mahindra Limited",
+      "cin": "L64200MH1986PLC041953",
+      "city": "Pune",
+      "designation": "Senior Data Analyst",
+      "department": "Analytics",
+      "join_date": "2018-12-24",
+      "employee_id": "EMP25389",
+      "annual_ctc": 1240000,
+      "monthly_gross": 103333,
+      "monthly_net": 90908
+    },
+    "bank": {
+      "name": "State Bank of India",
+      "ifsc": "SBIN0001234",
+      "account_no": "XXXX XXXX 3918"
+    },
+    "property": {
+      "type": "Row House",
+      "address": "H.No. 88, Lanka Zila, Hyderabad",
+      "value": 12250000,
+      "loan_amount": 9015162
+    },
+    "is_tampered": true,
+    "tamper_types": [
+      "employer_fake"
+    ],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_014\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_014\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_014\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_014\\bank_statement.pdf",
+      "employment_letter": "cases\\case_014\\employment_letter.pdf",
+      "form16": "cases\\case_014\\form16.pdf",
+      "utility_bill": "cases\\case_014\\utility_bill.pdf",
+      "gift_letter": "cases\\case_014\\gift_letter.pdf",
+      "property_agreement": "cases\\case_014\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_015",
+    "applicant": {
+      "name": "Oviya Bala",
+      "age": 29,
+      "pan": "KGICL3580M",
+      "city": "Chennai",
+      "phone": "9884054684",
+      "email": "warriorbaghyawati@example.com"
+    },
+    "employer": {
+      "name": "Persistent Systems Limited",
+      "cin": "L72300PN1990PLC056696",
+      "city": "Pune",
+      "designation": "Technical Lead",
+      "department": "Engineering",
+      "join_date": "2020-11-18",
+      "employee_id": "EMP98299",
+      "annual_ctc": 1790000,
+      "monthly_gross": 149166,
+      "monthly_net": 130874
+    },
+    "bank": {
+      "name": "HDFC Bank",
+      "ifsc": "HDFC0001234",
+      "account_no": "XXXX XXXX 2324"
+    },
+    "property": {
+      "type": "Independent House",
+      "address": "057\nGour Path, Chennai",
+      "value": 8300000,
+      "loan_amount": 6088822
+    },
+    "is_tampered": true,
+    "tamper_types": [
+      "backdated_employment",
+      "employer_fake"
+    ],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_015\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_015\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_015\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_015\\bank_statement.pdf",
+      "employment_letter": "cases\\case_015\\employment_letter.pdf",
+      "form16": "cases\\case_015\\form16.pdf",
+      "utility_bill": "cases\\case_015\\utility_bill.pdf",
+      "gift_letter": "cases\\case_015\\gift_letter.pdf",
+      "property_agreement": "cases\\case_015\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_016",
+    "applicant": {
+      "name": "Bimala Mammen",
+      "age": 52,
+      "pan": "KXITD9759B",
+      "city": "Bengaluru",
+      "phone": "02476395707",
+      "email": "nandanihal@example.org"
+    },
+    "employer": {
+      "name": "Wipro Technologies Pvt. Ltd.",
+      "cin": "U72200KA1945C000221",
+      "city": "Bengaluru",
+      "designation": "HR Business Partner",
+      "department": "Human Resources",
+      "join_date": "2019-03-10",
+      "employee_id": "EMP22803",
+      "annual_ctc": 640000,
+      "monthly_gross": 53333,
+      "monthly_net": 47308
+    },
+    "bank": {
+      "name": "State Bank of India",
+      "ifsc": "SBIN0001234",
+      "account_no": "XXXX XXXX 0176"
+    },
+    "property": {
+      "type": "Resale Flat",
+      "address": "H.No. 46\nDoctor Street, Bengaluru",
+      "value": 6050000,
+      "loan_amount": 4446776
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_016\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_016\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_016\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_016\\bank_statement.pdf",
+      "employment_letter": "cases\\case_016\\employment_letter.pdf",
+      "form16": "cases\\case_016\\form16.pdf",
+      "utility_bill": "cases\\case_016\\utility_bill.pdf",
+      "gift_letter": "cases\\case_016\\gift_letter.pdf",
+      "property_agreement": "cases\\case_016\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_017",
+    "applicant": {
+      "name": "Jalsa Shukla",
+      "age": 45,
+      "pan": "RKTZL0255S",
+      "city": "Pune",
+      "phone": "2336940336",
+      "email": "psridhar@example.org"
+    },
+    "employer": {
+      "name": "Wipro Technologies Pvt. Ltd.",
+      "cin": "U72200KA1945C000221",
+      "city": "Bengaluru",
+      "designation": "Senior Software Engineer",
+      "department": "Engineering",
+      "join_date": "2018-04-03",
+      "employee_id": "EMP85397",
+      "annual_ctc": 1110000,
+      "monthly_gross": 92500,
+      "monthly_net": 81460
+    },
+    "bank": {
+      "name": "State Bank of India",
+      "ifsc": "SBIN0001234",
+      "account_no": "XXXX XXXX 4007"
+    },
+    "property": {
+      "type": "2BHK Apartment",
+      "address": "H.No. 253\nGaba, Pune",
+      "value": 10800000,
+      "loan_amount": 7091760
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_017\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_017\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_017\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_017\\bank_statement.pdf",
+      "employment_letter": "cases\\case_017\\employment_letter.pdf",
+      "form16": "cases\\case_017\\form16.pdf",
+      "utility_bill": "cases\\case_017\\utility_bill.pdf",
+      "property_agreement": "cases\\case_017\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_018",
+    "applicant": {
+      "name": "Lajita Goel",
+      "age": 32,
+      "pan": "HZLJV4972Z",
+      "city": "Kolkata",
+      "phone": "+913651193200",
+      "email": "kakarwridesh@example.net"
+    },
+    "employer": {
+      "name": "Tata Consultancy Services Ltd",
+      "cin": "L22210MH1995PLC084781",
+      "city": "Mumbai",
+      "designation": "DevOps Engineer",
+      "department": "Engineering",
+      "join_date": "2017-04-04",
+      "employee_id": "EMP87060",
+      "annual_ctc": 1170000,
+      "monthly_gross": 97500,
+      "monthly_net": 85820
+    },
+    "bank": {
+      "name": "Axis Bank",
+      "ifsc": "UTIB0001234",
+      "account_no": "XXXX XXXX 7402"
+    },
+    "property": {
+      "type": "3BHK Apartment",
+      "address": "72/17\nMemon Nagar, Kolkata",
+      "value": 13600000,
+      "loan_amount": 10173490
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_018\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_018\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_018\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_018\\bank_statement.pdf",
+      "employment_letter": "cases\\case_018\\employment_letter.pdf",
+      "form16": "cases\\case_018\\form16.pdf",
+      "utility_bill": "cases\\case_018\\utility_bill.pdf",
+      "property_agreement": "cases\\case_018\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_019",
+    "applicant": {
+      "name": "Theodore Hans",
+      "age": 49,
+      "pan": "DSJLU2626X",
+      "city": "Bengaluru",
+      "phone": "5373774030",
+      "email": "deoldiya@example.com"
+    },
+    "employer": {
+      "name": "HCL Technologies Ltd",
+      "cin": "L74140DL1994PLC055219",
+      "city": "Noida",
+      "designation": "HR Business Partner",
+      "department": "Human Resources",
+      "join_date": "2024-07-15",
+      "employee_id": "EMP89638",
+      "annual_ctc": 990000,
+      "monthly_gross": 82500,
+      "monthly_net": 72740
+    },
+    "bank": {
+      "name": "Axis Bank",
+      "ifsc": "UTIB0001234",
+      "account_no": "XXXX XXXX 3384"
+    },
+    "property": {
+      "type": "Row House",
+      "address": "61/76\nKara Street, Bengaluru",
+      "value": 14450000,
+      "loan_amount": 9610258
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_019\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_019\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_019\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_019\\bank_statement.pdf",
+      "employment_letter": "cases\\case_019\\employment_letter.pdf",
+      "form16": "cases\\case_019\\form16.pdf",
+      "utility_bill": "cases\\case_019\\utility_bill.pdf",
+      "property_agreement": "cases\\case_019\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_020",
+    "applicant": {
+      "name": "Waida Doshi",
+      "age": 26,
+      "pan": "EUZYB4283R",
+      "city": "Delhi",
+      "phone": "0414128492",
+      "email": "swamysaanvi@example.org"
+    },
+    "employer": {
+      "name": "Capgemini India Pvt. Ltd.",
+      "cin": "U72200MH1997FTC106896",
+      "city": "Mumbai",
+      "designation": "Business Analyst",
+      "department": "Consulting",
+      "join_date": "2024-03-03",
+      "employee_id": "EMP69866",
+      "annual_ctc": 790000,
+      "monthly_gross": 65833,
+      "monthly_net": 58208
+    },
+    "bank": {
+      "name": "Kotak Mahindra Bank",
+      "ifsc": "KKBK0001234",
+      "account_no": "XXXX XXXX 0687"
+    },
+    "property": {
+      "type": "2BHK Apartment",
+      "address": "H.No. 120, Rao Circle, Delhi",
+      "value": 9400000,
+      "loan_amount": 7059389
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_020\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_020\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_020\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_020\\bank_statement.pdf",
+      "employment_letter": "cases\\case_020\\employment_letter.pdf",
+      "form16": "cases\\case_020\\form16.pdf",
+      "utility_bill": "cases\\case_020\\utility_bill.pdf",
+      "gift_letter": "cases\\case_020\\gift_letter.pdf",
+      "property_agreement": "cases\\case_020\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_021",
+    "applicant": {
+      "name": "Yash Bhargava",
+      "age": 29,
+      "pan": "KQUGZ5037P",
+      "city": "Chennai",
+      "phone": "07008868041",
+      "email": "yadavi87@example.org"
+    },
+    "employer": {
+      "name": "Larsen & Toubro Infotech Ltd",
+      "cin": "L72900GJ1997PLC032016",
+      "city": "Mumbai",
+      "designation": "Senior Data Analyst",
+      "department": "Analytics",
+      "join_date": "2024-10-29",
+      "employee_id": "EMP81371",
+      "annual_ctc": 1420000,
+      "monthly_gross": 118333,
+      "monthly_net": 103988
+    },
+    "bank": {
+      "name": "Kotak Mahindra Bank",
+      "ifsc": "KKBK0001234",
+      "account_no": "XXXX XXXX 7795"
+    },
+    "property": {
+      "type": "Resale Flat",
+      "address": "50/381\nDevan Circle, Chennai",
+      "value": 4100000,
+      "loan_amount": 2837062
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_021\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_021\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_021\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_021\\bank_statement.pdf",
+      "employment_letter": "cases\\case_021\\employment_letter.pdf",
+      "form16": "cases\\case_021\\form16.pdf",
+      "utility_bill": "cases\\case_021\\utility_bill.pdf",
+      "gift_letter": "cases\\case_021\\gift_letter.pdf",
+      "property_agreement": "cases\\case_021\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_022",
+    "applicant": {
+      "name": "Yasti Sarraf",
+      "age": 35,
+      "pan": "FESSS2220S",
+      "city": "Kolkata",
+      "phone": "+919940880745",
+      "email": "modifaraj@example.com"
+    },
+    "employer": {
+      "name": "Mphasis Limited",
+      "cin": "L30007KA2000PLC025294",
+      "city": "Bengaluru",
+      "designation": "Software Engineer",
+      "department": "Engineering",
+      "join_date": "2020-08-22",
+      "employee_id": "EMP82045",
+      "annual_ctc": 770000,
+      "monthly_gross": 64166,
+      "monthly_net": 56754
+    },
+    "bank": {
+      "name": "ICICI Bank",
+      "ifsc": "ICIC0001234",
+      "account_no": "XXXX XXXX 8342"
+    },
+    "property": {
+      "type": "Resale Flat",
+      "address": "H.No. 824\nBhatti, Kolkata",
+      "value": 5000000,
+      "loan_amount": 3290166
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_022\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_022\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_022\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_022\\bank_statement.pdf",
+      "employment_letter": "cases\\case_022\\employment_letter.pdf",
+      "form16": "cases\\case_022\\form16.pdf",
+      "utility_bill": "cases\\case_022\\utility_bill.pdf",
+      "gift_letter": "cases\\case_022\\gift_letter.pdf",
+      "property_agreement": "cases\\case_022\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_023",
+    "applicant": {
+      "name": "Rushil Sampath",
+      "age": 31,
+      "pan": "HVNQD0351P",
+      "city": "Hyderabad",
+      "phone": "03105587008",
+      "email": "girikratti@example.net"
+    },
+    "employer": {
+      "name": "Larsen & Toubro Infotech Ltd",
+      "cin": "L72900GJ1997PLC032016",
+      "city": "Mumbai",
+      "designation": "Software Engineer",
+      "department": "Engineering",
+      "join_date": "2024-12-10",
+      "employee_id": "EMP86923",
+      "annual_ctc": 650000,
+      "monthly_gross": 54166,
+      "monthly_net": 48034
+    },
+    "bank": {
+      "name": "HDFC Bank",
+      "ifsc": "HDFC0001234",
+      "account_no": "XXXX XXXX 1182"
+    },
+    "property": {
+      "type": "Row House",
+      "address": "H.No. 497, Atwal Nagar, Hyderabad",
+      "value": 14750000,
+      "loan_amount": 10384829
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_023\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_023\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_023\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_023\\bank_statement.pdf",
+      "employment_letter": "cases\\case_023\\employment_letter.pdf",
+      "form16": "cases\\case_023\\form16.pdf",
+      "utility_bill": "cases\\case_023\\utility_bill.pdf",
+      "property_agreement": "cases\\case_023\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_024",
+    "applicant": {
+      "name": "Jacob Kumer",
+      "age": 30,
+      "pan": "IBLFU5177E",
+      "city": "Kolkata",
+      "phone": "+914487392925",
+      "email": "bpandya@example.net"
+    },
+    "employer": {
+      "name": "Tata Consultancy Services Ltd",
+      "cin": "L22210MH1995PLC084781",
+      "city": "Mumbai",
+      "designation": "Technical Lead",
+      "department": "Engineering",
+      "join_date": "2020-01-16",
+      "employee_id": "EMP90541",
+      "annual_ctc": 1600000,
+      "monthly_gross": 133333,
+      "monthly_net": 117068
+    },
+    "bank": {
+      "name": "ICICI Bank",
+      "ifsc": "ICIC0001234",
+      "account_no": "XXXX XXXX 0094"
+    },
+    "property": {
+      "type": "Row House",
+      "address": "63, Bhatnagar Street, Kolkata",
+      "value": 7250000,
+      "loan_amount": 5398748
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_024\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_024\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_024\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_024\\bank_statement.pdf",
+      "employment_letter": "cases\\case_024\\employment_letter.pdf",
+      "form16": "cases\\case_024\\form16.pdf",
+      "utility_bill": "cases\\case_024\\utility_bill.pdf",
+      "property_agreement": "cases\\case_024\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_025",
+    "applicant": {
+      "name": "Nakul Gandhi",
+      "age": 37,
+      "pan": "KLVRM4811X",
+      "city": "Kolkata",
+      "phone": "+911142544944",
+      "email": "ywali@example.net"
+    },
+    "employer": {
+      "name": "Capgemini India Pvt. Ltd.",
+      "cin": "U72200MH1997FTC106896",
+      "city": "Mumbai",
+      "designation": "Project Manager",
+      "department": "Delivery",
+      "join_date": "2016-05-15",
+      "employee_id": "EMP17686",
+      "annual_ctc": 1640000,
+      "monthly_gross": 136666,
+      "monthly_net": 119974
+    },
+    "bank": {
+      "name": "HDFC Bank",
+      "ifsc": "HDFC0001234",
+      "account_no": "XXXX XXXX 0857"
+    },
+    "property": {
+      "type": "Row House",
+      "address": "H.No. 718\nSaini Nagar, Kolkata",
+      "value": 7350000,
+      "loan_amount": 4979113
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_025\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_025\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_025\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_025\\bank_statement.pdf",
+      "employment_letter": "cases\\case_025\\employment_letter.pdf",
+      "form16": "cases\\case_025\\form16.pdf",
+      "utility_bill": "cases\\case_025\\utility_bill.pdf",
+      "gift_letter": "cases\\case_025\\gift_letter.pdf",
+      "property_agreement": "cases\\case_025\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_026",
+    "applicant": {
+      "name": "Keya Garde",
+      "age": 38,
+      "pan": "PXNVO3752G",
+      "city": "Hyderabad",
+      "phone": "9220996424",
+      "email": "yashvitank@example.org"
+    },
+    "employer": {
+      "name": "Tech Mahindra Limited",
+      "cin": "L64200MH1986PLC041953",
+      "city": "Pune",
+      "designation": "Business Analyst",
+      "department": "Consulting",
+      "join_date": "2020-06-07",
+      "employee_id": "EMP91810",
+      "annual_ctc": 1200000,
+      "monthly_gross": 100000,
+      "monthly_net": 88000
+    },
+    "bank": {
+      "name": "State Bank of India",
+      "ifsc": "SBIN0001234",
+      "account_no": "XXXX XXXX 0130"
+    },
+    "property": {
+      "type": "2BHK Apartment",
+      "address": "053, Vasa Circle, Hyderabad",
+      "value": 13300000,
+      "loan_amount": 8911076
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_026\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_026\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_026\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_026\\bank_statement.pdf",
+      "employment_letter": "cases\\case_026\\employment_letter.pdf",
+      "form16": "cases\\case_026\\form16.pdf",
+      "utility_bill": "cases\\case_026\\utility_bill.pdf",
+      "gift_letter": "cases\\case_026\\gift_letter.pdf",
+      "property_agreement": "cases\\case_026\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_027",
+    "applicant": {
+      "name": "Mohini Munshi",
+      "age": 51,
+      "pan": "SZUQY7143C",
+      "city": "Mumbai",
+      "phone": "+918530460902",
+      "email": "yamini66@example.org"
+    },
+    "employer": {
+      "name": "Cognizant Technology Solutions",
+      "cin": "U72200TN1994PLC031108",
+      "city": "Chennai",
+      "designation": "Senior Software Engineer",
+      "department": "Engineering",
+      "join_date": "2016-02-21",
+      "employee_id": "EMP19600",
+      "annual_ctc": 1060000,
+      "monthly_gross": 88333,
+      "monthly_net": 77828
+    },
+    "bank": {
+      "name": "ICICI Bank",
+      "ifsc": "ICIC0001234",
+      "account_no": "XXXX XXXX 7307"
+    },
+    "property": {
+      "type": "Resale Flat",
+      "address": "574\nSama Chowk, Mumbai",
+      "value": 4300000,
+      "loan_amount": 2927598
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_027\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_027\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_027\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_027\\bank_statement.pdf",
+      "employment_letter": "cases\\case_027\\employment_letter.pdf",
+      "form16": "cases\\case_027\\form16.pdf",
+      "utility_bill": "cases\\case_027\\utility_bill.pdf",
+      "gift_letter": "cases\\case_027\\gift_letter.pdf",
+      "property_agreement": "cases\\case_027\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_028",
+    "applicant": {
+      "name": "Dayita Bobal",
+      "age": 46,
+      "pan": "WDTYB7222V",
+      "city": "Bengaluru",
+      "phone": "07970050852",
+      "email": "iryadyal@example.net"
+    },
+    "employer": {
+      "name": "Wipro Technologies Pvt. Ltd.",
+      "cin": "U72200KA1945C000221",
+      "city": "Bengaluru",
+      "designation": "DevOps Engineer",
+      "department": "Engineering",
+      "join_date": "2023-07-03",
+      "employee_id": "EMP37102",
+      "annual_ctc": 1070000,
+      "monthly_gross": 89166,
+      "monthly_net": 78554
+    },
+    "bank": {
+      "name": "Axis Bank",
+      "ifsc": "UTIB0001234",
+      "account_no": "XXXX XXXX 9248"
+    },
+    "property": {
+      "type": "Independent House",
+      "address": "H.No. 780\nChander, Bengaluru",
+      "value": 10200000,
+      "loan_amount": 8081529
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_028\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_028\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_028\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_028\\bank_statement.pdf",
+      "employment_letter": "cases\\case_028\\employment_letter.pdf",
+      "form16": "cases\\case_028\\form16.pdf",
+      "utility_bill": "cases\\case_028\\utility_bill.pdf",
+      "property_agreement": "cases\\case_028\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_029",
+    "applicant": {
+      "name": "Yashodhara Madan",
+      "age": 27,
+      "pan": "HWKES7510U",
+      "city": "Pune",
+      "phone": "+912693990457",
+      "email": "kamya65@example.com"
+    },
+    "employer": {
+      "name": "Larsen & Toubro Infotech Ltd",
+      "cin": "L72900GJ1997PLC032016",
+      "city": "Mumbai",
+      "designation": "HR Business Partner",
+      "department": "Human Resources",
+      "join_date": "2016-12-03",
+      "employee_id": "EMP36924",
+      "annual_ctc": 680000,
+      "monthly_gross": 56666,
+      "monthly_net": 50214
+    },
+    "bank": {
+      "name": "State Bank of India",
+      "ifsc": "SBIN0001234",
+      "account_no": "XXXX XXXX 7786"
+    },
+    "property": {
+      "type": "3BHK Apartment",
+      "address": "75/180, Goswami Marg, Pune",
+      "value": 5950000,
+      "loan_amount": 4679751
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_029\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_029\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_029\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_029\\bank_statement.pdf",
+      "employment_letter": "cases\\case_029\\employment_letter.pdf",
+      "form16": "cases\\case_029\\form16.pdf",
+      "utility_bill": "cases\\case_029\\utility_bill.pdf",
+      "property_agreement": "cases\\case_029\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_030",
+    "applicant": {
+      "name": "Vedhika Dhingra",
+      "age": 35,
+      "pan": "BYMJX2969P",
+      "city": "Mumbai",
+      "phone": "+918341653026",
+      "email": "dyaludyati@example.net"
+    },
+    "employer": {
+      "name": "Tata Consultancy Services Ltd",
+      "cin": "L22210MH1995PLC084781",
+      "city": "Mumbai",
+      "designation": "Business Analyst",
+      "department": "Consulting",
+      "join_date": "2021-01-13",
+      "employee_id": "EMP36170",
+      "annual_ctc": 1010000,
+      "monthly_gross": 84166,
+      "monthly_net": 74194
+    },
+    "bank": {
+      "name": "State Bank of India",
+      "ifsc": "SBIN0001234",
+      "account_no": "XXXX XXXX 5217"
+    },
+    "property": {
+      "type": "Row House",
+      "address": "88/039\nPalla Nagar, Mumbai",
+      "value": 11600000,
+      "loan_amount": 8842891
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_030\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_030\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_030\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_030\\bank_statement.pdf",
+      "employment_letter": "cases\\case_030\\employment_letter.pdf",
+      "form16": "cases\\case_030\\form16.pdf",
+      "utility_bill": "cases\\case_030\\utility_bill.pdf",
+      "gift_letter": "cases\\case_030\\gift_letter.pdf",
+      "property_agreement": "cases\\case_030\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_031",
+    "applicant": {
+      "name": "Sanya Divan",
+      "age": 54,
+      "pan": "WOAKT0216M",
+      "city": "Hyderabad",
+      "phone": "04284220248",
+      "email": "wchand@example.com"
+    },
+    "employer": {
+      "name": "Wipro Technologies Pvt. Ltd.",
+      "cin": "U72200KA1945C000221",
+      "city": "Bengaluru",
+      "designation": "Business Analyst",
+      "department": "Consulting",
+      "join_date": "2021-01-21",
+      "employee_id": "EMP50549",
+      "annual_ctc": 800000,
+      "monthly_gross": 66666,
+      "monthly_net": 58934
+    },
+    "bank": {
+      "name": "ICICI Bank",
+      "ifsc": "ICIC0001234",
+      "account_no": "XXXX XXXX 8465"
+    },
+    "property": {
+      "type": "Independent House",
+      "address": "334, Parmar Chowk, Hyderabad",
+      "value": 4300000,
+      "loan_amount": 2856632
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_031\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_031\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_031\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_031\\bank_statement.pdf",
+      "employment_letter": "cases\\case_031\\employment_letter.pdf",
+      "form16": "cases\\case_031\\form16.pdf",
+      "utility_bill": "cases\\case_031\\utility_bill.pdf",
+      "property_agreement": "cases\\case_031\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_032",
+    "applicant": {
+      "name": "Lohit Sibal",
+      "age": 54,
+      "pan": "IQBYN2618V",
+      "city": "Pune",
+      "phone": "+916596036515",
+      "email": "fbhattacharyya@example.org"
+    },
+    "employer": {
+      "name": "Larsen & Toubro Infotech Ltd",
+      "cin": "L72900GJ1997PLC032016",
+      "city": "Mumbai",
+      "designation": "DevOps Engineer",
+      "department": "Engineering",
+      "join_date": "2021-02-23",
+      "employee_id": "EMP38545",
+      "annual_ctc": 1750000,
+      "monthly_gross": 145833,
+      "monthly_net": 127968
+    },
+    "bank": {
+      "name": "ICICI Bank",
+      "ifsc": "ICIC0001234",
+      "account_no": "XXXX XXXX 0315"
+    },
+    "property": {
+      "type": "2BHK Apartment",
+      "address": "085\nRaman, Pune",
+      "value": 11700000,
+      "loan_amount": 9291930
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_032\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_032\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_032\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_032\\bank_statement.pdf",
+      "employment_letter": "cases\\case_032\\employment_letter.pdf",
+      "form16": "cases\\case_032\\form16.pdf",
+      "utility_bill": "cases\\case_032\\utility_bill.pdf",
+      "gift_letter": "cases\\case_032\\gift_letter.pdf",
+      "property_agreement": "cases\\case_032\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_033",
+    "applicant": {
+      "name": "Gunbir Manda",
+      "age": 44,
+      "pan": "LJIZI3747T",
+      "city": "Bengaluru",
+      "phone": "02095272254",
+      "email": "vsem@example.org"
+    },
+    "employer": {
+      "name": "Persistent Systems Limited",
+      "cin": "L72300PN1990PLC056696",
+      "city": "Pune",
+      "designation": "Technical Lead",
+      "department": "Engineering",
+      "join_date": "2021-09-22",
+      "employee_id": "EMP41551",
+      "annual_ctc": 1900000,
+      "monthly_gross": 158333,
+      "monthly_net": 138868
+    },
+    "bank": {
+      "name": "Axis Bank",
+      "ifsc": "UTIB0001234",
+      "account_no": "XXXX XXXX 2559"
+    },
+    "property": {
+      "type": "3BHK Apartment",
+      "address": "82/43, Sen Circle, Bengaluru",
+      "value": 11400000,
+      "loan_amount": 7680481
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_033\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_033\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_033\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_033\\bank_statement.pdf",
+      "employment_letter": "cases\\case_033\\employment_letter.pdf",
+      "form16": "cases\\case_033\\form16.pdf",
+      "utility_bill": "cases\\case_033\\utility_bill.pdf",
+      "gift_letter": "cases\\case_033\\gift_letter.pdf",
+      "property_agreement": "cases\\case_033\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_034",
+    "applicant": {
+      "name": "Ekanta Dani",
+      "age": 31,
+      "pan": "TFOTO6966M",
+      "city": "Chennai",
+      "phone": "+914969843598",
+      "email": "oscarbanerjee@example.net"
+    },
+    "employer": {
+      "name": "Tech Mahindra Limited",
+      "cin": "L64200MH1986PLC041953",
+      "city": "Pune",
+      "designation": "Software Engineer",
+      "department": "Engineering",
+      "join_date": "2020-06-18",
+      "employee_id": "EMP86415",
+      "annual_ctc": 710000,
+      "monthly_gross": 59166,
+      "monthly_net": 52394
+    },
+    "bank": {
+      "name": "HDFC Bank",
+      "ifsc": "HDFC0001234",
+      "account_no": "XXXX XXXX 7945"
+    },
+    "property": {
+      "type": "2BHK Apartment",
+      "address": "149\nHayre Road, Chennai",
+      "value": 9000000,
+      "loan_amount": 5880709
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_034\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_034\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_034\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_034\\bank_statement.pdf",
+      "employment_letter": "cases\\case_034\\employment_letter.pdf",
+      "form16": "cases\\case_034\\form16.pdf",
+      "utility_bill": "cases\\case_034\\utility_bill.pdf",
+      "gift_letter": "cases\\case_034\\gift_letter.pdf",
+      "property_agreement": "cases\\case_034\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_035",
+    "applicant": {
+      "name": "Ekani Gera",
+      "age": 44,
+      "pan": "TJIPT5587Q",
+      "city": "Kolkata",
+      "phone": "+916907897923",
+      "email": "dayita99@example.net"
+    },
+    "employer": {
+      "name": "HCL Technologies Ltd",
+      "cin": "L74140DL1994PLC055219",
+      "city": "Noida",
+      "designation": "Accounts Manager",
+      "department": "Finance",
+      "join_date": "2020-09-18",
+      "employee_id": "EMP24328",
+      "annual_ctc": 1150000,
+      "monthly_gross": 95833,
+      "monthly_net": 84368
+    },
+    "bank": {
+      "name": "Axis Bank",
+      "ifsc": "UTIB0001234",
+      "account_no": "XXXX XXXX 1847"
+    },
+    "property": {
+      "type": "2BHK Apartment",
+      "address": "14\nChar Zila, Kolkata",
+      "value": 8150000,
+      "loan_amount": 6246422
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_035\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_035\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_035\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_035\\bank_statement.pdf",
+      "employment_letter": "cases\\case_035\\employment_letter.pdf",
+      "form16": "cases\\case_035\\form16.pdf",
+      "utility_bill": "cases\\case_035\\utility_bill.pdf",
+      "gift_letter": "cases\\case_035\\gift_letter.pdf",
+      "property_agreement": "cases\\case_035\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_036",
+    "applicant": {
+      "name": "Bhavna Sawhney",
+      "age": 32,
+      "pan": "SZAAQ1879N",
+      "city": "Kolkata",
+      "phone": "0772991250",
+      "email": "banikaishani@example.com"
+    },
+    "employer": {
+      "name": "Larsen & Toubro Infotech Ltd",
+      "cin": "L72900GJ1997PLC032016",
+      "city": "Mumbai",
+      "designation": "DevOps Engineer",
+      "department": "Engineering",
+      "join_date": "2016-06-13",
+      "employee_id": "EMP15962",
+      "annual_ctc": 1700000,
+      "monthly_gross": 141666,
+      "monthly_net": 124334
+    },
+    "bank": {
+      "name": "Axis Bank",
+      "ifsc": "UTIB0001234",
+      "account_no": "XXXX XXXX 9764"
+    },
+    "property": {
+      "type": "Resale Flat",
+      "address": "91/56\nSani Path, Kolkata",
+      "value": 5300000,
+      "loan_amount": 4147512
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_036\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_036\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_036\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_036\\bank_statement.pdf",
+      "employment_letter": "cases\\case_036\\employment_letter.pdf",
+      "form16": "cases\\case_036\\form16.pdf",
+      "utility_bill": "cases\\case_036\\utility_bill.pdf",
+      "property_agreement": "cases\\case_036\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_037",
+    "applicant": {
+      "name": "Vyanjana Edwin",
+      "age": 26,
+      "pan": "CBLEP5866J",
+      "city": "Delhi",
+      "phone": "03223360299",
+      "email": "sachi02@example.org"
+    },
+    "employer": {
+      "name": "Wipro Technologies Pvt. Ltd.",
+      "cin": "U72200KA1945C000221",
+      "city": "Bengaluru",
+      "designation": "DevOps Engineer",
+      "department": "Engineering",
+      "join_date": "2025-03-09",
+      "employee_id": "EMP53559",
+      "annual_ctc": 1460000,
+      "monthly_gross": 121666,
+      "monthly_net": 106894
+    },
+    "bank": {
+      "name": "HDFC Bank",
+      "ifsc": "HDFC0001234",
+      "account_no": "XXXX XXXX 3667"
+    },
+    "property": {
+      "type": "Independent House",
+      "address": "H.No. 17, Gandhi Nagar, Delhi",
+      "value": 9000000,
+      "loan_amount": 7069444
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_037\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_037\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_037\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_037\\bank_statement.pdf",
+      "employment_letter": "cases\\case_037\\employment_letter.pdf",
+      "form16": "cases\\case_037\\form16.pdf",
+      "utility_bill": "cases\\case_037\\utility_bill.pdf",
+      "property_agreement": "cases\\case_037\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_038",
+    "applicant": {
+      "name": "Aditya Verma",
+      "age": 38,
+      "pan": "WXSYQ4483H",
+      "city": "Mumbai",
+      "phone": "01909358851",
+      "email": "gauri94@example.com"
+    },
+    "employer": {
+      "name": "Wipro Technologies Pvt. Ltd.",
+      "cin": "U72200KA1945C000221",
+      "city": "Bengaluru",
+      "designation": "Technical Lead",
+      "department": "Engineering",
+      "join_date": "2024-07-24",
+      "employee_id": "EMP34352",
+      "annual_ctc": 1820000,
+      "monthly_gross": 151666,
+      "monthly_net": 133054
+    },
+    "bank": {
+      "name": "Axis Bank",
+      "ifsc": "UTIB0001234",
+      "account_no": "XXXX XXXX 5562"
+    },
+    "property": {
+      "type": "2BHK Apartment",
+      "address": "68/55\nOak Street, Mumbai",
+      "value": 4750000,
+      "loan_amount": 3545098
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_038\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_038\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_038\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_038\\bank_statement.pdf",
+      "employment_letter": "cases\\case_038\\employment_letter.pdf",
+      "form16": "cases\\case_038\\form16.pdf",
+      "utility_bill": "cases\\case_038\\utility_bill.pdf",
+      "property_agreement": "cases\\case_038\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_039",
+    "applicant": {
+      "name": "Darika Ramakrishnan",
+      "age": 51,
+      "pan": "BKNRJ7206B",
+      "city": "Hyderabad",
+      "phone": "9321848777",
+      "email": "chanchalluthra@example.org"
+    },
+    "employer": {
+      "name": "Capgemini India Pvt. Ltd.",
+      "cin": "U72200MH1997FTC106896",
+      "city": "Mumbai",
+      "designation": "DevOps Engineer",
+      "department": "Engineering",
+      "join_date": "2019-05-15",
+      "employee_id": "EMP87874",
+      "annual_ctc": 1330000,
+      "monthly_gross": 110833,
+      "monthly_net": 97448
+    },
+    "bank": {
+      "name": "ICICI Bank",
+      "ifsc": "ICIC0001234",
+      "account_no": "XXXX XXXX 4973"
+    },
+    "property": {
+      "type": "3BHK Apartment",
+      "address": "64/949, Nayar Ganj, Hyderabad",
+      "value": 3100000,
+      "loan_amount": 2327852
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_039\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_039\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_039\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_039\\bank_statement.pdf",
+      "employment_letter": "cases\\case_039\\employment_letter.pdf",
+      "form16": "cases\\case_039\\form16.pdf",
+      "utility_bill": "cases\\case_039\\utility_bill.pdf",
+      "property_agreement": "cases\\case_039\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_040",
+    "applicant": {
+      "name": "Avni Borde",
+      "age": 25,
+      "pan": "MXBSD1037O",
+      "city": "Bengaluru",
+      "phone": "06152681689",
+      "email": "aadhya33@example.org"
+    },
+    "employer": {
+      "name": "Infosys Limited",
+      "cin": "L85110KA1981PLC013341",
+      "city": "Bengaluru",
+      "designation": "Project Manager",
+      "department": "Delivery",
+      "join_date": "2017-04-06",
+      "employee_id": "EMP90114",
+      "annual_ctc": 1590000,
+      "monthly_gross": 132500,
+      "monthly_net": 116340
+    },
+    "bank": {
+      "name": "HDFC Bank",
+      "ifsc": "HDFC0001234",
+      "account_no": "XXXX XXXX 3114"
+    },
+    "property": {
+      "type": "Independent House",
+      "address": "31/60, Dave, Bengaluru",
+      "value": 4800000,
+      "loan_amount": 3472004
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_040\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_040\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_040\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_040\\bank_statement.pdf",
+      "employment_letter": "cases\\case_040\\employment_letter.pdf",
+      "form16": "cases\\case_040\\form16.pdf",
+      "utility_bill": "cases\\case_040\\utility_bill.pdf",
+      "property_agreement": "cases\\case_040\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_041",
+    "applicant": {
+      "name": "Aayush Batta",
+      "age": 39,
+      "pan": "KTFHE7995R",
+      "city": "Bengaluru",
+      "phone": "00561418457",
+      "email": "pathakdiya@example.com"
+    },
+    "employer": {
+      "name": "Tech Mahindra Limited",
+      "cin": "L64200MH1986PLC041953",
+      "city": "Pune",
+      "designation": "Software Engineer",
+      "department": "Engineering",
+      "join_date": "2023-12-24",
+      "employee_id": "EMP40107",
+      "annual_ctc": 860000,
+      "monthly_gross": 71666,
+      "monthly_net": 63294
+    },
+    "bank": {
+      "name": "HDFC Bank",
+      "ifsc": "HDFC0001234",
+      "account_no": "XXXX XXXX 7054"
+    },
+    "property": {
+      "type": "2BHK Apartment",
+      "address": "359\nGole Zila, Bengaluru",
+      "value": 4400000,
+      "loan_amount": 3422089
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_041\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_041\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_041\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_041\\bank_statement.pdf",
+      "employment_letter": "cases\\case_041\\employment_letter.pdf",
+      "form16": "cases\\case_041\\form16.pdf",
+      "utility_bill": "cases\\case_041\\utility_bill.pdf",
+      "property_agreement": "cases\\case_041\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_042",
+    "applicant": {
+      "name": "Farhan Ravel",
+      "age": 48,
+      "pan": "QHBWG9643U",
+      "city": "Mumbai",
+      "phone": "08998731361",
+      "email": "prabhusneha@example.org"
+    },
+    "employer": {
+      "name": "Wipro Technologies Pvt. Ltd.",
+      "cin": "U72200KA1945C000221",
+      "city": "Bengaluru",
+      "designation": "Business Analyst",
+      "department": "Consulting",
+      "join_date": "2020-03-12",
+      "employee_id": "EMP52769",
+      "annual_ctc": 1230000,
+      "monthly_gross": 102500,
+      "monthly_net": 90180
+    },
+    "bank": {
+      "name": "Kotak Mahindra Bank",
+      "ifsc": "KKBK0001234",
+      "account_no": "XXXX XXXX 1797"
+    },
+    "property": {
+      "type": "3BHK Apartment",
+      "address": "06/466\nBali Chowk, Mumbai",
+      "value": 7400000,
+      "loan_amount": 5276344
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_042\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_042\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_042\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_042\\bank_statement.pdf",
+      "employment_letter": "cases\\case_042\\employment_letter.pdf",
+      "form16": "cases\\case_042\\form16.pdf",
+      "utility_bill": "cases\\case_042\\utility_bill.pdf",
+      "gift_letter": "cases\\case_042\\gift_letter.pdf",
+      "property_agreement": "cases\\case_042\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_043",
+    "applicant": {
+      "name": "Gayathri Shroff",
+      "age": 45,
+      "pan": "GDHZB7558U",
+      "city": "Chennai",
+      "phone": "06352535369",
+      "email": "bavapatrick@example.com"
+    },
+    "employer": {
+      "name": "Cognizant Technology Solutions",
+      "cin": "U72200TN1994PLC031108",
+      "city": "Chennai",
+      "designation": "Senior Data Analyst",
+      "department": "Analytics",
+      "join_date": "2023-07-02",
+      "employee_id": "EMP99903",
+      "annual_ctc": 1050000,
+      "monthly_gross": 87500,
+      "monthly_net": 77100
+    },
+    "bank": {
+      "name": "State Bank of India",
+      "ifsc": "SBIN0001234",
+      "account_no": "XXXX XXXX 7107"
+    },
+    "property": {
+      "type": "Row House",
+      "address": "31/22, Bansal Zila, Chennai",
+      "value": 9250000,
+      "loan_amount": 7270675
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_043\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_043\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_043\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_043\\bank_statement.pdf",
+      "employment_letter": "cases\\case_043\\employment_letter.pdf",
+      "form16": "cases\\case_043\\form16.pdf",
+      "utility_bill": "cases\\case_043\\utility_bill.pdf",
+      "gift_letter": "cases\\case_043\\gift_letter.pdf",
+      "property_agreement": "cases\\case_043\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_044",
+    "applicant": {
+      "name": "Samarth Grover",
+      "age": 47,
+      "pan": "HSCMK4768H",
+      "city": "Delhi",
+      "phone": "+911402668680",
+      "email": "ayushthakur@example.com"
+    },
+    "employer": {
+      "name": "Persistent Systems Limited",
+      "cin": "L72300PN1990PLC056696",
+      "city": "Pune",
+      "designation": "Senior Software Engineer",
+      "department": "Engineering",
+      "join_date": "2023-12-27",
+      "employee_id": "EMP82602",
+      "annual_ctc": 1390000,
+      "monthly_gross": 115833,
+      "monthly_net": 101808
+    },
+    "bank": {
+      "name": "HDFC Bank",
+      "ifsc": "HDFC0001234",
+      "account_no": "XXXX XXXX 1312"
+    },
+    "property": {
+      "type": "Resale Flat",
+      "address": "99/170, Desai Chowk, Delhi",
+      "value": 9300000,
+      "loan_amount": 7108371
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_044\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_044\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_044\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_044\\bank_statement.pdf",
+      "employment_letter": "cases\\case_044\\employment_letter.pdf",
+      "form16": "cases\\case_044\\form16.pdf",
+      "utility_bill": "cases\\case_044\\utility_bill.pdf",
+      "gift_letter": "cases\\case_044\\gift_letter.pdf",
+      "property_agreement": "cases\\case_044\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_045",
+    "applicant": {
+      "name": "Nidhi Comar",
+      "age": 25,
+      "pan": "ZJKOV1635Y",
+      "city": "Ahmedabad",
+      "phone": "+919780225091",
+      "email": "jdora@example.org"
+    },
+    "employer": {
+      "name": "Tech Mahindra Limited",
+      "cin": "L64200MH1986PLC041953",
+      "city": "Pune",
+      "designation": "Project Manager",
+      "department": "Delivery",
+      "join_date": "2025-04-13",
+      "employee_id": "EMP97475",
+      "annual_ctc": 1950000,
+      "monthly_gross": 162500,
+      "monthly_net": 142500
+    },
+    "bank": {
+      "name": "Axis Bank",
+      "ifsc": "UTIB0001234",
+      "account_no": "XXXX XXXX 8427"
+    },
+    "property": {
+      "type": "Independent House",
+      "address": "49/136\nDube Path, Ahmedabad",
+      "value": 11900000,
+      "loan_amount": 8573414
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_045\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_045\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_045\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_045\\bank_statement.pdf",
+      "employment_letter": "cases\\case_045\\employment_letter.pdf",
+      "form16": "cases\\case_045\\form16.pdf",
+      "utility_bill": "cases\\case_045\\utility_bill.pdf",
+      "property_agreement": "cases\\case_045\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_046",
+    "applicant": {
+      "name": "Nirja Suresh",
+      "age": 35,
+      "pan": "OMGHU1433U",
+      "city": "Chennai",
+      "phone": "1956349160",
+      "email": "mitraqabil@example.com"
+    },
+    "employer": {
+      "name": "Persistent Systems Limited",
+      "cin": "L72300PN1990PLC056696",
+      "city": "Pune",
+      "designation": "Project Manager",
+      "department": "Delivery",
+      "join_date": "2021-04-23",
+      "employee_id": "EMP89405",
+      "annual_ctc": 1370000,
+      "monthly_gross": 114166,
+      "monthly_net": 100354
+    },
+    "bank": {
+      "name": "Axis Bank",
+      "ifsc": "UTIB0001234",
+      "account_no": "XXXX XXXX 9728"
+    },
+    "property": {
+      "type": "3BHK Apartment",
+      "address": "48/51\nJohal Road, Chennai",
+      "value": 11950000,
+      "loan_amount": 9468064
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_046\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_046\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_046\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_046\\bank_statement.pdf",
+      "employment_letter": "cases\\case_046\\employment_letter.pdf",
+      "form16": "cases\\case_046\\form16.pdf",
+      "utility_bill": "cases\\case_046\\utility_bill.pdf",
+      "property_agreement": "cases\\case_046\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_047",
+    "applicant": {
+      "name": "Owen Kara",
+      "age": 32,
+      "pan": "JRLAD3667W",
+      "city": "Ahmedabad",
+      "phone": "04434509993",
+      "email": "vbhattacharyya@example.net"
+    },
+    "employer": {
+      "name": "Tech Mahindra Limited",
+      "cin": "L64200MH1986PLC041953",
+      "city": "Pune",
+      "designation": "Technical Lead",
+      "department": "Engineering",
+      "join_date": "2022-11-14",
+      "employee_id": "EMP65481",
+      "annual_ctc": 1230000,
+      "monthly_gross": 102500,
+      "monthly_net": 90180
+    },
+    "bank": {
+      "name": "State Bank of India",
+      "ifsc": "SBIN0001234",
+      "account_no": "XXXX XXXX 5259"
+    },
+    "property": {
+      "type": "Resale Flat",
+      "address": "63/362, Tank Road, Ahmedabad",
+      "value": 10900000,
+      "loan_amount": 7822346
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_047\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_047\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_047\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_047\\bank_statement.pdf",
+      "employment_letter": "cases\\case_047\\employment_letter.pdf",
+      "form16": "cases\\case_047\\form16.pdf",
+      "utility_bill": "cases\\case_047\\utility_bill.pdf",
+      "gift_letter": "cases\\case_047\\gift_letter.pdf",
+      "property_agreement": "cases\\case_047\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_048",
+    "applicant": {
+      "name": "Bhavani Narasimhan",
+      "age": 50,
+      "pan": "XXPJC3143I",
+      "city": "Ahmedabad",
+      "phone": "+912312665059",
+      "email": "sathvikghosh@example.net"
+    },
+    "employer": {
+      "name": "Tech Mahindra Limited",
+      "cin": "L64200MH1986PLC041953",
+      "city": "Pune",
+      "designation": "Business Analyst",
+      "department": "Consulting",
+      "join_date": "2020-01-03",
+      "employee_id": "EMP83801",
+      "annual_ctc": 890000,
+      "monthly_gross": 74166,
+      "monthly_net": 65474
+    },
+    "bank": {
+      "name": "HDFC Bank",
+      "ifsc": "HDFC0001234",
+      "account_no": "XXXX XXXX 9632"
+    },
+    "property": {
+      "type": "Resale Flat",
+      "address": "71/44, Muni Circle, Ahmedabad",
+      "value": 13250000,
+      "loan_amount": 9471812
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_048\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_048\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_048\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_048\\bank_statement.pdf",
+      "employment_letter": "cases\\case_048\\employment_letter.pdf",
+      "form16": "cases\\case_048\\form16.pdf",
+      "utility_bill": "cases\\case_048\\utility_bill.pdf",
+      "gift_letter": "cases\\case_048\\gift_letter.pdf",
+      "property_agreement": "cases\\case_048\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_049",
+    "applicant": {
+      "name": "Raagini Bhatt",
+      "age": 36,
+      "pan": "UUVQH7611T",
+      "city": "Kolkata",
+      "phone": "9665961035",
+      "email": "arjunbose@example.net"
+    },
+    "employer": {
+      "name": "Cognizant Technology Solutions",
+      "cin": "U72200TN1994PLC031108",
+      "city": "Chennai",
+      "designation": "Technical Lead",
+      "department": "Engineering",
+      "join_date": "2016-03-02",
+      "employee_id": "EMP74511",
+      "annual_ctc": 1570000,
+      "monthly_gross": 130833,
+      "monthly_net": 114888
+    },
+    "bank": {
+      "name": "Axis Bank",
+      "ifsc": "UTIB0001234",
+      "account_no": "XXXX XXXX 3082"
+    },
+    "property": {
+      "type": "3BHK Apartment",
+      "address": "H.No. 659\nNanda Marg, Kolkata",
+      "value": 11600000,
+      "loan_amount": 8675350
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_049\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_049\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_049\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_049\\bank_statement.pdf",
+      "employment_letter": "cases\\case_049\\employment_letter.pdf",
+      "form16": "cases\\case_049\\form16.pdf",
+      "utility_bill": "cases\\case_049\\utility_bill.pdf",
+      "property_agreement": "cases\\case_049\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_050",
+    "applicant": {
+      "name": "Gavin Dave",
+      "age": 45,
+      "pan": "EAUPG7791B",
+      "city": "Chennai",
+      "phone": "05340852920",
+      "email": "bajajkevin@example.org"
+    },
+    "employer": {
+      "name": "Persistent Systems Limited",
+      "cin": "L72300PN1990PLC056696",
+      "city": "Pune",
+      "designation": "Product Manager",
+      "department": "Product",
+      "join_date": "2022-01-04",
+      "employee_id": "EMP58887",
+      "annual_ctc": 1510000,
+      "monthly_gross": 125833,
+      "monthly_net": 110528
+    },
+    "bank": {
+      "name": "Kotak Mahindra Bank",
+      "ifsc": "KKBK0001234",
+      "account_no": "XXXX XXXX 5137"
+    },
+    "property": {
+      "type": "2BHK Apartment",
+      "address": "H.No. 448, Munshi Marg, Chennai",
+      "value": 9650000,
+      "loan_amount": 6765676
+    },
+    "is_tampered": false,
+    "tamper_types": [],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_050\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_050\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_050\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_050\\bank_statement.pdf",
+      "employment_letter": "cases\\case_050\\employment_letter.pdf",
+      "form16": "cases\\case_050\\form16.pdf",
+      "utility_bill": "cases\\case_050\\utility_bill.pdf",
+      "gift_letter": "cases\\case_050\\gift_letter.pdf",
+      "property_agreement": "cases\\case_050\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_051",
+    "applicant": {
+      "name": "Isaiah Bajwa",
+      "age": 30,
+      "pan": "GJROY4462Z",
+      "city": "Hyderabad",
+      "phone": "2692029746",
+      "email": "swamyjagvi@example.net"
+    },
+    "employer": {
+      "name": "Cognizant Technology Solutions",
+      "cin": "U72200TN1994PLC031108",
+      "city": "Chennai",
+      "designation": "Project Manager",
+      "department": "Delivery",
+      "join_date": "2018-03-21",
+      "employee_id": "EMP59018",
+      "annual_ctc": 1520000,
+      "monthly_gross": 126666,
+      "monthly_net": 111254
+    },
+    "bank": {
+      "name": "HDFC Bank",
+      "ifsc": "HDFC0001234",
+      "account_no": "XXXX XXXX 0197"
+    },
+    "property": {
+      "type": "2BHK Apartment",
+      "address": "211\nDasgupta Marg, Hyderabad",
+      "value": 6150000,
+      "loan_amount": 4120417
+    },
+    "is_tampered": true,
+    "tamper_types": [
+      "ifsc_account_mismatch"
+    ],
+    "fraud_notes": [
+      "ifsc_account_mismatch: IFSC on payslip (HDFC0001234) ≠ IFSC on bank statement (ICIC0009999). Statement belongs to a different account."
+    ],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_051\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_051\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_051\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_051\\bank_statement.pdf",
+      "employment_letter": "cases\\case_051\\employment_letter.pdf",
+      "form16": "cases\\case_051\\form16.pdf",
+      "utility_bill": "cases\\case_051\\utility_bill.pdf",
+      "property_agreement": "cases\\case_051\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_052",
+    "applicant": {
+      "name": "Lohit Reddy",
+      "age": 28,
+      "pan": "RSZFR1667W",
+      "city": "Kolkata",
+      "phone": "+912628384878",
+      "email": "dalajaravi@example.net"
+    },
+    "employer": {
+      "name": "Mphasis Limited",
+      "cin": "L30007KA2000PLC025294",
+      "city": "Bengaluru",
+      "designation": "Product Manager",
+      "department": "Product",
+      "join_date": "2017-08-15",
+      "employee_id": "EMP40308",
+      "annual_ctc": 1000000,
+      "monthly_gross": 83333,
+      "monthly_net": 72000
+    },
+    "bank": {
+      "name": "Kotak Mahindra Bank",
+      "ifsc": "KKBK0001234",
+      "account_no": "XXXX XXXX 6279"
+    },
+    "property": {
+      "type": "2BHK Apartment",
+      "address": "H.No. 10\nBal Ganj, Kolkata",
+      "value": 14350000,
+      "loan_amount": 9752956
+    },
+    "is_tampered": true,
+    "tamper_types": [
+      "salary_cross_doc_mismatch"
+    ],
+    "fraud_notes": [
+      "salary_cross_doc_mismatch: Payslip gross ₹1,44,000 vs bank salary credit ₹72,000 vs employment letter implied monthly ₹83,333. Payslips are inflated."
+    ],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_052\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_052\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_052\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_052\\bank_statement.pdf",
+      "employment_letter": "cases\\case_052\\employment_letter.pdf",
+      "form16": "cases\\case_052\\form16.pdf",
+      "utility_bill": "cases\\case_052\\utility_bill.pdf",
+      "property_agreement": "cases\\case_052\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_053",
+    "applicant": {
+      "name": "Osha Nayak",
+      "age": 47,
+      "pan": "WCVWV7330M",
+      "city": "Ahmedabad",
+      "phone": "8808072069",
+      "email": "planka@example.com"
+    },
+    "employer": {
+      "name": "Infosys Limited",
+      "cin": "L85110KA1981PLC013341",
+      "city": "Bengaluru",
+      "designation": "Senior Software Engineer",
+      "department": "Engineering",
+      "join_date": "2016-05-01",
+      "employee_id": "EMP12671",
+      "annual_ctc": 1100000,
+      "monthly_gross": 91666,
+      "monthly_net": 80734
+    },
+    "bank": {
+      "name": "ICICI Bank",
+      "ifsc": "ICIC0001234",
+      "account_no": "XXXX XXXX 0823"
+    },
+    "property": {
+      "type": "2BHK Apartment",
+      "address": "35\nNath Circle, Ahmedabad",
+      "value": 8650000,
+      "loan_amount": 6573571
+    },
+    "is_tampered": true,
+    "tamper_types": [
+      "bank_date_range_fabricated"
+    ],
+    "fraud_notes": [
+      "bank_date_range_fabricated: Statement header says '01-Oct-2025 to 31-Mar-2026' but all transactions are Jan–Mar 2026 only. Oct–Dec 2025 records were stripped."
+    ],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_053\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_053\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_053\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_053\\bank_statement.pdf",
+      "employment_letter": "cases\\case_053\\employment_letter.pdf",
+      "form16": "cases\\case_053\\form16.pdf",
+      "utility_bill": "cases\\case_053\\utility_bill.pdf",
+      "property_agreement": "cases\\case_053\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_054",
+    "applicant": {
+      "name": "Agastya Prabhakar",
+      "age": 41,
+      "pan": "KOGIO4069N",
+      "city": "Pune",
+      "phone": "02983106099",
+      "email": "zaid17@example.org"
+    },
+    "employer": {
+      "name": "Tech Mahindra Limited",
+      "cin": "L64200MH1986PLC041953",
+      "city": "Pune",
+      "designation": "Product Manager",
+      "department": "Product",
+      "join_date": "2016-07-26",
+      "employee_id": "EMP18146",
+      "annual_ctc": 1700000,
+      "monthly_gross": 141666,
+      "monthly_net": 124334
+    },
+    "bank": {
+      "name": "ICICI Bank",
+      "ifsc": "ICIC0001234",
+      "account_no": "XXXX XXXX 8098"
+    },
+    "property": {
+      "type": "2BHK Apartment",
+      "address": "15/912\nSoman Ganj, Pune",
+      "value": 5900000,
+      "loan_amount": 4443081
+    },
+    "is_tampered": true,
+    "tamper_types": [
+      "bank_address_mismatch"
+    ],
+    "fraud_notes": [
+      "bank_address_mismatch: IFSC 'HDFC0001234' belongs to HDFC Bank but the statement header says 'State Bank of India, Delhi Main Branch'. IFSC prefix and bank name are inconsistent."
+    ],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_054\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_054\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_054\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_054\\bank_statement.pdf",
+      "employment_letter": "cases\\case_054\\employment_letter.pdf",
+      "form16": "cases\\case_054\\form16.pdf",
+      "utility_bill": "cases\\case_054\\utility_bill.pdf",
+      "property_agreement": "cases\\case_054\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_055",
+    "applicant": {
+      "name": "Aarini Parekh",
+      "age": 47,
+      "pan": "MVWNV2212G",
+      "city": "Pune",
+      "phone": "01589504913",
+      "email": "skaran@example.com"
+    },
+    "employer": {
+      "name": "Tata Consultancy Services Ltd",
+      "cin": "L22210MH1995PLC084781",
+      "city": "Mumbai",
+      "designation": "Business Analyst",
+      "department": "Consulting",
+      "join_date": "2017-04-25",
+      "employee_id": "EMP53138",
+      "annual_ctc": 1300000,
+      "monthly_gross": 108333,
+      "monthly_net": 95268
+    },
+    "bank": {
+      "name": "HDFC Bank",
+      "ifsc": "HDFC0001234",
+      "account_no": "XXXX XXXX 1123"
+    },
+    "property": {
+      "type": "2BHK Apartment",
+      "address": "H.No. 72, Sidhu Chowk, Pune",
+      "value": 4600000,
+      "loan_amount": 3603012
+    },
+    "is_tampered": true,
+    "tamper_types": [
+      "bank_arithmetic_error"
+    ],
+    "fraud_notes": [
+      "bank_arithmetic_error: Row 5's running balance is inflated by ₹1,00,000. Prev balance + credit − debit ≠ stated balance. Row was manually edited."
+    ],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_055\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_055\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_055\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_055\\bank_statement.pdf",
+      "employment_letter": "cases\\case_055\\employment_letter.pdf",
+      "form16": "cases\\case_055\\form16.pdf",
+      "utility_bill": "cases\\case_055\\utility_bill.pdf",
+      "property_agreement": "cases\\case_055\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_056",
+    "applicant": {
+      "name": "Unni Sekhon",
+      "age": 39,
+      "pan": "UNBAF7025O",
+      "city": "Pune",
+      "phone": "8571610239",
+      "email": "darshsalvi@example.net"
+    },
+    "employer": {
+      "name": "Wipro Technologies Pvt. Ltd.",
+      "cin": "U72200KA1945C000221",
+      "city": "Bengaluru",
+      "designation": "Accounts Manager",
+      "department": "Finance",
+      "join_date": "2018-10-14",
+      "employee_id": "EMP75092",
+      "annual_ctc": 1000000,
+      "monthly_gross": 83333,
+      "monthly_net": 76801
+    },
+    "bank": {
+      "name": "Axis Bank",
+      "ifsc": "UTIB0001234",
+      "account_no": "XXXX XXXX 9415"
+    },
+    "property": {
+      "type": "2BHK Apartment",
+      "address": "79/896\nNath Marg, Pune",
+      "value": 11200000,
+      "loan_amount": 8837347
+    },
+    "is_tampered": true,
+    "tamper_types": [
+      "salary_structure_low_basic"
+    ],
+    "fraud_notes": [
+      "salary_structure_low_basic: Basic is 10% of gross (should be 30–50%). HRA is 70% of gross (700% of basic, legal max = 50% of basic). PF obligation minimised; tax-free income maximised illegally."
+    ],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_056\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_056\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_056\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_056\\bank_statement.pdf",
+      "employment_letter": "cases\\case_056\\employment_letter.pdf",
+      "form16": "cases\\case_056\\form16.pdf",
+      "utility_bill": "cases\\case_056\\utility_bill.pdf",
+      "property_agreement": "cases\\case_056\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_057",
+    "applicant": {
+      "name": "Tejas Bal",
+      "age": 39,
+      "pan": "MJXIB1819N",
+      "city": "Pune",
+      "phone": "+918140396514",
+      "email": "xgala@example.org"
+    },
+    "employer": {
+      "name": "Mphasis Limited",
+      "cin": "L30007KA2000PLC025294",
+      "city": "Bengaluru",
+      "designation": "Senior Data Analyst",
+      "department": "Analytics",
+      "join_date": "2015-09-21",
+      "employee_id": "EMP80909",
+      "annual_ctc": 720000,
+      "monthly_gross": 60000,
+      "monthly_net": 52134
+    },
+    "bank": {
+      "name": "Axis Bank",
+      "ifsc": "UTIB0001234",
+      "account_no": "XXXX XXXX 3393"
+    },
+    "property": {
+      "type": "2BHK Apartment",
+      "address": "H.No. 39, Srinivas Circle, Pune",
+      "value": 8800000,
+      "loan_amount": 5974442
+    },
+    "is_tampered": true,
+    "tamper_types": [
+      "hra_exceeds_basic"
+    ],
+    "fraud_notes": [
+      "hra_exceeds_basic: HRA ₹15,000 is 75% of basic ₹20,000. Legal max exemption under Sec 10(13A) for metro = 50% of basic. Excess HRA claimed to reduce taxable income."
+    ],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_057\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_057\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_057\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_057\\bank_statement.pdf",
+      "employment_letter": "cases\\case_057\\employment_letter.pdf",
+      "form16": "cases\\case_057\\form16.pdf",
+      "utility_bill": "cases\\case_057\\utility_bill.pdf",
+      "property_agreement": "cases\\case_057\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_058",
+    "applicant": {
+      "name": "Ishaan Mann",
+      "age": 38,
+      "pan": "ZUFOS1928A",
+      "city": "Hyderabad",
+      "phone": "+917063465907",
+      "email": "chandraprisha@example.com"
+    },
+    "employer": {
+      "name": "HCL Technologies Ltd",
+      "cin": "L74140DL1994PLC055219",
+      "city": "Noida",
+      "designation": "Business Analyst",
+      "department": "Consulting",
+      "join_date": "2022-06-01",
+      "employee_id": "EMP19264",
+      "annual_ctc": 1360000,
+      "monthly_gross": 113333,
+      "monthly_net": 99628
+    },
+    "bank": {
+      "name": "Axis Bank",
+      "ifsc": "UTIB0001234",
+      "account_no": "XXXX XXXX 3022"
+    },
+    "property": {
+      "type": "2BHK Apartment",
+      "address": "H.No. 737, Ganguly Zila, Hyderabad",
+      "value": 12150000,
+      "loan_amount": 8295988
+    },
+    "is_tampered": true,
+    "tamper_types": [
+      "extreme_backdating"
+    ],
+    "fraud_notes": [
+      "extreme_backdating: Letter dated 15-Mar-2026; join date 01-Jan-2000 (26 years gap). Actual join per payslip: 2022-06-01. Employment backdated to meet bank's vintage-of-employment criterion."
+    ],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_058\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_058\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_058\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_058\\bank_statement.pdf",
+      "employment_letter": "cases\\case_058\\employment_letter.pdf",
+      "form16": "cases\\case_058\\form16.pdf",
+      "utility_bill": "cases\\case_058\\utility_bill.pdf",
+      "property_agreement": "cases\\case_058\\property_agreement.pdf"
+    }
+  },
+  {
+    "case_id": "case_059",
+    "applicant": {
+      "name": "Falguni Issac",
+      "age": 47,
+      "pan": "EJEAN4646M",
+      "city": "Pune",
+      "phone": "+913329157218",
+      "email": "pavani69@example.com"
+    },
+    "employer": {
+      "name": "Tech Mahindra Limited",
+      "cin": "L64200MH1986PLC041953",
+      "city": "Pune",
+      "designation": "Technical Lead",
+      "department": "Engineering",
+      "join_date": "2015-03-30",
+      "employee_id": "EMP86573",
+      "annual_ctc": 1690000,
+      "monthly_gross": 140833,
+      "monthly_net": 123608
+    },
+    "bank": {
+      "name": "Kotak Mahindra Bank",
+      "ifsc": "KKBK0001234",
+      "account_no": "XXXX XXXX 2842"
+    },
+    "property": {
+      "type": "2BHK Apartment",
+      "address": "H.No. 67\nAnne Marg, Pune",
+      "value": 9550000,
+      "loan_amount": 7419321
+    },
+    "is_tampered": true,
+    "tamper_types": [
+      "pan_mismatch"
+    ],
+    "fraud_notes": [
+      "pan_mismatch: Payslip PAN = EJEAN4646M; Form16 PAN = WBFCJ5615J. Identity fraud — Form 16 belongs to a different individual."
+    ],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_059\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_059\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_059\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_059\\bank_statement.pdf",
+      "employment_letter": "cases\\case_059\\employment_letter.pdf",
+      "utility_bill": "cases\\case_059\\utility_bill.pdf",
+      "property_agreement": "cases\\case_059\\property_agreement.pdf",
+      "form16": "cases\\case_059\\form16.pdf"
+    }
+  },
+  {
+    "case_id": "case_060",
+    "applicant": {
+      "name": "Ekta Johal",
+      "age": 33,
+      "pan": "SMDNL7899B",
+      "city": "Hyderabad",
+      "phone": "09143873296",
+      "email": "samakshmenon@example.com"
+    },
+    "employer": {
+      "name": "Cognizant Technology Solutions",
+      "cin": "U72200TN1994PLC031108",
+      "city": "Chennai",
+      "designation": "Project Manager",
+      "department": "Delivery",
+      "join_date": "2016-09-17",
+      "employee_id": "EMP79251",
+      "annual_ctc": 1410000,
+      "monthly_gross": 117500,
+      "monthly_net": 103260
+    },
+    "bank": {
+      "name": "HDFC Bank",
+      "ifsc": "HDFC0001234",
+      "account_no": "XXXX XXXX 3064"
+    },
+    "property": {
+      "type": "2BHK Apartment",
+      "address": "78/46, Palla Street, Hyderabad",
+      "value": 2000000,
+      "loan_amount": 1600000
+    },
+    "is_tampered": true,
+    "tamper_types": [
+      "gift_letter_loan_disguise"
+    ],
+    "fraud_notes": [
+      "gift_letter_loan_disguise: Gift ₹1,800,000 = 90% of property ₹2,000,000. Same amount appears as large NEFT inflow in bank statement — possible undisclosed back-channel loan."
+    ],
+    "documents": {
+      "payslip_2026_jan": "cases\\case_060\\payslip_2026_jan.pdf",
+      "payslip_2026_feb": "cases\\case_060\\payslip_2026_feb.pdf",
+      "payslip_2026_mar": "cases\\case_060\\payslip_2026_mar.pdf",
+      "bank_statement": "cases\\case_060\\bank_statement.pdf",
+      "gift_letter": "cases\\case_060\\gift_letter.pdf",
+      "employment_letter": "cases\\case_060\\employment_letter.pdf",
+      "form16": "cases\\case_060\\form16.pdf",
+      "utility_bill": "cases\\case_060\\utility_bill.pdf",
+      "property_agreement": "cases\\case_060\\property_agreement.pdf"
+    }
+  }
+]
