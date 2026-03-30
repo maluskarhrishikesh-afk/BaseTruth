@@ -118,6 +118,22 @@
 - [x] `store.py — update_entity()`: now correctly stamps `updated_at` on each entity edit
 - [x] `reporting/pdf.py`: critical crash fixed — `pdf.multi_cell(0, ...)` after `pdf.cell(5, ...)` produced zero/negative remaining width, causing ALL PDF reports to fail silently; fixed to `set_x(l_margin)` and explicit `page_width` multi_cell call
 
+
+### Phase 9 — Entity-Linked Identity Verification
+
+- [x] `identity_checks` database table added (`src/basetruth/db.py`)
+  - Stores face match and Video KYC results with full audit trail
+  - Linked to `entities` via FK (one entity → many identity checks)
+- [x] `save_identity_check()` and `get_entity_identity_checks()` added to `store.py`
+- [x] `render_identity_check_pdf()` added to `reporting/pdf.py`
+  - Professional PDF report for face match and Video KYC results
+  - Same design language as existing scan reports
+- [x] Identity Verification page: entity selector + DB persistence + PDF download
+- [x] Video KYC page: entity selector + DB persistence + PDF download
+- [x] Records page: 360-degree entity view showing identity checks alongside document scans
+- [x] Database viewer updated to include `identity_checks` table
+- [x] Documentation updated (DATABASE.md, IDENTITY_VERIFICATION.md, TRACKER.md, ROADMAP.md)
+
 ## Immediate Next Milestones
 
 1. Cross-document reconciliation engine (`src/basetruth/analysis/cross_doc.py`)

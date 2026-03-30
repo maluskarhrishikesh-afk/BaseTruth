@@ -1,155 +1,19 @@
-Can we also implement video KYC?
+COMPLETED: Entity-Linked Identity Verification Integration
 
-Yes — you can absolutely implement Video KYC, and your current stack (OpenCV + Face models) is actually perfect for it 🔥
+Requirements (all completed):
+1) Face matching - NOW persisted to identity_checks DB table, entity-linked, PDF report generated
+2) Video KYC - NOW persisted to identity_checks DB table, entity-linked, PDF report generated
+3) Document scanning - Already entity-linked via scans table
 
-But let’s be practical — Video KYC is not just “record a video”. It’s a real-time fraud detection system.
+Integration:
+- All three capabilities now linked through the ENTITIES table
+- identity_checks table stores face match and Video KYC results
+- PDF reports generated for all verification types
+- Records page shows 360-degree entity view (documents + identity checks)
+- Database viewer includes identity_checks table
 
-🧠 What is Video KYC (in simple terms)
-
-👉 Verify a user’s identity using:
-
-Live video 🎥
-Face matching 🧑
-Liveness checks 👀
-Document verification 🪪
-🏗️ High-level architecture
-User Camera (Mobile/Web)
-        ↓
-Video Stream
-        ↓
-Frame-by-frame Processing (OpenCV)
-        ↓
-Face Detection (RetinaFace)
-        ↓
-Face Verification (ArcFace)
-        ↓
-Liveness Detection
-        ↓
-Fraud Detection Engine
-        ↓
-KYC Result (Approved / Rejected)
-🔑 Core components you MUST build
-🎥 1. Video Capture
-Options:
-Web → WebRTC
-Mobile → Camera API
-Backend → OpenCV VideoCapture
-
-👉 You process frames (images), not full video
-
-🧑 2. Face Detection (Real-time)
-
-Use:
-👉 RetinaFace
-
-Check:
-
-Face present?
-Multiple faces? → ❌ Fraud
-Face clarity?
-🔄 3. Face Matching
-
-Compare:
-
-Live face (video)
-ID document face
-
-👉 Using ArcFace
-
-👁️ 4. Liveness Detection (CRITICAL)
-
-This is what prevents fraud like:
-
-Photo shown to camera
-Video replay
-Deepfake
-🔥 Types of liveness checks
-🟢 Passive (no user action)
-Eye blink detection
-Head movement
-Texture analysis
-🔵 Active (best for security)
-
-Ask user to:
-
-Blink
-Turn head left/right
-Smile
-"Please blink your eyes"
-"Turn your head to the right"
-
-👉 Hard to fake
-
-🧾 5. Document Verification
-Capture ID during video
-Use OpenCV:
-Edge detection
-Perspective transform
-OCR (Tesseract)
-🕵️ 6. Fraud Detection Signals
-
-You should check:
-
-🚫 Face-related
-Face mismatch
-Multiple faces
-No face
-🚫 Liveness
-No blink
-Static face → likely photo
-🚫 Document
-Tampered image
-Low quality / blur
-⚙️ 7. Tech stack (FULLY LOCAL possible)
-🔹 Vision
-OpenCV
-🔹 Face
-RetinaFace (detection)
-ArcFace (matching)
-🔹 Liveness
-Custom logic OR pretrained models
-🔹 OCR
-Tesseract
-🔹 Backend
-Python / Java (Spring Boot)
-⚡ 8. Real-time flow (important)
-Video → Frames (10–15 FPS)
-
-For each frame:
-   ↓
-Detect face
-   ↓
-Check liveness
-   ↓
-Extract embedding
-   ↓
-Compare with ID
-
-Aggregate results → Final decision
-🔥 9. Challenges (real-world)
-
-You must handle:
-
-Poor lighting 🌙
-Low-quality cameras 📱
-Network lag 🌐
-Fake attempts 🎭
-🧠 10. Smart MVP strategy (don’t overbuild)
-Phase 1 (Simple)
-Capture video
-Detect face
-Match with ID
-Phase 2
-Add liveness (blink detection)
-Phase 3
-Add fraud scoring engine
-🧠 Simple analogy
-
-Video KYC =
-👉 “Live interview + face verification + fraud detection”
-
-🚀 Final answer
-
-✅ Yes, you can build Video KYC
-✅ Can be fully local (no cloud required)
-✅ Your current stack is perfect
+Implementation details:
+- src/basetruth/db.py: IdentityCheck ORM model
+- src/basetruth/store.py: save_identity_check(), get_entity_identity_checks()
+- src/basetruth/reporting/pdf.py: render_identity_check_pdf()
+- src/basetruth/ui/app.py: Updated Identity, Video KYC, and Records pages

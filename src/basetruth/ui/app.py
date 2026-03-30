@@ -19,6 +19,7 @@ try:
         db_table_counts,
         db_table_rows,
         get_all_entities_with_scans,
+        get_entity_identity_checks,
         get_entity_latest_pdf,
         get_entity_scans,
         get_scan_pdf,
@@ -31,6 +32,7 @@ try:
         minio_truncate_bucket,
         minio_upload,
         reset_db,
+        save_identity_check,
         search_entities,
         update_case_in_db,
         update_entity,
@@ -3091,6 +3093,27 @@ Records shows every **applicant (entity)** in the database and all the documents
     else:
         st.caption("No PDF report available yet for this entity.")
 
+    # ---- Identity Checks history -------------------------------------------
+    if _DB_IMPORTS_OK and db_available():
+        id_checks = get_entity_identity_checks(selected_ref)
+        if id_checks:
+            st.divider()
+            st.subheader("Identity Verification History")
+            import pandas as pd
+            id_df = pd.DataFrame([
+                {
+                    "Date": c["created_at"][:19] if c.get("created_at") else "-",
+                    "Type": c["check_type"].replace("_", " ").title(),
+                    "Verdict": c["verdict"],
+                    "Score": f"{c['display_score']:.1f}%" if c.get("display_score") else "-",
+                    "Match": "Yes" if c.get("is_match") else "No",
+                    "Liveness": ("Pass" if c.get("liveness_passed") else "Fail") if c["check_type"] == "video_kyc" else "-",
+                    "Document": c.get("doc_filename", ""),
+                }
+                for c in id_checks
+            ])
+            st.dataframe(id_df, hide_index=True, use_container_width=True)
+
     # ---- Edit identity fields inline --------------------------------------
     with st.expander("✏️  Edit identity details", expanded=False):
         with st.form(f"edit_entity_{selected_ref}"):
@@ -3210,22 +3233,42 @@ def _render_index_metrics() -> None:
 def _page_identity_verification() -> None:
     st.title("🧑‍💻 Identity Verification")
     st.caption("Offline face matching using OpenCV, RetinaFace, and ArcFace (ONNX) to detect identity fraud.")
-    
+
     with st.expander("ℹ️ How it works", expanded=False):
         st.markdown(
             "Upload an ID Document (e.g. Aadhaar, PAN) and a Selfie.\\n"
             "The system uses **RetinaFace** to locate the faces and facial landmarks, "
             "then uses **ArcFace** to generate identity embeddings and calculates the cosine similarity. "
-            "It runs 100% locally and offline."
+            "It runs 100% locally and offline.\\n\\n"
+            "Results are persisted to the database and linked to the selected entity."
         )
 
+    # -- Entity selector -------------------------------------------------------
+    selected_entity_ref = None
+    selected_entity_name = ""
+    if _DB_IMPORTS_OK and db_available():
+        st.subheader("0. Link to Entity (optional)")
+        entities = search_entities("", "all", limit=50)
+        if entities:
+            entity_opts = ["-- None (unlinked) --"] + [
+                f"{e['entity_ref']}  |  {e['first_name']} {e['last_name']}"
+                for e in entities
+            ]
+            sel = st.selectbox("Select entity to link this check to", entity_opts, key="fm_entity_sel")
+            if sel != entity_opts[0]:
+                idx = entity_opts.index(sel) - 1
+                selected_entity_ref = entities[idx]["entity_ref"]
+                selected_entity_name = f"{entities[idx]['first_name']} {entities[idx]['last_name']}".strip()
+        st.divider()
+
+    # -- Upload images ---------------------------------------------------------
     col1, col2 = st.columns(2)
     with col1:
-        st.subheader("ID Document")
+        st.subheader("1. ID Document")
         doc_file = st.file_uploader("Upload ID Photo", type=["jpg", "jpeg", "png", "webp"], key="doc_img")
-    
+
     with col2:
-        st.subheader("Selfie Image")
+        st.subheader("2. Selfie Image")
         selfie_file = st.file_uploader("Upload Selfie Photo", type=["jpg", "jpeg", "png", "webp"], key="selfie_img")
 
     if doc_file and selfie_file:
@@ -3240,12 +3283,12 @@ def _page_identity_verification() -> None:
             else:
                 score = result["display_score"]
                 is_match = result["match"]
-                
+
                 if is_match:
                     st.success(f"### ✅ MATCH: {score:.1f}% Confidence\\nThe faces appear to belong to the same person.")
                 else:
                     st.error(f"### 🚨 FRAUD ALERT: {score:.1f}% Confidence\\nThe faces DO NOT match.")
-                    
+
                 st.write(f"Raw Cosine Similarity: {result['confidence']:.3f} / Threshold: {result['threshold']:.2f}")
 
                 res_col1, res_col2 = st.columns(2)
@@ -3254,167 +3297,286 @@ def _page_identity_verification() -> None:
                 with res_col2:
                     st.image(result["selfie_annotated_rgb"], caption="Detected Face (Selfie)", use_container_width=True)
 
+                # -- Persist to DB + Generate PDF ----------------------------------
+                if _DB_IMPORTS_OK and db_available():
+                    db_result = {
+                        k: v for k, v in result.items()
+                        if k not in ("doc_annotated_rgb", "selfie_annotated_rgb")
+                    }
+                    for k, v in list(db_result.items()):
+                        if hasattr(v, "item"):
+                            db_result[k] = v.item()
+
+                    try:
+                        from basetruth.reporting.pdf import render_identity_check_pdf
+                        pdf_bytes = render_identity_check_pdf(
+                            check_type="face_match",
+                            result=db_result,
+                            entity_ref=selected_entity_ref or "",
+                            entity_name=selected_entity_name,
+                            doc_filename=doc_file.name,
+                            selfie_filename=selfie_file.name,
+                        )
+                    except Exception:
+                        pdf_bytes = None
+
+                    saved = save_identity_check(
+                        check_type="face_match",
+                        result=db_result,
+                        entity_ref=selected_entity_ref,
+                        doc_filename=doc_file.name,
+                        selfie_filename=selfie_file.name,
+                        pdf_bytes=pdf_bytes,
+                    )
+                    if saved:
+                        st.info(f"Result saved to database (ID: {saved['id']}, Entity: {saved.get('entity_ref', 'unlinked')})")
+                    if pdf_bytes:
+                        st.download_button(
+                            "Download Face Match Report (PDF)",
+                            data=pdf_bytes,
+                            file_name=f"face_match_report_{selected_entity_ref or 'unlinked'}.pdf",
+                            mime="application/pdf",
+                            key="fm_pdf_dl",
+                        )
+
+    # -- Previous checks for selected entity -----------------------------------
+    if selected_entity_ref and _DB_IMPORTS_OK and db_available():
+        st.divider()
+        st.subheader(f"Previous Identity Checks for {selected_entity_ref}")
+        checks = get_entity_identity_checks(selected_entity_ref)
+        face_checks = [c for c in checks if c["check_type"] == "face_match"]
+        if face_checks:
+            import pandas as pd
+            df = pd.DataFrame([
+                {
+                    "Date": c["created_at"][:19],
+                    "Verdict": c["verdict"],
+                    "Score": f"{c['display_score']:.1f}%" if c["display_score"] else "-",
+                    "Match": "Yes" if c["is_match"] else "No",
+                    "Document": c["doc_filename"],
+                    "Selfie": c["selfie_filename"],
+                }
+                for c in face_checks
+            ])
+            st.dataframe(df, hide_index=True, use_container_width=True)
+        else:
+            st.caption("No previous face match checks for this entity.")
+
 # ---------------------------------------------------------------------------
 # Video KYC Page
 # ---------------------------------------------------------------------------
 
 def _page_video_kyc() -> None:
     st.title("🎥 Video KYC (Real-Time)")
-    st.caption("Perform live liveness detection and Face Matching via WebRTC.")
-    
+    st.caption("Perform live liveness detection and face matching via webcam.")
+
     with st.expander("ℹ️ How it works", expanded=False):
         st.markdown(
-            "This interface streams your webcam to the secure BaseTruth backend. "
-            "It runs the **RetinaFace** + **ArcFace** pipeline at 15 FPS directly on the video frames. "
-            "To test Liveness Detection, simply **turn your head left and right**."
+            "This interface captures frames from your webcam and runs the "
+            "**RetinaFace** + **ArcFace** pipeline directly on each frame.\n\n"
+            "1. Upload a reference ID document so the system can extract the face embedding.\n"
+            "2. Use the camera input below to capture a live photo.\n"
+            "3. The system will detect liveness cues and compare the live face to the ID.\n\n"
+            "To test **Liveness Detection**, turn your head slightly left or right before capturing."
         )
+
+    # 0) Entity selector
+    st.session_state.setdefault("vkyc_entity_ref", None)
+    st.session_state.setdefault("vkyc_entity_name", "")
+    if _DB_IMPORTS_OK and db_available():
+        st.subheader("0. Link to Entity (optional)")
+        vk_entities = search_entities("", "all", limit=50)
+        if vk_entities:
+            vk_opts = ["-- None (unlinked) --"] + [
+                f"{e['entity_ref']}  |  {e['first_name']} {e['last_name']}"
+                for e in vk_entities
+            ]
+            vk_sel = st.selectbox("Select entity", vk_opts, key="vkyc_entity_sel")
+            if vk_sel != vk_opts[0]:
+                vk_idx = vk_opts.index(vk_sel) - 1
+                st.session_state["vkyc_entity_ref"] = vk_entities[vk_idx]["entity_ref"]
+                st.session_state["vkyc_entity_name"] = f"{vk_entities[vk_idx]['first_name']} {vk_entities[vk_idx]['last_name']}".strip()
+            else:
+                st.session_state["vkyc_entity_ref"] = None
+                st.session_state["vkyc_entity_name"] = ""
+        st.divider()
 
     # 1) Upload Reference Document
     st.subheader("1. Setup Reference ID")
-    doc_file = st.file_uploader("Upload ID Document", type=["jpg", "jpeg", "png", "webp"], key="vk_doc")
-    
-    reference_emb = None
+    doc_file = st.file_uploader(
+        "Upload ID Document", type=["jpg", "jpeg", "png", "webp"], key="vk_doc"
+    )
+
     if doc_file:
         from basetruth.vision.face import get_face_analyzer
         import numpy as np
         import cv2
-        
-        # Parse once
-        app = get_face_analyzer()
+
+        face_app = get_face_analyzer()
         nparr = np.frombuffer(doc_file.getvalue(), np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        faces = app.get(img)
-        
-        if len(faces) > 0:
-            face = max(faces, key=lambda f: (f.bbox[2]-f.bbox[0]) * (f.bbox[3]-f.bbox[1]))
-            reference_emb = face.normed_embedding
-            st.success("✅ ID Subject successfully extracted. You may begin the live stream.")
-        else:
-            st.error("❌ No face detected in ID Document.")
+        faces = face_app.get(img)
 
-    # 2) Live Stream TCP/WebSocket
+        if len(faces) > 0:
+            face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
+            st.session_state["vkyc_ref_emb"] = face.normed_embedding
+            st.success("✅ ID subject successfully extracted. You may begin the live capture.")
+        else:
+            st.error("❌ No face detected in the uploaded ID document.")
+            st.session_state.pop("vkyc_ref_emb", None)
+
+    # 2) Live Camera Capture & Processing
     st.divider()
     st.subheader("2. Live Liveness Test & Face Match")
-    
-    if reference_emb is not None:
-        # Cache the embedding in the FastAPI backend
-        import requests
-        try:
-            resp = requests.post(
-                "http://basetruth-api:8000/api/v1/kyc/session",
-                json={"embedding": reference_emb.tolist()},
-                timeout=5
-            )
-            
-            if resp.status_code == 200:
-                session_id = resp.json()["session_id"]
-                
-                # Render standard TCP/WS streamer in JS
-                st.components.v1.html(f"""
-                <style>
-                    body {{ color: white; font-family: sans-serif; text-align: center; margin: 0; padding: 0; }}
-                    #video {{ display: none; }}
-                    #canvas {{ display: none; }}
-                    #output {{ width: 100%; max-width: 600px; border-radius: 8px; border: 2px solid #555; }}
-                    .controls {{ margin-top: 10px; }}
-                    button {{ padding: 10px 20px; font-weight: bold; cursor: pointer; border-radius: 5px; border: none; }}
-                    #startBtn {{ background-color: #00CC66; color: white; }}
-                    #stopBtn {{ background-color: #CC2222; color: white; }}
-                    #status {{ margin-top: 10px; font-size: 14px; color: #aaa; }}
-                </style>
-                <div>
-                    <video id="video" autoplay playsinline></video>
-                    <canvas id="canvas"></canvas>
-                    <img id="output" alt="Waiting for stream..." />
-                    
-                    <div class="controls">
-                        <button id="startBtn">Start Live TCP Stream</button>
-                        <button id="stopBtn" disabled>Stop</button>
-                    </div>
-                    <div id="status">Status: Disconnected</div>
-                </div>
 
-                <script>
-                    const video = document.getElementById('video');
-                    const canvas = document.getElementById('canvas');
-                    const ctx = canvas.getContext('2d');
-                    const output = document.getElementById('output');
-                    const status = document.getElementById('status');
-                    
-                    let ws;
-                    let localStream;
-                    let isStreaming = false;
+    reference_emb = st.session_state.get("vkyc_ref_emb")
 
-                    document.getElementById('startBtn').addEventListener('click', async () => {{
-                        try {{
-                            localStream = await navigator.mediaDevices.getUserMedia({{ video: {{ facingMode: "user" }} }});
-                            video.srcObject = localStream;
-                            
-                            // Let the video load dimensions
-                            await new Promise(r => video.onloadedmetadata = r);
-                            
-                            // Scale down for latency
-                            canvas.width = 640; 
-                            canvas.height = Math.floor(video.videoHeight * (640 / video.videoWidth));
-                            
-                            // Connect WS
-                            // Notice: we dynamically map to window.location.hostname in case docker is remote
-                            const wsUrl = `ws://${{window.location.hostname}}:8000/ws/video_kyc/{session_id}`;
-                            ws = new WebSocket(wsUrl);
-                            
-                            ws.onopen = () => {{
-                                status.innerText = "Status: Connected (TCP WebSocket)";
-                                isStreaming = true;
-                                document.getElementById('startBtn').disabled = true;
-                                document.getElementById('stopBtn').disabled = false;
-                                sendFrame();
-                            }};
-                            
-                            ws.onmessage = (event) => {{
-                                // Draw the analyzed frame to the img tag
-                                output.src = event.data;
-                                // Automatically queue the next frame for smooth UX
-                                if (isStreaming) {{
-                                    sendFrame();
-                                }}
-                            }};
-                            
-                            ws.onerror = (e) => {{ status.innerText = "Status: TCP WebSocket Error!"; console.error(e); }};
-                            ws.onclose = () => {{ stopStream(); }};
-                            
-                        }} catch (e) {{
-                            status.innerText = "Error: Camera access denied or unavailable.";
-                            console.error(e);
-                        }}
-                    }});
-
-                    function sendFrame() {{
-                        if (!isStreaming || ws.readyState !== WebSocket.OPEN) return;
-                        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                        // Encode highly-compressed jpeg wrapper
-                        const b64 = canvas.toDataURL('image/jpeg', 0.6);
-                        ws.send(b64);
-                    }}
-
-                    function stopStream() {{
-                        isStreaming = false;
-                        if (ws) ws.close();
-                        if (localStream) {{
-                            localStream.getTracks().forEach(track => track.stop());
-                        }}
-                        status.innerText = "Status: Disconnected";
-                        document.getElementById('startBtn').disabled = false;
-                        document.getElementById('stopBtn').disabled = true;
-                    }}
-                    
-                    document.getElementById('stopBtn').addEventListener('click', stopStream);
-                </script>
-                """, height=530)
-
-        except Exception as e:
-            st.error(f"Failed to communicate with API Server: {e}")
-    else:
+    if reference_emb is None:
         st.warning("Please upload a Reference ID Document first to generate the cryptographic session.")
+        return
+
+    st.info(
+        "📸 Use the camera below to take a live photo. "
+        "For **liveness detection**, slightly turn your head left or right before capturing."
+    )
+
+    camera_photo = st.camera_input("Capture live photo", key="vkyc_camera")
+
+    if camera_photo is not None:
+        import numpy as np
+        import cv2
+
+        # Decode camera frame
+        nparr = np.frombuffer(camera_photo.getvalue(), np.uint8)
+        live_img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+        if live_img is None:
+            st.error("Failed to decode the captured image.")
+            return
+
+        with st.spinner("Running RetinaFace detection + ArcFace matching …"):
+            from basetruth.vision.video_kyc import VideoKYCProcessor
+
+            processor = VideoKYCProcessor()
+            processor.set_reference_embedding(reference_emb)
+
+            # Run the full pipeline on the captured frame
+            try:
+                faces = processor.face_app.get(live_img)
+            except Exception as exc:
+                st.error(f"Face detection failed: {exc}")
+                return
+
+            if not faces:
+                st.error("❌ No face detected in the captured frame. Please try again — make sure your face is clearly visible.")
+                return
+
+            primary = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
+            box = primary.bbox.astype(int)
+
+            # --- Liveness check ---
+            liveness_state = "Center"
+            head_turn_passed = False
+            if primary.kps is not None:
+                left_eye_x = primary.kps[0][0]
+                right_eye_x = primary.kps[1][0]
+                nose_x = primary.kps[2][0]
+                dist_left = abs(nose_x - left_eye_x)
+                dist_right = max(abs(right_eye_x - nose_x), 1.0)
+                ratio = dist_left / dist_right
+                if ratio > 1.6:
+                    liveness_state = "Turned Right"
+                    head_turn_passed = True
+                elif ratio < 0.6:
+                    liveness_state = "Turned Left"
+                    head_turn_passed = True
+
+            # --- Identity matching ---
+            emb = primary.normed_embedding
+            sim = float(np.dot(emb, reference_emb))
+            score = min(max((sim - (-0.5)) / (1.0 - (-0.5)) * 100, 0), 100)
+            is_match = sim >= 0.40
+
+            # --- Annotate the image ---
+            color = (0, 255, 0) if is_match else (0, 0, 255)
+            label = f"VERIFIED: {score:.1f}%" if is_match else f"MISMATCH: {score:.1f}%"
+            cv2.rectangle(live_img, (box[0], box[1]), (box[2], box[3]), color, 3)
+            cv2.putText(live_img, label, (box[0], box[1] - 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+            live_txt = f"Liveness: {liveness_state} {'(PASS)' if head_turn_passed else ''}"
+            cv2.putText(live_img, live_txt, (box[0], box[1] - 7),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+
+            if primary.kps is not None:
+                for p in primary.kps.astype(int):
+                    cv2.circle(live_img, (p[0], p[1]), 3, (255, 0, 0), cv2.FILLED)
+
+            # --- Display results ---
+            annotated_rgb = cv2.cvtColor(live_img, cv2.COLOR_BGR2RGB)
+            st.image(annotated_rgb, caption="Annotated Result", use_container_width=True)
+
+            # Result cards
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                if is_match:
+                    st.success(f"✅ **Identity Match**\n\nScore: **{score:.1f}%**")
+                else:
+                    st.error(f"🚨 **Identity Mismatch**\n\nScore: **{score:.1f}%**")
+            with col2:
+                if head_turn_passed:
+                    st.success(f"✅ **Liveness Passed**\n\nHead: **{liveness_state}**")
+                else:
+                    st.warning(f"⚠️ **Liveness Inconclusive**\n\nHead: **{liveness_state}**\n\nTurn your head and retake.")
+            with col3:
+                overall = "PASS" if (is_match and head_turn_passed) else "FAIL"
+                if overall == "PASS":
+                    st.success("✅ **KYC Verdict: PASS**")
+                else:
+                    st.error("❌ **KYC Verdict: FAIL**")
+                st.caption(f"Cosine similarity: {sim:.4f}")
+
+            # -- Persist Video KYC to DB + Generate PDF -------------------------
+            if _DB_IMPORTS_OK and db_available():
+                vkyc_result = {
+                    "is_match": bool(is_match),
+                    "confidence": float(sim),
+                    "cosine_similarity": float(sim),
+                    "display_score": float(score),
+                    "threshold": 0.40,
+                    "liveness_state": liveness_state,
+                    "liveness_passed": bool(head_turn_passed),
+                    "match": bool(is_match),
+                }
+
+                try:
+                    from basetruth.reporting.pdf import render_identity_check_pdf
+                    vkyc_pdf = render_identity_check_pdf(
+                        check_type="video_kyc",
+                        result=vkyc_result,
+                        entity_ref=st.session_state.get("vkyc_entity_ref", ""),
+                        entity_name=st.session_state.get("vkyc_entity_name", ""),
+                        doc_filename=doc_file.name if doc_file else "",
+                    )
+                except Exception:
+                    vkyc_pdf = None
+
+                vkyc_saved = save_identity_check(
+                    check_type="video_kyc",
+                    result=vkyc_result,
+                    entity_ref=st.session_state.get("vkyc_entity_ref"),
+                    doc_filename=doc_file.name if doc_file else "",
+                    pdf_bytes=vkyc_pdf,
+                )
+                if vkyc_saved:
+                    st.info(f"Video KYC result saved (ID: {vkyc_saved['id']}, Entity: {vkyc_saved.get('entity_ref', 'unlinked')})")
+                if vkyc_pdf:
+                    st.download_button(
+                        "Download Video KYC Report (PDF)",
+                        data=vkyc_pdf,
+                        file_name=f"video_kyc_report_{st.session_state.get('vkyc_entity_ref', 'unlinked')}.pdf",
+                        mime="application/pdf",
+                        key="vkyc_pdf_dl",
+                    )
 
 # ---------------------------------------------------------------------------
 # Main entrypoint

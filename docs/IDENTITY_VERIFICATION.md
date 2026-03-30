@@ -18,18 +18,49 @@ The pipeline runs locally without making any external API calls, ensuring high p
 BaseTruth offers two variants of Identity Verification:
 
 ### 1. Static Verification (ID vs Selfie)
-1. **Ingestion**: The operator uploads an ID document and a Selfie via the `🧑‍💻 Identity` screen.
-2. **Decoding**: OpenCV translates the inputs into mathematical arrays.
-3. **Detection & Vectorization**: RetinaFace isolates the largest face. ArcFace converts it into an embedding vector.
-4. **Comparison**: The system calculates the **Cosine Similarity** (threshold > 0.40).
+1. **Entity Selection**: The operator selects an existing entity from the database (optional) to link results.
+2. **Ingestion**: The operator uploads an ID document and a Selfie via the `Identity` screen.
+3. **Decoding**: OpenCV translates the inputs into mathematical arrays.
+4. **Detection & Vectorization**: RetinaFace isolates the largest face. ArcFace converts it into an embedding vector.
+5. **Comparison**: The system calculates the **Cosine Similarity** (threshold > 0.40).
+6. **Persistence**: Results are stored in the `identity_checks` database table, linked to the entity. A PDF report is generated.
 
-### 2. Video KYC (Live Stream)
+### 2. Video KYC (Live Camera)
 Designed specifically to prevent impersonation or photo-spoofing fraud.
 
-1. **Reference Extraction**: The user provides the base truth ID document. The AI extracts the face embedding safely.
-2. **WebRTC Stream Setup**: The browser intercepts the user's webcam at 15 FPS and streams packets down to the backend `VideoKYCProcessor`.
-3. **Liveness Detection**: The system calculates the lateral projection angle between the nose and eyes (using the RetinaFace spatial ratio). By asking the user to turn their head `Left` or `Right`, the system validates physical 3D presence rather than a flat, static printed photo.
-4. **Continuous Matching**: Alongside tracking movement, ArcFace verifies every single frame against the Reference ID document in real time, projecting `VERIFIED MATCH` or `FRAUD ALERT` directly over the user's face stream.
+1. **Entity Selection**: The operator selects an entity to link KYC results to.
+2. **Reference Extraction**: The user provides the base truth ID document. The AI extracts the face embedding.
+3. **Live Camera Capture**: The system uses Streamlit's native `st.camera_input()` to capture a live photo directly from the browser.
+4. **Liveness Detection**: The system calculates the lateral projection angle between the nose and eyes (using the RetinaFace spatial ratio). By asking the user to turn their head `Left` or `Right`, the system validates physical 3D presence rather than a flat, static printed photo.
+5. **Identity Matching**: ArcFace verifies the live capture against the Reference ID document.
+6. **Persistence**: Results (identity match + liveness) are stored in `identity_checks` and a PDF report is generated.
+
+## Data Persistence
+
+All identity verification results are now persisted in the `identity_checks` PostgreSQL table:
+
+| Field | Description |
+| --- | --- |
+| `check_type` | `face_match` or `video_kyc` |
+| `entity_id` | Links to the `entities` table |
+| `cosine_similarity` | Raw ArcFace similarity score |
+| `is_match` | Boolean match result |
+| `liveness_passed` | Liveness check result (Video KYC) |
+| `verdict` | Overall PASS/FAIL |
+| `report_json` | Full result payload |
+| `pdf_report` | Generated PDF audit report |
+
+Results are viewable in the **Records** page under each entity's detail panel, alongside document scan history.
+
+## PDF Reports
+
+Both face match and Video KYC results generate a professional PDF report containing:
+- Subject information and entity reference
+- Verdict box (PASS/FAIL) with colour coding
+- Face match analysis (cosine similarity, confidence score, threshold)
+- Liveness detection results (Video KYC only)
+- Summary table of all checks
+- Disclaimer noting offline AI processing
 
 ## Why Not External APIs?
 
@@ -39,4 +70,12 @@ Many competitive products rely on AWS Rekognition or Azure Face API. BaseTruth u
 * The system elegantly degrades; if the internet goes down, fraud checking continues seamlessly.
 
 ## Location in Codebase
-The primary driver for this engine lives within `src/basetruth/vision/face.py` and is instantiated lazily to preserve strict, fast app loading times. It manages the `MPLCONFIGDIR` and `/tmp/cache` paths to securely handle the containerized environment.
+
+| File | Purpose |
+| --- | --- |
+| `src/basetruth/vision/face.py` | Core face detection and comparison (RetinaFace + ArcFace) |
+| `src/basetruth/vision/video_kyc.py` | Video KYC processor with liveness detection |
+| `src/basetruth/db.py` | `IdentityCheck` ORM model |
+| `src/basetruth/store.py` | `save_identity_check()`, `get_entity_identity_checks()` |
+| `src/basetruth/reporting/pdf.py` | `render_identity_check_pdf()` |
+| `src/basetruth/ui/app.py` | Identity and Video KYC page UI |

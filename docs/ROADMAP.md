@@ -81,6 +81,17 @@
 - GAN / AI-generation artefact detectors (pending — deep learning models)
 - Perceptual hash drift check across document series (pending)
 
+
+## Phase 9: Entity-Linked Identity Verification ✅
+
+- **[DONE]** `identity_checks` database table — persists face match and Video KYC results
+- **[DONE]** Entity linkage — all identity checks linked to person via `entities` FK
+- **[DONE]** PDF report generation — `render_identity_check_pdf()` for both check types
+- **[DONE]** Identity page — entity selector, DB persistence, PDF download, history view
+- **[DONE]** Video KYC page — entity selector, DB persistence, PDF download
+- **[DONE]** Records page — 360-degree entity view with identity checks + document scans
+- **[DONE]** Database viewer — `identity_checks` table visible in DB admin screen
+
 - every detector must emit explicit evidence
 - every score must be explainable from emitted signals
 - every domain pack must define what counts as suspicious and why

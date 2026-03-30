@@ -1071,3 +1071,200 @@ def render_case_bundle_pdf(
     buf = io.BytesIO()
     pdf.output(buf)
     return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Identity Check (Face Match / Video KYC) PDF report
+# ---------------------------------------------------------------------------
+
+
+def render_identity_check_pdf(
+    check_type: str,
+    result: Dict[str, Any],
+    entity_ref: str = "",
+    entity_name: str = "",
+    doc_filename: str = "",
+    selfie_filename: str = "",
+) -> bytes:
+    """Generate a plain-English PDF for a face-match or Video KYC check.
+
+    Parameters
+    ----------
+    check_type:      'face_match' or 'video_kyc'
+    result:          The result dict from compare_faces() or the KYC processor.
+    entity_ref:      Entity reference (BT-XXXXXX).
+    entity_name:     Entity display name.
+    doc_filename:    Original ID document filename.
+    selfie_filename: Selfie filename (face_match only).
+
+    Returns
+    -------
+    bytes   Raw PDF content.
+    """
+    is_face_match = check_type == "face_match"
+    title = "Face Match Verification Report" if is_face_match else "Video KYC Verification Report"
+
+    # Determine verdict
+    if is_face_match:
+        is_match = result.get("match", False)
+        verdict_ok = is_match
+    else:
+        is_match = result.get("is_match", False)
+        liveness = result.get("liveness_passed", False)
+        verdict_ok = is_match and liveness
+
+    if verdict_ok:
+        verdict_title = "IDENTITY VERIFIED"
+        verdict_body = (
+            "The person in the live image matches the identity document. "
+            "No signs of impersonation were detected."
+        )
+        verdict_colour = _C_PASS_GREEN
+    else:
+        verdict_title = "IDENTITY NOT VERIFIED"
+        verdict_body = (
+            "The system could not confirm a match between the live image "
+            "and the identity document. Manual review is required."
+        )
+        verdict_colour = _C_FAIL_RED
+
+    # ------------------------------------------------------------------ build
+    pdf = _ReportPDF(orientation="P", unit="mm", format="A4")
+    pdf.set_margins(left=10, top=5, right=10)
+    pdf.set_auto_page_break(auto=True, margin=18)
+    pdf.add_page()
+    pdf.set_text_color(*_C_TEXT_DARK)
+
+    # ── Header bar
+    pdf.set_fill_color(*_C_DARK_BLUE)
+    pdf.rect(0, 0, 210, 18, "F")
+    pdf.set_y(3)
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.set_text_color(*_C_TEXT_LIGHT)
+    pdf.cell(0, 12, _safe(f"BaseTruth - {title}"), align="C")
+    pdf.ln(18)
+    pdf.set_text_color(*_C_TEXT_DARK)
+
+    # ── Subject info
+    pdf.section_title("Subject Information")
+    if entity_ref:
+        pdf.info_row("Entity Reference:", entity_ref)
+    if entity_name:
+        pdf.info_row("Name:", entity_name)
+    if doc_filename:
+        pdf.info_row("ID Document:", doc_filename)
+    if selfie_filename:
+        pdf.info_row("Selfie Image:", selfie_filename)
+
+    check_label = "Face Match" if is_face_match else "Video KYC (Liveness + Match)"
+    pdf.info_row("Verification Type:", check_label)
+
+    generated_str = datetime.now(timezone.utc).strftime("%d %b %Y  %H:%M UTC")
+    pdf.info_row("Checked at:", generated_str)
+
+    # ── Verdict box
+    pdf.ln(3)
+    pdf.verdict_box(verdict_title, verdict_body, verdict_colour)
+
+    # ── Face Match Details
+    pdf.section_title("Face Match Analysis")
+
+    similarity = result.get("confidence") or result.get("cosine_similarity")
+    display_score = result.get("display_score")
+    threshold = result.get("threshold", 0.40)
+
+    if similarity is not None:
+        pdf.info_row("Cosine Similarity:", f"{similarity:.4f}")
+    if display_score is not None:
+        pdf.info_row("Confidence Score:", f"{display_score:.1f}%")
+    if threshold is not None:
+        pdf.info_row("Match Threshold:", f"{threshold:.2f}")
+
+    match_text = "YES - Faces match" if is_match else "NO - Faces do not match"
+    match_colour = _C_PASS_GREEN if is_match else _C_FAIL_RED
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.set_text_color(*match_colour)
+    pdf.cell(0, 8, _safe(f"Result: {match_text}"), ln=True)
+    pdf.set_text_color(*_C_TEXT_DARK)
+
+    # ── Liveness (Video KYC only)
+    if not is_face_match:
+        pdf.ln(2)
+        pdf.section_title("Liveness Detection")
+        liveness_passed = result.get("liveness_passed", False)
+        liveness_state = result.get("liveness_state", "Unknown")
+
+        pdf.info_row("Head Position:", str(liveness_state))
+
+        if liveness_passed:
+            pdf.set_font("Helvetica", "B", 10)
+            pdf.set_text_color(*_C_PASS_GREEN)
+            pdf.cell(0, 8, _safe("Liveness: PASSED - Real person detected"), ln=True)
+        else:
+            pdf.set_font("Helvetica", "B", 10)
+            pdf.set_text_color(*_C_FAIL_RED)
+            pdf.cell(0, 8, _safe("Liveness: FAILED - Could not confirm live presence"), ln=True)
+        pdf.set_text_color(*_C_TEXT_DARK)
+
+    # ── Checks summary
+    pdf.ln(3)
+    pdf.section_title("Summary")
+    _row_h = 7
+    _col_w_check = 100
+    _col_w_result = 60
+
+    # Table header
+    pdf.set_fill_color(*_C_DARK_BLUE)
+    pdf.set_text_color(*_C_TEXT_LIGHT)
+    pdf.set_font("Helvetica", "B", 9)
+    pdf.cell(_col_w_check, _row_h, "  Check", fill=True)
+    pdf.cell(_col_w_result, _row_h, "Result", fill=True, align="C")
+    pdf.ln(_row_h)
+
+    checks = [("Face Detection", True, "Face found in document"),
+              ("Face Match", is_match,
+               f"Score: {display_score:.1f}%" if display_score else "N/A")]
+    if not is_face_match:
+        lp = result.get("liveness_passed", False)
+        checks.append(("Liveness Detection", lp,
+                        "Head movement confirmed" if lp else "Not confirmed"))
+
+    for i, (label, passed, detail) in enumerate(checks):
+        bg = _C_LIGHT_GRAY if i % 2 == 0 else _C_WHITE
+        pdf.set_fill_color(*bg)
+        pdf.set_text_color(*_C_TEXT_DARK)
+        pdf.set_font("Helvetica", "", 9)
+        pdf.cell(_col_w_check, _row_h, _safe(f"  {label}: {detail}"), fill=True)
+
+        if passed:
+            pdf.set_fill_color(*_C_PASS_GREEN)
+            result_text = "  PASS  "
+        else:
+            pdf.set_fill_color(*_C_FAIL_RED)
+            result_text = "  FAIL  "
+        pdf.set_text_color(*_C_TEXT_LIGHT)
+        pdf.set_font("Helvetica", "B", 8)
+        pdf.cell(_col_w_result, _row_h, result_text, fill=True, align="C")
+        pdf.ln(_row_h)
+
+    pdf.set_text_color(*_C_TEXT_DARK)
+
+    # ── Disclaimer
+    pdf.ln(6)
+    pdf.set_font("Helvetica", "I", 8)
+    pdf.set_text_color(100, 100, 100)
+    page_w = pdf.w - pdf.l_margin - pdf.r_margin
+    pdf.set_x(pdf.l_margin)
+    pdf.multi_cell(
+        page_w, 5,
+        _safe(
+            "This identity verification was performed using BaseTruth's offline AI engine "
+            "(RetinaFace + ArcFace). The result supports - but does not replace - a human review. "
+            "All processing was done locally without sending data to external cloud services."
+        ),
+    )
+
+    # ── Output
+    buf = io.BytesIO()
+    pdf.output(buf)
+    return buf.getvalue()

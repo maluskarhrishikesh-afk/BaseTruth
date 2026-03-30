@@ -25,8 +25,10 @@ log = get_logger(__name__)
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     Column,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     LargeBinary,
@@ -130,6 +132,7 @@ class Entity(Base):
     scans = relationship("Scan", back_populates="entity", cascade="all, delete-orphan")
     cases = relationship("Case", back_populates="entity")
     extracted_info = relationship("DocumentInformation", back_populates="entity", cascade="all, delete-orphan")
+    identity_checks = relationship("IdentityCheck", back_populates="entity", cascade="all, delete-orphan")
 
 
 class Scan(Base):
@@ -216,6 +219,46 @@ class DocumentInformation(Base):
 
     entity = relationship("Entity", back_populates="extracted_info")
     scan = relationship("Scan", back_populates="extracted_info")
+
+class IdentityCheck(Base):
+    """One row per face-match or Video KYC verification event.
+
+    Stores the full result payload so analysts can review identity
+    verification history alongside document scans.
+    """
+
+    __tablename__ = "identity_checks"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    entity_id = Column(
+        Integer, ForeignKey("entities.id", ondelete="SET NULL"), nullable=True
+    )
+    check_type = Column(String(30), nullable=False)       # 'face_match' | 'video_kyc'
+    status = Column(String(20), nullable=False)            # 'pass' | 'fail' | 'inconclusive'
+
+    # Face match fields
+    cosine_similarity = Column(Float, nullable=True)
+    display_score = Column(Float, nullable=True)           # 0-100 percentage
+    threshold = Column(Float, nullable=True)
+    is_match = Column(Boolean, nullable=True)
+
+    # Video KYC liveness fields
+    liveness_state = Column(String(30), nullable=True)     # 'Center' | 'Turned Left' | 'Turned Right'
+    liveness_passed = Column(Boolean, nullable=True)
+
+    # Overall verdict
+    verdict = Column(String(20), default="")               # 'PASS' | 'FAIL'
+
+    # Audit trail
+    doc_filename = Column(String(500), default="")         # original ID document filename
+    selfie_filename = Column(String(500), default="")      # selfie filename (face_match only)
+    report_json = Column(JSONB, nullable=False)            # full result payload
+    pdf_report = Column(LargeBinary, nullable=True)        # generated PDF report
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    entity = relationship("Entity", back_populates="identity_checks")
+
 
 # ---------------------------------------------------------------------------
 # Schema initialisation

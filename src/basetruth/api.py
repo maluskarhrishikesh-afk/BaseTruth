@@ -183,21 +183,18 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
     # ── Video KYC endpoints ─────────────────────────────────────────
     
     import uuid
-    from fastapi import WebSocket, WebSocketDisconnect
+    from fastapi import WebSocket, WebSocketDisconnect, Body
     from basetruth.vision.video_kyc import VideoKYCProcessor
     import numpy as np
     
     # Global memory cache for in-flight KYC sessions
     _kyc_sessions: Dict[str, Any] = {}
 
-    class KYCSessionRequest(BaseModel):
-        embedding: List[float]
-
     @app.post("/api/v1/kyc/session", tags=["VideoKYC"])
-    def create_kyc_session(req: KYCSessionRequest) -> Dict[str, Any]:
+    def create_kyc_session(req: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         """Creates a secure session referencing a parsed face embedding."""
         session_id = str(uuid.uuid4())
-        _kyc_sessions[session_id] = np.array(req.embedding, dtype=np.float32)
+        _kyc_sessions[session_id] = np.array(req["embedding"], dtype=np.float32)
         return {"session_id": session_id}
 
     @app.websocket("/ws/video_kyc/{session_id}")

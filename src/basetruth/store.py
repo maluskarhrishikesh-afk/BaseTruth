@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import func, or_, text
 from sqlalchemy.orm import Session
 
-from basetruth.db import Case, CaseNote, Entity, Scan, DocumentInformation, db_session
+from basetruth.db import Case, CaseNote, Entity, IdentityCheck, Scan, DocumentInformation, db_session
 from basetruth.logger import get_logger
 
 log = get_logger(__name__)
@@ -705,12 +705,146 @@ def get_entity_latest_pdf(entity_ref: str) -> tuple[Optional[bytes], Optional[st
         return None, None
 
 
-_DB_VIEWER_TABLES = {"entities", "scans", "document_information", "cases", "case_notes"}
+# ---------------------------------------------------------------------------
+# Identity check (face match / Video KYC) persistence
+# ---------------------------------------------------------------------------
+
+
+def save_identity_check(
+    check_type: str,
+    result: Dict[str, Any],
+    entity_ref: Optional[str] = None,
+    doc_filename: str = "",
+    selfie_filename: str = "",
+    pdf_bytes: Optional[bytes] = None,
+) -> Optional[Dict[str, Any]]:
+    """Persist a face-match or Video KYC result to the DB.
+
+    Parameters
+    ----------
+    check_type:      'face_match' or 'video_kyc'
+    result:          The result dict from compare_faces() or the KYC processor.
+    entity_ref:      Link to an existing entity (BT-XXXXXX). If None, unlinked.
+    doc_filename:    Original ID document filename.
+    selfie_filename: Selfie filename (face_match only).
+    pdf_bytes:       Generated PDF report bytes.
+    """
+    try:
+        with db_session() as session:
+            entity_id = None
+            if entity_ref:
+                entity = (
+                    session.query(Entity)
+                    .filter(Entity.entity_ref == entity_ref)
+                    .first()
+                )
+                if entity:
+                    entity_id = entity.id
+
+            # Determine status and verdict
+            if check_type == "face_match":
+                is_match = result.get("match", False)
+                status = "pass" if is_match else "fail"
+                verdict = "PASS" if is_match else "FAIL"
+            else:  # video_kyc
+                is_match = result.get("is_match", False)
+                liveness = result.get("liveness_passed", False)
+                if is_match and liveness:
+                    status = "pass"
+                    verdict = "PASS"
+                elif is_match or liveness:
+                    status = "inconclusive"
+                    verdict = "FAIL"
+                else:
+                    status = "fail"
+                    verdict = "FAIL"
+
+            row = IdentityCheck(
+                entity_id=entity_id,
+                check_type=check_type,
+                status=status,
+                cosine_similarity=result.get("confidence") or result.get("cosine_similarity"),
+                display_score=result.get("display_score"),
+                threshold=result.get("threshold", 0.40),
+                is_match=is_match,
+                liveness_state=result.get("liveness_state"),
+                liveness_passed=result.get("liveness_passed"),
+                verdict=verdict,
+                doc_filename=doc_filename,
+                selfie_filename=selfie_filename,
+                report_json=result,
+                pdf_report=pdf_bytes,
+            )
+            session.add(row)
+            session.flush()
+
+            saved = {
+                "id": row.id,
+                "entity_ref": entity_ref,
+                "check_type": check_type,
+                "status": status,
+                "verdict": verdict,
+            }
+
+            # Upload PDF to MinIO
+            if pdf_bytes and entity_ref:
+                ts = row.created_at.strftime("%Y%m%d_%H%M%S") if row.created_at else "unknown"
+                minio_key = f"{entity_ref}/{ts}_{check_type}_report.pdf"
+                minio_upload(minio_key, pdf_bytes, "application/pdf")
+
+            log.info("save_identity_check: saved %s check id=%s for entity=%s", check_type, row.id, entity_ref)
+            return saved
+    except Exception as exc:
+        log.error("save_identity_check failed: %s", exc, exc_info=True)
+        return None
+
+
+def get_entity_identity_checks(entity_ref: str) -> List[Dict[str, Any]]:
+    """Return all identity checks for an entity (most-recent first), without PDF bytes."""
+    try:
+        with db_session() as session:
+            entity = (
+                session.query(Entity)
+                .filter(Entity.entity_ref == entity_ref)
+                .first()
+            )
+            if not entity:
+                return []
+            checks = (
+                session.query(IdentityCheck)
+                .filter(IdentityCheck.entity_id == entity.id)
+                .order_by(IdentityCheck.created_at.desc())
+                .all()
+            )
+            return [
+                {
+                    "id": c.id,
+                    "check_type": c.check_type,
+                    "status": c.status,
+                    "cosine_similarity": c.cosine_similarity,
+                    "display_score": c.display_score,
+                    "is_match": c.is_match,
+                    "liveness_state": c.liveness_state,
+                    "liveness_passed": c.liveness_passed,
+                    "verdict": c.verdict,
+                    "doc_filename": c.doc_filename or "",
+                    "selfie_filename": c.selfie_filename or "",
+                    "has_pdf": c.pdf_report is not None and len(c.pdf_report) > 0,
+                    "created_at": c.created_at.isoformat() if c.created_at else "",
+                }
+                for c in checks
+            ]
+    except Exception as exc:
+        log.warning("get_entity_identity_checks failed: %s", exc)
+        return []
+
+
+_DB_VIEWER_TABLES = {"entities", "scans", "document_information", "cases", "case_notes", "identity_checks"}
 
 
 def db_table_counts() -> Dict[str, int]:
     """Return row counts for all application tables."""
-    _ALL_TABLES = ("entities", "scans", "document_information", "cases", "case_notes")
+    _ALL_TABLES = ("entities", "scans", "document_information", "cases", "case_notes", "identity_checks")
     counts: Dict[str, int] = {}
     try:
         with db_session() as session:
@@ -753,6 +887,18 @@ def db_table_rows(table: str, limit: int = 500) -> tuple[List[Dict[str, Any]], i
                     ),
                     {"lim": limit},
                 ).mappings().all()
+            elif table == "identity_checks":
+                # Exclude pdf_report (large binary) and report_json (huge) from display
+                rows_raw = session.execute(
+                    text(
+                        "SELECT id, entity_id, check_type, status, "
+                        "cosine_similarity, display_score, is_match, "
+                        "liveness_passed, verdict, doc_filename, "
+                        "selfie_filename, created_at "
+                        "FROM identity_checks ORDER BY created_at DESC LIMIT :lim"
+                    ),
+                    {"lim": limit},
+                ).mappings().all()
             else:
                 rows_raw = session.execute(
                     text(f"SELECT * FROM {table} ORDER BY id DESC LIMIT :lim"),  # noqa: S608
@@ -773,7 +919,7 @@ def reset_db() -> bool:
         with db_session() as session:
             session.execute(
                 text(
-                    "TRUNCATE TABLE case_notes, cases, document_information, scans, entities "
+                    "TRUNCATE TABLE case_notes, cases, document_information, identity_checks, scans, entities "
                     "RESTART IDENTITY CASCADE"
                 )
             )

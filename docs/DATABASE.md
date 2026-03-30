@@ -55,6 +55,20 @@
           └─────────────┘          │  text      │
                                    │  created_at│
                                    └────────────┘
+
+                ┌─────────────────┐
+                │identity_checks  │
+                │  id (PK)        │
+                │  entity_id (FK) │
+                │  check_type     │
+                │  status / verdict│
+                │  cosine_similarity│
+                │  is_match       │
+                │  liveness_passed│
+                │  report_json    │
+                │  pdf_report     │
+                │  created_at     │
+                └─────────────────┘
 ```
 
 **MinIO Path Convention:**
@@ -209,7 +223,7 @@ This grouping means **one case per document type per person**, regardless of how
 
 | Operation          | Effect                                                    |
 |--------------------|-----------------------------------------------------------|
-| **RESET Database** | Truncates `case_notes`, `cases`, `scans`, `entities` with CASCADE. Sequences restarted. |
+| **RESET Database** | Truncates `case_notes`, `cases`, `identity_checks`, `document_information`, `scans`, `entities` with CASCADE. Sequences restarted. |
 | **RESET MinIO**    | Deletes all objects in the `basetruth-reports` bucket.    |
 
 Both operations are available in **Database → Danger Zone** and require typing `RESET` to confirm.
@@ -322,6 +336,32 @@ documents submitted by the same applicant.
 | `author`     | VARCHAR(255) | NOT NULL DEFAULT `system`    | Analyst name / username                  |
 | `text`       | TEXT         | NOT NULL                     | Free-form note                           |
 | `created_at` | TIMESTAMPTZ  | DEFAULT NOW                  |                                          |
+
+
+---
+
+### `identity_checks` — Face Match & Video KYC Results
+
+One row per identity verification event. Linked to an entity via FK. Immutable audit log.
+
+| Column              | Type          | Constraints             | Description                         |
+|---------------------|---------------|-------------------------|-------------------------------------|
+| `id`                | SERIAL        | PK                      | Surrogate key                       |
+| `entity_id`         | INTEGER       | FK → entities(id) NULL  | Linked person (NULL if unlinked)    |
+| `check_type`        | VARCHAR(30)   | NOT NULL                | `face_match` or `video_kyc`         |
+| `status`            | VARCHAR(20)   | NOT NULL                | `pass`, `fail`, or `inconclusive`   |
+| `cosine_similarity` | FLOAT         | nullable                | Raw cosine similarity (-1 to 1)     |
+| `display_score`     | FLOAT         | nullable                | Mapped 0-100 percentage             |
+| `threshold`         | FLOAT         | nullable                | Match threshold used (e.g. 0.40)    |
+| `is_match`          | BOOLEAN       | nullable                | Whether faces matched               |
+| `liveness_state`    | VARCHAR(30)   | nullable                | Head position (Video KYC only)      |
+| `liveness_passed`   | BOOLEAN       | nullable                | Liveness check result               |
+| `verdict`           | VARCHAR(20)   |                         | `PASS` or `FAIL`                    |
+| `doc_filename`      | VARCHAR(500)  |                         | Original ID document filename       |
+| `selfie_filename`   | VARCHAR(500)  |                         | Selfie filename (face_match only)   |
+| `report_json`       | JSONB         | NOT NULL                | Full result payload                 |
+| `pdf_report`        | BYTEA         | nullable                | Generated PDF report bytes          |
+| `created_at`        | TIMESTAMPTZ   | default now()           | Verification timestamp              |
 
 ---
 
