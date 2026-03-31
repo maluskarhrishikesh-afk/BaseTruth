@@ -168,12 +168,6 @@ def _find_or_create_entity(
         )
 
     if entity is not None:
-        # Enrich empty fields from the new scan
-        for field_name in ("first_name", "last_name", "email", "phone", "pan_number", "aadhar_number"):
-            val = identity.get(field_name, "")
-            if val and not getattr(entity, field_name):
-                setattr(entity, field_name, val)
-        entity.updated_at = func.now()  # type: ignore[assignment]
         return entity
 
     # Create a new entity only if we have enough to identify them
@@ -713,7 +707,8 @@ def get_entity_latest_pdf(entity_ref: str) -> tuple[Optional[bytes], Optional[st
 def save_identity_check(
     check_type: str,
     result: Dict[str, Any],
-    entity_ref: Optional[str] = None,
+    forced_entity_ref: Optional[str] = None,
+    extra_identity: Optional[Dict[str, str]] = None,
     doc_filename: str = "",
     selfie_filename: str = "",
     pdf_bytes: Optional[bytes] = None,
@@ -731,15 +726,26 @@ def save_identity_check(
     """
     try:
         with db_session() as session:
-            entity_id = None
-            if entity_ref:
+            entity = None
+
+            if forced_entity_ref:
                 entity = (
                     session.query(Entity)
-                    .filter(Entity.entity_ref == entity_ref)
+                    .filter(Entity.entity_ref == forced_entity_ref)
                     .first()
                 )
-                if entity:
-                    entity_id = entity.id
+
+            if entity is None and extra_identity:
+                entity = _find_or_create_entity(session, extra_identity)
+
+            if extra_identity and entity:
+                for k, v in extra_identity.items():
+                    if v:
+                        setattr(entity, k, v)
+                entity.updated_at = func.now()
+
+            entity_id = entity.id if entity else None
+            entity_ref = entity.entity_ref if entity else None
 
             # Determine status and verdict
             if check_type == "face_match":

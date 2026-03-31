@@ -1,19 +1,94 @@
-COMPLETED: Entity-Linked Identity Verification Integration
 
-Requirements (all completed):
-1) Face matching - NOW persisted to identity_checks DB table, entity-linked, PDF report generated
-2) Video KYC - NOW persisted to identity_checks DB table, entity-linked, PDF report generated
-3) Document scanning - Already entity-linked via scans table
+This ideally should change, in entity table only user provided details should go, remove the logic
+where we try to update the entity table with the details extracted from the documents ->
 
-Integration:
-- All three capabilities now linked through the ENTITIES table
-- identity_checks table stores face match and Video KYC results
-- PDF reports generated for all verification types
-- Records page shows 360-degree entity view (documents + identity checks)
-- Database viewer includes identity_checks table
+    Manual Input Overrides Auto-Extracted Details
+    If an analyst or operator manually punches in these details using the UI before running a verification,
+    these fields are correctly assumed to be "Ground Truth". By updating save_identity_check(), 
+    we guarantee that these operator-provided fields immediately enrich and update the Entity table 
+    without deleting other context. This ensures that manually-entered names and addresses override 
+    incorrect document OCR data.
 
-Implementation details:
-- src/basetruth/db.py: IdentityCheck ORM model
-- src/basetruth/store.py: save_identity_check(), get_entity_identity_checks()
-- src/basetruth/reporting/pdf.py: render_identity_check_pdf()
-- src/basetruth/ui/app.py: Updated Identity, Video KYC, and Records pages
+-------------------------------------------------------------------------------------------------------
+
+I provided all the mandatory details, still it says "Please provide all mandatory applicant details" ->
+This should be done proeprly in all the screens.
+Identity Verification
+Offline face matching using OpenCV, RetinaFace, and ArcFace (ONNX) to detect identity fraud.
+
+ℹ️ How it works
+
+👤 Associate documents with a person (mandatory)
+
+Linking documents to an applicant prevents duplicate entity records and keeps all their documents grouped under one profile in the Records screen.
+
+How it works:
+
+Search an existing person — type their name, PAN, Aadhaar, email, or reference number.
+All documents you scan will be linked to that profile.
+Or enter identifying details — if this is a new applicant, type their PAN / email / phone below. BaseTruth will auto-match future documents to the same person using these fields.
+Link mode
+
+
+Search existing person
+
+
+Enter applicant details manually
+
+ℹ️
+Required: Please provide all the details to link the document securely.
+
+First name
+
+Hrishikesh
+Last name
+
+Maluskar
+PAN number
+
+AQVPM3058P
+Aadhaar number
+
+1234 5678 9012
+Email
+
+maluskarhrishikesh@gmail.com
+Phone
+
+9819755922
+✅ Identity hints will be used to group documents under the right person.
+
+1. ID Document
+Upload ID Photo
+
+Photograph-Passport.jpg
+Drag and drop file here
+Limit 200MB per file • JPG, JPEG, PNG, WEBP
+Photograph-Passport.jpg
+383.2KB
+2. Selfie Image
+Upload Selfie Photo
+
+Photograph-Passport.jpg
+Drag and drop file here
+Limit 200MB per file • JPG, JPEG, PNG, WEBP
+Photograph-Passport.jpg
+383.2KB
+
+Please provide all mandatory applicant details (First name, Last name, PAN, Aadhaar, Email, Phone).
+
+-------------------------------------------------------------------------------------------------------
+
+We have a image before the heading ->
+🧑‍💻 Identity Verification
+🎥 Video KYC (Real-Time)
+
+Can we do this for all the screens
+
+-------------------------------------------------------------------------------------------------------
+
+Finally push the code to git and also check if all the documents are upto date ot not?
+
+-------------------------------------------------------------------------------------------------------
+
+Also dploy and run the code so that I can myself go and test it.

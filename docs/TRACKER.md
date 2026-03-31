@@ -132,6 +132,9 @@
 - [x] Video KYC page: entity selector + DB persistence + PDF download
 - [x] Records page: 360-degree entity view showing identity checks alongside document scans
 - [x] Database viewer updated to include `identity_checks` table
+- [x] Entity table: stopped auto-extract logic from overwriting manual entries (Manual overrides OCR)
+- [x] Emojis added to all UI screen headers
+- [x] Fixed validation requirement properly for "Enter applicant details manually" across screens
 - [x] Documentation updated (DATABASE.md, IDENTITY_VERIFICATION.md, TRACKER.md, ROADMAP.md)
 
 ## Immediate Next Milestones

@@ -995,7 +995,7 @@ def _render_report_summary(report: Dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 def _page_dashboard(service: BaseTruthService) -> None:
-    st.markdown("# Dashboard")
+    st.markdown("# 🏠 Dashboard")
 
     with st.expander("ℹ️ How to use this screen", expanded=False):
         st.markdown(
@@ -1138,7 +1138,7 @@ Use **Scan** (single file) or **Bulk Scan** (entire loan folder) to add new docu
 # Entity-linking widget (shared by Scan + Bulk Scan pages)
 # ---------------------------------------------------------------------------
 
-def _render_entity_link_widget(key_prefix: str) -> tuple[str | None, dict | None]:
+def _render_entity_link_widget(key_prefix: str, mandatory: bool = False) -> tuple[str | None, dict | None]:
     """Render the 'Associate with a person' UI panel.
 
     Returns
@@ -1148,8 +1148,9 @@ def _render_entity_link_widget(key_prefix: str) -> tuple[str | None, dict | None
     extra_identity : dict | None
         Identity fields typed by the user (used as hints when forced_ref is None).
     """
-    _widget_expanded = True if key_prefix == "bulk" else False
-    with st.expander("👤 Associate documents with a person (recommended)", expanded=_widget_expanded):
+    _widget_expanded = True if (key_prefix == "bulk" or mandatory) else False
+    title_suffix = "(mandatory)" if mandatory else "(recommended)"
+    with st.expander(f"👤 Associate documents with a person {title_suffix}", expanded=_widget_expanded):
         st.markdown(
             """
 Linking documents to an applicant **prevents duplicate entity records** and keeps all
@@ -1201,6 +1202,8 @@ their documents grouped under one profile in the Records screen.
                 st.warning("Database is offline — entity search unavailable.")
 
         else:  # Manual entry
+            if mandatory:
+                st.info("Required: Please provide all the details to link the document securely.", icon="ℹ️")
             mc1, mc2 = st.columns(2)
             e_fn = mc1.text_input("First name", key=f"{key_prefix}_ei_fn", placeholder="Aarini")
             e_ln = mc2.text_input("Last name", key=f"{key_prefix}_ei_ln", placeholder="Parekh")
@@ -1229,7 +1232,7 @@ their documents grouped under one profile in the Records screen.
 # ---------------------------------------------------------------------------
 
 def _page_scan(service: BaseTruthService) -> None:
-    st.markdown("# Scan Document")
+    st.markdown("# 🔍 Scan Document")
 
     with st.expander("ℹ️ How to use this screen", expanded=False):
         st.markdown(
@@ -1390,7 +1393,7 @@ def _page_scan(service: BaseTruthService) -> None:
 # ---------------------------------------------------------------------------
 
 def _page_bulk(service: BaseTruthService) -> None:
-    st.markdown("# Bulk Scan")
+    st.markdown("# 📦 Bulk Scan")
 
     with st.expander("ℹ️ How to use this screen", expanded=False):
         st.markdown(
@@ -1776,7 +1779,7 @@ def _page_bulk(service: BaseTruthService) -> None:
 # ---------------------------------------------------------------------------
 
 def _page_cases(service: BaseTruthService) -> None:
-    st.markdown("# Cases")
+    st.markdown("# 📁 Cases")
 
     with st.expander("ℹ️ How to use this screen", expanded=False):
         st.markdown(
@@ -2016,7 +2019,7 @@ def _render_case_card(
 # ---------------------------------------------------------------------------
 
 def _page_reports(service: BaseTruthService) -> None:
-    st.markdown("# Reports")
+    st.markdown("# 📊 Reports")
 
     with st.expander("ℹ️ How to use this screen", expanded=False):
         st.markdown(
@@ -2273,7 +2276,7 @@ def _connector_settings_fields(kind: str, existing: Dict[str, Any]) -> Dict[str,
 # ---------------------------------------------------------------------------
 
 def _page_datasources(service: BaseTruthService) -> None:
-    st.markdown("# Datasources")
+    st.markdown("# 🔗 Datasources")
     registry = DatasourceRegistry(service.artifact_root)
     sources = registry.list_sources()
 
@@ -2368,7 +2371,7 @@ def _page_datasources(service: BaseTruthService) -> None:
 # ---------------------------------------------------------------------------
 
 def _page_settings() -> None:
-    st.markdown("# Settings")
+    st.markdown("# ⚙️ Settings")
 
     with st.expander("ℹ️ How to use this screen", expanded=False):
         st.markdown(
@@ -2749,7 +2752,7 @@ _DB_TABLE_LABELS: dict[str, str] = {
 
 
 def _page_database() -> None:
-    st.markdown("# Database Viewer")
+    st.markdown("# 🗄️ Database Viewer")
 
     with st.expander("ℹ️ How to use this screen", expanded=False):
         st.markdown(
@@ -2902,7 +2905,7 @@ This screen gives you direct visibility into what is stored in the system.
 # ---------------------------------------------------------------------------
 
 def _page_records() -> None:
-    st.markdown("# Records")
+    st.markdown("# 🗂️ Records")
 
     with st.expander("ℹ️ How to use this screen", expanded=False):
         st.markdown(
@@ -3244,22 +3247,13 @@ def _page_identity_verification() -> None:
         )
 
     # -- Entity selector -------------------------------------------------------
-    selected_entity_ref = None
-    selected_entity_name = ""
+    forced_ref = None
+    extra_identity = None
     if _DB_IMPORTS_OK and db_available():
-        st.subheader("0. Link to Entity (optional)")
-        entities = search_entities("", "all", limit=50)
-        if entities:
-            entity_opts = ["-- None (unlinked) --"] + [
-                f"{e['entity_ref']}  |  {e['first_name']} {e['last_name']}"
-                for e in entities
-            ]
-            sel = st.selectbox("Select entity to link this check to", entity_opts, key="fm_entity_sel")
-            if sel != entity_opts[0]:
-                idx = entity_opts.index(sel) - 1
-                selected_entity_ref = entities[idx]["entity_ref"]
-                selected_entity_name = f"{entities[idx]['first_name']} {entities[idx]['last_name']}".strip()
+        forced_ref, extra_identity = _render_entity_link_widget("fm", mandatory=True)
         st.divider()
+
+    selected_entity_ref = forced_ref
 
     # -- Upload images ---------------------------------------------------------
     col1, col2 = st.columns(2)
@@ -3274,6 +3268,19 @@ def _page_identity_verification() -> None:
     if doc_file and selfie_file:
         st.markdown("---")
         if st.button("Run Face Match (ArcFace) 🔍", type="primary", use_container_width=True):
+            if not forced_ref:
+                if not extra_identity:
+                    st.warning("Please link an entity or enter applicant details (mandatory).")
+                    st.stop()
+                elif not (
+                    extra_identity.get("first_name") and 
+                    extra_identity.get("last_name") and 
+                    (extra_identity.get("pan_number") or extra_identity.get("aadhar_number")) and
+                    (extra_identity.get("email") or extra_identity.get("phone"))
+                ):
+                    st.warning("Please provide First name, Last name, plus at least one ID (PAN/Aadhaar) and contact (Email/Phone).")
+                    st.stop()
+
             with st.spinner("Initializing models and running inference..."):
                 from basetruth.vision.face import compare_faces
                 result = compare_faces(doc_file.getvalue(), selfie_file.getvalue())
@@ -3307,13 +3314,18 @@ def _page_identity_verification() -> None:
                         if hasattr(v, "item"):
                             db_result[k] = v.item()
 
+                    _ref_for_pdf = forced_ref or ""
+                    _name_for_pdf = ""
+                    if extra_identity:
+                        _name_for_pdf = f"{extra_identity.get('first_name', '')} {extra_identity.get('last_name', '')}".strip()
+
                     try:
                         from basetruth.reporting.pdf import render_identity_check_pdf
                         pdf_bytes = render_identity_check_pdf(
                             check_type="face_match",
                             result=db_result,
-                            entity_ref=selected_entity_ref or "",
-                            entity_name=selected_entity_name,
+                            entity_ref=_ref_for_pdf,
+                            entity_name=_name_for_pdf,
                             doc_filename=doc_file.name,
                             selfie_filename=selfie_file.name,
                         )
@@ -3323,11 +3335,14 @@ def _page_identity_verification() -> None:
                     saved = save_identity_check(
                         check_type="face_match",
                         result=db_result,
-                        entity_ref=selected_entity_ref,
+                        forced_entity_ref=forced_ref,
+                        extra_identity=extra_identity,
                         doc_filename=doc_file.name,
                         selfie_filename=selfie_file.name,
                         pdf_bytes=pdf_bytes,
                     )
+                    if saved and saved.get("entity_ref"):
+                        selected_entity_ref = saved["entity_ref"]
                     if saved:
                         st.info(f"Result saved to database (ID: {saved['id']}, Entity: {saved.get('entity_ref', 'unlinked')})")
                     if pdf_bytes:
@@ -3381,24 +3396,10 @@ def _page_video_kyc() -> None:
         )
 
     # 0) Entity selector
-    st.session_state.setdefault("vkyc_entity_ref", None)
-    st.session_state.setdefault("vkyc_entity_name", "")
+    forced_ref = None
+    extra_identity = None
     if _DB_IMPORTS_OK and db_available():
-        st.subheader("0. Link to Entity (optional)")
-        vk_entities = search_entities("", "all", limit=50)
-        if vk_entities:
-            vk_opts = ["-- None (unlinked) --"] + [
-                f"{e['entity_ref']}  |  {e['first_name']} {e['last_name']}"
-                for e in vk_entities
-            ]
-            vk_sel = st.selectbox("Select entity", vk_opts, key="vkyc_entity_sel")
-            if vk_sel != vk_opts[0]:
-                vk_idx = vk_opts.index(vk_sel) - 1
-                st.session_state["vkyc_entity_ref"] = vk_entities[vk_idx]["entity_ref"]
-                st.session_state["vkyc_entity_name"] = f"{vk_entities[vk_idx]['first_name']} {vk_entities[vk_idx]['last_name']}".strip()
-            else:
-                st.session_state["vkyc_entity_ref"] = None
-                st.session_state["vkyc_entity_name"] = ""
+        forced_ref, extra_identity = _render_entity_link_widget("vkyc", mandatory=True)
         st.divider()
 
     # 1) Upload Reference Document
@@ -3443,6 +3444,19 @@ def _page_video_kyc() -> None:
     camera_photo = st.camera_input("Capture live photo", key="vkyc_camera")
 
     if camera_photo is not None:
+        if not forced_ref:
+            if not extra_identity:
+                st.warning("Please link an entity or enter applicant details (mandatory).")
+                st.stop()
+            elif not (
+                extra_identity.get("first_name") and 
+                extra_identity.get("last_name") and 
+                (extra_identity.get("pan_number") or extra_identity.get("aadhar_number")) and
+                (extra_identity.get("email") or extra_identity.get("phone"))
+            ):
+                st.warning("Please provide First name, Last name, plus at least one ID (PAN/Aadhaar) and contact (Email/Phone).")
+                st.stop()
+
         import numpy as np
         import cv2
 
@@ -3548,13 +3562,18 @@ def _page_video_kyc() -> None:
                     "match": bool(is_match),
                 }
 
+                _ref_for_pdf = forced_ref or ""
+                _name_for_pdf = ""
+                if extra_identity:
+                    _name_for_pdf = f"{extra_identity.get('first_name', '')} {extra_identity.get('last_name', '')}".strip()
+
                 try:
                     from basetruth.reporting.pdf import render_identity_check_pdf
                     vkyc_pdf = render_identity_check_pdf(
                         check_type="video_kyc",
                         result=vkyc_result,
-                        entity_ref=st.session_state.get("vkyc_entity_ref", ""),
-                        entity_name=st.session_state.get("vkyc_entity_name", ""),
+                        entity_ref=_ref_for_pdf,
+                        entity_name=_name_for_pdf,
                         doc_filename=doc_file.name if doc_file else "",
                     )
                 except Exception:
@@ -3563,7 +3582,8 @@ def _page_video_kyc() -> None:
                 vkyc_saved = save_identity_check(
                     check_type="video_kyc",
                     result=vkyc_result,
-                    entity_ref=st.session_state.get("vkyc_entity_ref"),
+                    forced_entity_ref=forced_ref,
+                    extra_identity=extra_identity,
                     doc_filename=doc_file.name if doc_file else "",
                     pdf_bytes=vkyc_pdf,
                 )
