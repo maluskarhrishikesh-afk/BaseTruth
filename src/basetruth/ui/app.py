@@ -88,7 +88,9 @@ _CSS = """
 
 /* ---- Typography ------------------------------------------- */
 html, body, [class*="css"] {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+                 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol',
+                 'Noto Color Emoji', sans-serif !important;
 }
 
 /* ---- CSS Custom Properties (light defaults) --------------- */
@@ -196,6 +198,10 @@ html, body, [class*="css"] {
     color: #64748b !important;
     box-shadow: none !important;
     transition: background 0.15s ease, color 0.15s ease !important;
+    /* Ensure emoji chars render as colour glyphs, not font-colored text */
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+                 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol',
+                 'Noto Color Emoji', sans-serif !important;
 }
 [data-testid="stSidebar"] .stButton > button:hover {
     background: rgba(255,255,255,0.07) !important;
@@ -1363,6 +1369,16 @@ def _page_scan(service: BaseTruthService) -> None:
             _render_report_summary(report)
             if artifacts.get("verification_json_path"):
                 st.caption(f"Report saved to: {artifacts['verification_json_path']}")
+            # DB save confirmation
+            if report.get("_entity_ref"):
+                st.success(f"Saved to database — Entity: **{report['_entity_ref']}**")
+            elif _DB_IMPORTS_OK and db_available():
+                st.warning(
+                    "Database is connected but the scan could not be persisted. "
+                    "Check the logs for details."
+                )
+            else:
+                st.info("Database is offline — scan saved to disk only. Start PostgreSQL to persist results.")
 
             stem = Path(report.get("source", {}).get("name", "report")).stem
             col_dl1, col_dl2 = st.columns(2)
@@ -2019,7 +2035,7 @@ def _render_case_card(
 # ---------------------------------------------------------------------------
 
 def _page_reports(service: BaseTruthService) -> None:
-    st.markdown("# 📊 Reports")
+    st.markdown("# 📈 Reports")
 
     with st.expander("ℹ️ How to use this screen", expanded=False):
         st.markdown(
@@ -2477,7 +2493,7 @@ def _page_logs() -> None:
 
     # ── Header row ──────────────────────────────────────────────────────────
     _hdr_l, _hdr_r = st.columns([6, 1])
-    _hdr_l.markdown('<div class="log-header"><h1>📊 Log Analyzer</h1></div>', unsafe_allow_html=True)
+    _hdr_l.markdown('<div class="log-header"><h1>📋 Log Analyzer</h1></div>', unsafe_allow_html=True)
     if _hdr_r.button("🔄 Refresh", use_container_width=True, key="log_refresh"):
         st.rerun()
 
@@ -2752,7 +2768,7 @@ _DB_TABLE_LABELS: dict[str, str] = {
 
 
 def _page_database() -> None:
-    st.markdown("# 🗄️ Database Viewer")
+    st.markdown("# 💾 Database Viewer")
 
     with st.expander("ℹ️ How to use this screen", expanded=False):
         st.markdown(
@@ -3230,152 +3246,511 @@ def _render_index_metrics() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Identity Verification — helper functions
+# ---------------------------------------------------------------------------
+
+import re as _re
+import xml.etree.ElementTree as _ET
+
+_PAN_RE = _re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
+_PAN_ENTITY_TYPES = {
+    "P": "Individual", "C": "Company", "H": "Hindu Undivided Family",
+    "F": "Firm", "A": "Association of Persons", "T": "Trust / AOP",
+    "B": "Body of Individuals", "L": "Local Authority",
+    "J": "Artificial Juridical Person", "G": "Government",
+}
+
+
+def _parse_aadhaar_qr(img_bytes: bytes) -> Dict[str, Any]:
+    """Decode the QR code on an Aadhaar card and return extracted fields."""
+    try:
+        import cv2
+        import numpy as np
+        nparr = np.frombuffer(img_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img is None:
+            return {}
+        detector = cv2.QRCodeDetector()
+        data, _pts, _ = detector.detectAndDecode(img)
+        if not data:
+            # Try a rescaled version for small/low-res QR codes
+            h, w = img.shape[:2]
+            big = cv2.resize(img, (w * 2, h * 2), interpolation=cv2.INTER_CUBIC)
+            data, _pts, _ = detector.detectAndDecode(big)
+        if not data:
+            return {"qr_found": False}
+        try:
+            root = _ET.fromstring(data)
+            a = root.attrib
+            name = a.get("name", "")
+            return {
+                "qr_found": True,
+                "qr_type": "xml",
+                "name": name,
+                "dob": a.get("dob", ""),
+                "yob": a.get("yob", ""),
+                "gender": a.get("gender", ""),
+                "uid": a.get("uid", ""),  # masked
+                "co": a.get("co", ""),
+                "vtc": a.get("vtc", ""),
+                "dist": a.get("dist", ""),
+                "state": a.get("state", ""),
+                "pc": a.get("pc", ""),
+            }
+        except _ET.ParseError:
+            return {
+                "qr_found": True,
+                "qr_type": "secure",
+                "note": "Secure Aadhaar QR detected (2018+). Demographic data is cryptographically signed and cannot be displayed offline.",
+            }
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _extract_pan_info(img_bytes: bytes) -> Dict[str, Any]:
+    """OCR a PAN card image and extract PAN number + name."""
+    try:
+        import cv2
+        import numpy as np
+        nparr = np.frombuffer(img_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            return {}
+        # Upscale then de-noise for better OCR
+        img = cv2.resize(img, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+        img = cv2.GaussianBlur(img, (1, 1), 0)
+        try:
+            import pytesseract
+            text = pytesseract.image_to_string(img, config="--psm 6")
+        except Exception:  # noqa: BLE001
+            return {}
+        result: Dict[str, Any] = {}
+        pan_match = _re.search(r"[A-Z]{5}[0-9]{4}[A-Z]", text.upper())
+        if pan_match:
+            result["pan_number"] = pan_match.group()
+        # Name line: all-caps, 2+ words, no digits, not header boilerplate
+        _skip = {"INCOME", "DEPARTMENT", "GOVT", "INDIA", "TAX", "PERMANENT", "ACCOUNT", "NUMBER"}
+        for line in text.splitlines():
+            clean = line.strip()
+            if (
+                _re.match(r"^[A-Z][A-Z\s]{4,49}$", clean)
+                and len(clean.split()) >= 2
+                and not any(kw in clean for kw in _skip)
+            ):
+                result["name"] = clean
+                break
+        return result
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _validate_pan(pan: str) -> Dict[str, Any]:
+    pan = pan.strip().upper()
+    if not pan:
+        return {"valid": False, "error": "PAN is empty"}
+    if not _PAN_RE.match(pan):
+        return {"valid": False, "error": f"Invalid format (expected ABCDE1234F, got '{pan}')"}
+    return {
+        "valid": True,
+        "pan": pan,
+        "entity_type": _PAN_ENTITY_TYPES.get(pan[3], f"Unknown ({pan[3]})"),
+        "surname_initial": pan[4],
+    }
+
+
+def _names_match(name1: str, name2: str) -> tuple:
+    """Return (is_match: bool, similarity: float) for two name strings."""
+    n1 = name1.lower().strip()
+    n2 = name2.lower().strip()
+    if not n1 or not n2:
+        return False, 0.0
+    if n1 == n2:
+        return True, 1.0
+    words1 = set(n1.split())
+    words2 = set(n2.split())
+    union = words1 | words2
+    inter = words1 & words2
+    sim = len(inter) / len(union) if union else 0.0
+    return sim >= 0.5, sim
+
+
+# ---------------------------------------------------------------------------
 # Identity Verification Page
 # ---------------------------------------------------------------------------
 
 def _page_identity_verification() -> None:
     st.title("🧑‍💻 Identity Verification")
-    st.caption("Offline face matching using OpenCV, RetinaFace, and ArcFace (ONNX) to detect identity fraud.")
+    st.caption(
+        "Upload Aadhaar + PAN card + Selfie to verify identity offline using "
+        "QR parsing, PAN validation, name cross-check, and ArcFace face matching."
+    )
 
     with st.expander("ℹ️ How it works", expanded=False):
         st.markdown(
-            "Upload an ID Document (e.g. Aadhaar, PAN) and a Selfie.\\n"
-            "The system uses **RetinaFace** to locate the faces and facial landmarks, "
-            "then uses **ArcFace** to generate identity embeddings and calculates the cosine similarity. "
-            "It runs 100% locally and offline.\\n\\n"
-            "Results are persisted to the database and linked to the selected entity."
+            "**Step 1** — Upload your Aadhaar card, PAN card, and a selfie photo.  \n"
+            "**Step 2** — The system reads the Aadhaar QR code to extract your name, DOB, and "
+            "other details, then validates the PAN format and compares the names.  \n"
+            "**Step 3** — ArcFace compares the face on your Aadhaar card with your selfie.  \n"
+            "**Step 4** — Results are saved to the database and linked to your profile.  \n\n"
+            "Everything runs 100% locally — no data leaves this server."
         )
 
-    # -- Entity selector -------------------------------------------------------
-    forced_ref = None
-    extra_identity = None
-    if _DB_IMPORTS_OK and db_available():
-        forced_ref, extra_identity = _render_entity_link_widget("fm", mandatory=True)
-        st.divider()
+    IMG_TYPES = ["jpg", "jpeg", "png", "webp"]
 
-    selected_entity_ref = forced_ref
+    # ── Step 1: Document uploads ───────────────────────────────────────────
+    st.subheader("Step 1 — Upload Documents")
+    col_a, col_p, col_s = st.columns(3)
 
-    # -- Upload images ---------------------------------------------------------
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("1. ID Document")
-        doc_file = st.file_uploader("Upload ID Photo", type=["jpg", "jpeg", "png", "webp"], key="doc_img")
+    with col_a:
+        st.markdown("**📄 Aadhaar Card**")
+        aadhaar_file = st.file_uploader(
+            "Upload Aadhaar card photo",
+            type=IMG_TYPES, key="idv_aadhaar",
+            label_visibility="collapsed",
+        )
 
-    with col2:
-        st.subheader("2. Selfie Image")
-        selfie_file = st.file_uploader("Upload Selfie Photo", type=["jpg", "jpeg", "png", "webp"], key="selfie_img")
+    with col_p:
+        st.markdown("**💳 PAN Card**")
+        pan_file = st.file_uploader(
+            "Upload PAN card photo",
+            type=IMG_TYPES, key="idv_pan",
+            label_visibility="collapsed",
+        )
 
-    if doc_file and selfie_file:
-        st.markdown("---")
-        if st.button("Run Face Match (ArcFace) 🔍", type="primary", use_container_width=True):
-            if not forced_ref:
-                if not extra_identity:
-                    st.warning("Please link an entity or enter applicant details (mandatory).")
-                    st.stop()
-                elif not (
-                    extra_identity.get("first_name") and 
-                    extra_identity.get("last_name") and 
-                    (extra_identity.get("pan_number") or extra_identity.get("aadhar_number")) and
-                    (extra_identity.get("email") or extra_identity.get("phone"))
-                ):
-                    st.warning("Please provide First name, Last name, plus at least one ID (PAN/Aadhaar) and contact (Email/Phone).")
-                    st.stop()
+    with col_s:
+        st.markdown("**🤳 Selfie Photo**")
+        selfie_file = st.file_uploader(
+            "Upload selfie",
+            type=IMG_TYPES, key="idv_selfie",
+            label_visibility="collapsed",
+        )
 
-            with st.spinner("Initializing models and running inference..."):
-                from basetruth.vision.face import compare_faces
-                result = compare_faces(doc_file.getvalue(), selfie_file.getvalue())
+    # Camera fallback if no selfie uploaded
+    selfie_bytes: bytes | None = None
+    selfie_name = "selfie.jpg"
+    if selfie_file:
+        selfie_bytes = selfie_file.getvalue()
+        selfie_name = selfie_file.name
+    else:
+        with col_s:
+            st.caption("No selfie uploaded — take a photo with your camera:")
+            cam = st.camera_input("Take photo", key="idv_camera", label_visibility="collapsed")
+            if cam:
+                selfie_bytes = cam.getvalue()
+                selfie_name = "camera_capture.jpg"
 
-            if "error" in result:
-                st.error(f"Error: {result['error']}")
+    # ── Step 2: Parse & validate uploaded documents ────────────────────────
+    aadhaar_qr: Dict[str, Any] = {}
+    pan_data: Dict[str, Any] = {}
+    pan_validation: Dict[str, Any] = {}
+
+    if aadhaar_file:
+        # Cache QR parse by file size to avoid re-running on every re-render
+        _a_key = f"_idv_qr_{aadhaar_file.size}"
+        if _a_key not in st.session_state:
+            with st.spinner("Scanning Aadhaar QR code..."):
+                st.session_state[_a_key] = _parse_aadhaar_qr(aadhaar_file.getvalue())
+        aadhaar_qr = st.session_state[_a_key]
+
+        with col_a:
+            st.image(aadhaar_file.getvalue(), caption="Aadhaar card preview", use_container_width=True)
+            if aadhaar_qr.get("qr_found") is False:
+                st.warning("No QR code detected. Ensure the QR code is visible and the image is clear.")
+            elif aadhaar_qr.get("qr_type") == "xml":
+                st.success("QR decoded successfully")
+                st.markdown(
+                    f"**Name:** {aadhaar_qr.get('name', '—')}  \n"
+                    f"**DOB/YOB:** {aadhaar_qr.get('dob') or aadhaar_qr.get('yob', '—')}  \n"
+                    f"**Gender:** {aadhaar_qr.get('gender', '—')}  \n"
+                    f"**District:** {aadhaar_qr.get('dist', '—')}, {aadhaar_qr.get('state', '—')}"
+                )
+            elif aadhaar_qr.get("qr_type") == "secure":
+                st.info(aadhaar_qr.get("note", "Secure QR detected."))
+            elif not aadhaar_qr:
+                st.warning("QR scan error — check that OpenCV is available.")
+
+    if pan_file:
+        _p_key = f"_idv_pan_{pan_file.size}"
+        if _p_key not in st.session_state:
+            with st.spinner("Reading PAN card..."):
+                st.session_state[_p_key] = _extract_pan_info(pan_file.getvalue())
+        pan_data = st.session_state[_p_key]
+
+        with col_p:
+            st.image(pan_file.getvalue(), caption="PAN card preview", use_container_width=True)
+            extracted_pan = pan_data.get("pan_number", "")
+            if extracted_pan:
+                pan_validation = _validate_pan(extracted_pan)
+                if pan_validation["valid"]:
+                    st.success(f"PAN: **{extracted_pan}**  \nEntity type: {pan_validation['entity_type']}")
+                else:
+                    st.warning(f"PAN read: `{extracted_pan}` — {pan_validation.get('error', '')}")
             else:
-                score = result["display_score"]
-                is_match = result["match"]
+                st.info("PAN number not detected via OCR. You can enter it manually below.")
+            if pan_data.get("name"):
+                st.caption(f"Name on PAN card: **{pan_data['name']}**")
+
+    if selfie_bytes:
+        with col_s:
+            st.image(selfie_bytes, caption="Selfie preview", use_container_width=True)
+
+    # ── Step 3: Cross-checks ───────────────────────────────────────────────
+    if aadhaar_file or pan_file:
+        st.divider()
+        st.subheader("Step 2 — Document Cross-Checks")
+        chk_cols = st.columns(2)
+
+        # Name cross-check
+        with chk_cols[0]:
+            aadhaar_name = aadhaar_qr.get("name", "") if aadhaar_qr.get("qr_type") == "xml" else ""
+            pan_name = pan_data.get("name", "")
+            if aadhaar_name and pan_name:
+                matched, sim = _names_match(aadhaar_name, pan_name)
+                if matched:
+                    st.success(
+                        f"**Name Match: PASS** ({sim * 100:.0f}%)  \n"
+                        f"Aadhaar QR: *{aadhaar_name}*  \n"
+                        f"PAN card: *{pan_name}*"
+                    )
+                else:
+                    st.error(
+                        f"**Name Mismatch: FAIL** ({sim * 100:.0f}% overlap)  \n"
+                        f"Aadhaar QR: *{aadhaar_name}*  \n"
+                        f"PAN card: *{pan_name}*  \n"
+                        "Names on Aadhaar and PAN card do not match."
+                    )
+            elif aadhaar_name and not pan_name:
+                st.info(f"Name from Aadhaar QR: **{aadhaar_name}**  \n(Upload PAN card to cross-check name)")
+            elif pan_name and not aadhaar_name:
+                st.info(f"Name from PAN card: **{pan_name}**  \n(Aadhaar QR needed to cross-check name)")
+            else:
+                st.caption("Upload both Aadhaar and PAN cards to check name consistency.")
+
+        # PAN surname initial check
+        with chk_cols[1]:
+            if pan_validation.get("valid") and aadhaar_name:
+                surname_initial = pan_validation.get("surname_initial", "")
+                aadhaar_surname_initial = aadhaar_name.strip().split()[-1][0].upper() if aadhaar_name.strip().split() else ""
+                if surname_initial and aadhaar_surname_initial:
+                    if surname_initial == aadhaar_surname_initial:
+                        st.success(
+                            f"**PAN Surname Check: PASS**  \n"
+                            f"PAN 5th char '{surname_initial}' matches Aadhaar surname initial '{aadhaar_surname_initial}'"
+                        )
+                    else:
+                        st.warning(
+                            f"**PAN Surname Check: MISMATCH**  \n"
+                            f"PAN 5th char '{surname_initial}' vs Aadhaar surname initial '{aadhaar_surname_initial}'  \n"
+                            "This may indicate the PAN belongs to a different person."
+                        )
+            elif pan_validation.get("valid"):
+                st.info(f"**PAN Format: VALID**  \nEntity type: {pan_validation['entity_type']}")
+            elif pan_file and not pan_validation.get("valid") and pan_data.get("pan_number"):
+                pv = _validate_pan(pan_data.get("pan_number", ""))
+                if not pv.get("valid"):
+                    st.warning(f"**PAN Format: INVALID** — {pv.get('error', '')}")
+
+    # ── Step 4: Applicant details form (auto-filled from documents) ────────
+    st.divider()
+    st.subheader("Step 3 — Applicant Details")
+    st.info(
+        "Fields marked **auto-filled** are extracted from the documents. "
+        "Please provide Phone and Email manually.",
+        icon="ℹ️",
+    )
+
+    # Auto-fill name from Aadhaar QR
+    _qr_name = aadhaar_qr.get("name", "") if aadhaar_qr.get("qr_type") == "xml" else ""
+    _qr_name_parts = _qr_name.strip().split(maxsplit=1)
+    _default_fn = _qr_name_parts[0] if _qr_name_parts else ""
+    _default_ln = _qr_name_parts[1] if len(_qr_name_parts) > 1 else ""
+
+    # Auto-fill PAN from OCR
+    _default_pan = pan_data.get("pan_number", "")
+
+    # Aadhaar UID (usually masked in QR, but include if available)
+    _default_aadh = aadhaar_qr.get("uid", "")
+
+    mc1, mc2 = st.columns(2)
+    e_fn = mc1.text_input(
+        "First name  *(auto-filled)*" if _default_fn else "First name",
+        value=_default_fn, key="idv_ei_fn",
+    )
+    e_ln = mc2.text_input(
+        "Last name  *(auto-filled)*" if _default_ln else "Last name",
+        value=_default_ln, key="idv_ei_ln",
+    )
+    mc3, mc4 = st.columns(2)
+    e_pan = mc3.text_input(
+        "PAN number  *(auto-filled)*" if _default_pan else "PAN number",
+        value=_default_pan, key="idv_ei_pan",
+        placeholder="ABCDE1234F",
+    )
+    e_aadh = mc4.text_input(
+        "Aadhaar number  *(from QR)*" if _default_aadh else "Aadhaar number",
+        value=_default_aadh, key="idv_ei_aadh",
+        placeholder="1234 5678 9012",
+    )
+    mc5, mc6 = st.columns(2)
+    e_email = mc5.text_input("Email  *(enter manually)*", key="idv_ei_email", placeholder="applicant@email.com")
+    e_phone = mc6.text_input("Phone  *(enter manually)*", key="idv_ei_phone", placeholder="+91 98765 43210")
+
+    # Also allow linking to an existing entity via search
+    forced_ref: str | None = None
+    extra_identity: dict | None = None
+    if _DB_IMPORTS_OK and db_available():
+        with st.expander("🔗 Link to an existing entity record (optional)", expanded=False):
+            search_q = st.text_input(
+                "Search by name / PAN / Aadhaar / email / BT-ref",
+                key="idv_entity_search",
+                placeholder="e.g. BT-000003, MVWNV2212G…",
+            )
+            if search_q.strip():
+                matches = search_entities(search_q.strip(), "all", limit=8)
+                if matches:
+                    opts = {
+                        f"{m['entity_ref']}  —  {m['first_name']} {m['last_name']}  "
+                        f"({m.get('pan_number') or m.get('email') or 'no id'})": m["entity_ref"]
+                        for m in matches
+                    }
+                    chosen_label = st.selectbox("Select person", list(opts.keys()), key="idv_entity_select")
+                    forced_ref = opts[chosen_label]
+                    st.success(f"Will link to **{chosen_label.split('—')[0].strip()}**")
+                else:
+                    st.info("No match found. A new entity will be created from the details above.")
+
+    # Build extra_identity from the form fields
+    if any([e_fn, e_ln, e_pan, e_aadh, e_email, e_phone]):
+        extra_identity = {
+            "first_name": e_fn.strip(),
+            "last_name": e_ln.strip(),
+            "pan_number": e_pan.strip().upper(),
+            "aadhar_number": e_aadh.replace(" ", "").strip(),
+            "email": e_email.strip().lower(),
+            "phone": e_phone.strip(),
+        }
+
+    # ── Step 5: Run identity verification ──────────────────────────────────
+    st.divider()
+    _can_run = aadhaar_file is not None and selfie_bytes is not None
+    if not _can_run:
+        st.info("Upload the Aadhaar card and provide a selfie (or take one with the camera) to run verification.")
+
+    if _can_run:
+        if st.button("Run Identity Verification  🔍", type="primary", use_container_width=True):
+            if not forced_ref and not extra_identity:
+                st.warning("Please fill in at least the applicant's name or PAN to link the result.")
+                st.stop()
+
+            with st.spinner("Running face detection and ArcFace matching..."):
+                from basetruth.vision.face import compare_faces
+                face_result = compare_faces(aadhaar_file.getvalue(), selfie_bytes)
+
+            st.subheader("Verification Result")
+
+            if "error" in face_result:
+                st.error(f"Face matching failed: {face_result['error']}")
+            else:
+                score = face_result["display_score"]
+                is_match = face_result["match"]
+                selected_entity_ref = forced_ref
+
+                r1, r2 = st.columns(2)
+                with r1:
+                    st.image(face_result["doc_annotated_rgb"],
+                             caption="Face detected on Aadhaar", use_container_width=True)
+                with r2:
+                    st.image(face_result["selfie_annotated_rgb"],
+                             caption="Face detected in selfie", use_container_width=True)
 
                 if is_match:
-                    st.success(f"### ✅ MATCH: {score:.1f}% Confidence\\nThe faces appear to belong to the same person.")
+                    st.success(
+                        f"### ✅ IDENTITY MATCH — {score:.1f}% confidence\n"
+                        "The face on the Aadhaar card matches the provided selfie."
+                    )
                 else:
-                    st.error(f"### 🚨 FRAUD ALERT: {score:.1f}% Confidence\\nThe faces DO NOT match.")
+                    st.error(
+                        f"### 🚨 IDENTITY MISMATCH — {score:.1f}% confidence\n"
+                        "The faces DO NOT match. Possible fraud risk."
+                    )
+                st.caption(
+                    f"Cosine similarity: {face_result['confidence']:.3f} "
+                    f"(threshold: {face_result['threshold']:.2f})"
+                )
 
-                st.write(f"Raw Cosine Similarity: {result['confidence']:.3f} / Threshold: {result['threshold']:.2f}")
-
-                res_col1, res_col2 = st.columns(2)
-                with res_col1:
-                    st.image(result["doc_annotated_rgb"], caption="Detected Face (ID Document)", use_container_width=True)
-                with res_col2:
-                    st.image(result["selfie_annotated_rgb"], caption="Detected Face (Selfie)", use_container_width=True)
-
-                # -- Persist to DB + Generate PDF ----------------------------------
+                # --- Persist to DB ---
                 if _DB_IMPORTS_OK and db_available():
-                    db_result = {
-                        k: v for k, v in result.items()
+                    db_payload = {
+                        k: v for k, v in face_result.items()
                         if k not in ("doc_annotated_rgb", "selfie_annotated_rgb")
                     }
-                    for k, v in list(db_result.items()):
+                    for k, v in list(db_payload.items()):
                         if hasattr(v, "item"):
-                            db_result[k] = v.item()
+                            db_payload[k] = v.item()
 
                     _ref_for_pdf = forced_ref or ""
-                    _name_for_pdf = ""
-                    if extra_identity:
-                        _name_for_pdf = f"{extra_identity.get('first_name', '')} {extra_identity.get('last_name', '')}".strip()
+                    _name_for_pdf = (
+                        f"{extra_identity.get('first_name', '')} {extra_identity.get('last_name', '')}".strip()
+                        if extra_identity else ""
+                    )
 
                     try:
                         from basetruth.reporting.pdf import render_identity_check_pdf
                         pdf_bytes = render_identity_check_pdf(
                             check_type="face_match",
-                            result=db_result,
+                            result=db_payload,
                             entity_ref=_ref_for_pdf,
                             entity_name=_name_for_pdf,
-                            doc_filename=doc_file.name,
-                            selfie_filename=selfie_file.name,
+                            doc_filename=aadhaar_file.name,
+                            selfie_filename=selfie_name,
                         )
-                    except Exception:
+                    except Exception:  # noqa: BLE001
                         pdf_bytes = None
 
                     saved = save_identity_check(
                         check_type="face_match",
-                        result=db_result,
+                        result=db_payload,
                         forced_entity_ref=forced_ref,
                         extra_identity=extra_identity,
-                        doc_filename=doc_file.name,
-                        selfie_filename=selfie_file.name,
+                        doc_filename=aadhaar_file.name,
+                        selfie_filename=selfie_name,
                         pdf_bytes=pdf_bytes,
                     )
-                    if saved and saved.get("entity_ref"):
-                        selected_entity_ref = saved["entity_ref"]
                     if saved:
-                        st.info(f"Result saved to database (ID: {saved['id']}, Entity: {saved.get('entity_ref', 'unlinked')})")
+                        selected_entity_ref = saved.get("entity_ref") or forced_ref
+                        st.success(
+                            f"Saved to database — Entity: **{saved.get('entity_ref', 'unlinked')}**, "
+                            f"Record ID: {saved['id']}"
+                        )
                     if pdf_bytes:
                         st.download_button(
-                            "Download Face Match Report (PDF)",
+                            "Download Identity Check Report (PDF)",
                             data=pdf_bytes,
-                            file_name=f"face_match_report_{selected_entity_ref or 'unlinked'}.pdf",
+                            file_name=f"identity_check_{selected_entity_ref or 'unlinked'}.pdf",
                             mime="application/pdf",
-                            key="fm_pdf_dl",
+                            key="idv_pdf_dl",
                         )
+                else:
+                    st.warning("Database is offline — result not persisted. Connect PostgreSQL to save results.")
 
-    # -- Previous checks for selected entity -----------------------------------
-    if selected_entity_ref and _DB_IMPORTS_OK and db_available():
-        st.divider()
-        st.subheader(f"Previous Identity Checks for {selected_entity_ref}")
-        checks = get_entity_identity_checks(selected_entity_ref)
-        face_checks = [c for c in checks if c["check_type"] == "face_match"]
-        if face_checks:
-            import pandas as pd
-            df = pd.DataFrame([
-                {
-                    "Date": c["created_at"][:19],
-                    "Verdict": c["verdict"],
-                    "Score": f"{c['display_score']:.1f}%" if c["display_score"] else "-",
-                    "Match": "Yes" if c["is_match"] else "No",
-                    "Document": c["doc_filename"],
-                    "Selfie": c["selfie_filename"],
-                }
-                for c in face_checks
-            ])
-            st.dataframe(df, hide_index=True, use_container_width=True)
-        else:
-            st.caption("No previous face match checks for this entity.")
+                # Previous checks for the resolved entity
+                if selected_entity_ref and _DB_IMPORTS_OK and db_available():
+                    st.divider()
+                    st.subheader(f"Previous Identity Checks for {selected_entity_ref}")
+                    checks = get_entity_identity_checks(selected_entity_ref)
+                    face_checks = [c for c in checks if c["check_type"] == "face_match"]
+                    if face_checks:
+                        import pandas as pd
+                        df = pd.DataFrame([{
+                            "Date": c["created_at"][:19],
+                            "Verdict": c["verdict"],
+                            "Score": f"{c['display_score']:.1f}%" if c["display_score"] else "-",
+                            "Match": "Yes" if c["is_match"] else "No",
+                            "Document": c["doc_filename"],
+                        } for c in face_checks])
+                        st.dataframe(df, hide_index=True, use_container_width=True)
+                    else:
+                        st.caption("No previous checks found for this entity.")
 
 # ---------------------------------------------------------------------------
 # Video KYC Page
@@ -3447,14 +3822,6 @@ def _page_video_kyc() -> None:
         if not forced_ref:
             if not extra_identity:
                 st.warning("Please link an entity or enter applicant details (mandatory).")
-                st.stop()
-            elif not (
-                extra_identity.get("first_name") and 
-                extra_identity.get("last_name") and 
-                (extra_identity.get("pan_number") or extra_identity.get("aadhar_number")) and
-                (extra_identity.get("email") or extra_identity.get("phone"))
-            ):
-                st.warning("Please provide First name, Last name, plus at least one ID (PAN/Aadhaar) and contact (Email/Phone).")
                 st.stop()
 
         import numpy as np
