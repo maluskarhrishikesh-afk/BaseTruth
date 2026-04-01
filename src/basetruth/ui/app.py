@@ -3342,6 +3342,7 @@ def _extract_pan_info(img_bytes: bytes) -> Dict[str, Any]:
                     t = pytesseract.image_to_string(
                         gray_img,
                         config=f"--psm {psm} --oem 3 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ",
+                        timeout=15,  # prevent hangs on high-resolution images
                     )
                     if len(t) > len(best):
                         best = t
@@ -3353,27 +3354,24 @@ def _extract_pan_info(img_bytes: bytes) -> Dict[str, Any]:
             return best
 
         def _preprocess(img_bgr):
-            """Return a list of preprocessed grayscale variants."""
-            variants = []
-            # 1) Upscale 3x (best for small PAN scans)
-            big = cv2.resize(img_bgr, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
-            gray3x = cv2.cvtColor(big, cv2.COLOR_BGR2GRAY)
-            variants.append(gray3x)
-            # 2) Adaptive threshold
-            _, otsu = cv2.threshold(gray3x, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            """Return a list of preprocessed grayscale variants.
+
+            Caps the image at max_w=1200 px so pytesseract never times out on
+            high-resolution scans (e.g. 1902×2518 → previous 3× = 5706×7554).
+            Small images are still upscaled up to 1.5×.
+            """
+            h_orig, w_orig = img_bgr.shape[:2]
+            max_w = 1200
+            scale = min(max_w / max(w_orig, 1), 1.5)
+            resized = cv2.resize(img_bgr, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+            gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+            variants = [gray]
+            _, otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             variants.append(otsu)
-            # 3) CLAHE for low-contrast scans
             clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-            enhanced = clahe.apply(gray3x)
-            variants.append(enhanced)
-            # 4) Deskew + sharpen
+            variants.append(clahe.apply(gray))
             kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
-            sharp = cv2.filter2D(gray3x, -1, kernel)
-            variants.append(sharp)
-            # 5) Original 2x (fallback)
-            orig2x = cv2.resize(img_bgr, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
-            gray2x = cv2.cvtColor(orig2x, cv2.COLOR_BGR2GRAY)
-            variants.append(gray2x)
+            variants.append(cv2.filter2D(gray, -1, kernel))
             return variants
 
         _pan_re_global = _re.compile(r"[A-Z]{5}[0-9]{4}[A-Z]")
@@ -3417,6 +3415,224 @@ def _extract_pan_info(img_bytes: bytes) -> Dict[str, Any]:
         return result
     except Exception:  # noqa: BLE001
         return {}
+
+
+def _pan_tampering_check(img_bytes: bytes) -> Dict[str, Any]:
+    """Detect editing artefacts via Error Level Analysis (ELA).
+
+    Saves the image at JPEG quality 75, compares with original.
+    A high mean ELA residual suggests regions were edited (copy-paste, clone stamp).
+    """
+    try:
+        import io
+        import numpy as np
+        from PIL import Image
+        orig_img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        buf = io.BytesIO()
+        orig_img.save(buf, format="JPEG", quality=75)
+        buf.seek(0)
+        recomp = Image.open(buf).convert("RGB")
+        ela = abs(
+            np.array(orig_img, dtype=np.float32)
+            - np.array(recomp, dtype=np.float32)
+        )
+        ela_mean = float(ela.mean())
+        if ela_mean > 15:
+            return {
+                "passed": False,
+                "score": max(0, 100 - int(ela_mean * 2)),
+                "reason": "High ELA residuals — localised editing artefacts detected.",
+            }
+        if ela_mean > 8:
+            return {
+                "passed": None,
+                "score": max(0, 100 - int(ela_mean * 3)),
+                "reason": "Moderate ELA residuals — image may have been processed.",
+            }
+        return {
+            "passed": True,
+            "score": min(100, 100 - int(ela_mean)),
+            "reason": "ELA residuals within normal range for an unedited image.",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"passed": None, "score": None, "reason": f"Tampering check unavailable: {exc}"}
+
+
+def _render_pan_layers(
+    pan_data: Dict[str, Any],
+    pan_validation: Dict[str, Any],
+    pan_img_bytes: bytes | None,
+    selfie_bytes: bytes | None,
+    aadhaar_name: str,
+) -> None:
+    """Render the 5-layer PAN fraud analysis dashboard."""
+    st.markdown("#### 🛡️ PAN Fraud Detection — Layered Analysis")
+    st.caption(
+        "Each layer applies a different verification technique. "
+        "Only paid government APIs (Layer 2) are skipped."
+    )
+
+    layers = []
+
+    # Layer 1 — Format
+    if pan_validation.get("valid"):
+        layers.append({
+            "icon": "✅",
+            "title": "Layer 1 — PAN Format Check",
+            "status": "PASS",
+            "status_color": "#16a34a",
+            "detail": (
+                f"PAN `{pan_validation['pan']}` is syntactically valid.  \n"
+                f"Entity type: **{pan_validation['entity_type']}**  \n"
+                f"Surname initial: **{pan_validation['surname_initial']}**"
+            ),
+        })
+    elif pan_data.get("pan_number"):
+        layers.append({
+            "icon": "❌",
+            "title": "Layer 1 — PAN Format Check",
+            "status": "FAIL",
+            "status_color": "#dc2626",
+            "detail": f"OCR read `{pan_data['pan_number']}` — {pan_validation.get('error', 'invalid format')}.",
+        })
+    else:
+        layers.append({
+            "icon": "⚪",
+            "title": "Layer 1 — PAN Format Check",
+            "status": "N/A",
+            "status_color": "#94a3b8",
+            "detail": "PAN number could not be read from the image.",
+        })
+
+    # Layer 2 — Government API (skipped)
+    layers.append({
+        "icon": "ℹ️",
+        "title": "Layer 2 — Government API (NSDL / Karza / Signzy)",
+        "status": "SKIPPED",
+        "status_color": "#2563eb",
+        "detail": (
+            "Real-time PAN verification via NSDL or Karza requires a paid API subscription.  \n"
+            "Not configured — set `KARZA_API_KEY` or `NSDL_API_KEY` in your `.env` to enable."
+        ),
+    })
+
+    # Layer 3 — OCR extraction
+    ocr_pan = pan_data.get("pan_number", "")
+    ocr_name = pan_data.get("name", "")
+    if ocr_pan or ocr_name:
+        ocr_detail = ""
+        if ocr_pan:
+            ocr_detail += f"PAN extracted: **`{ocr_pan}`**  \n"
+        if ocr_name:
+            ocr_detail += f"Name on card: **{ocr_name}**"
+        layers.append({
+            "icon": "✅",
+            "title": "Layer 3 — OCR Text Extraction",
+            "status": "EXTRACTED",
+            "status_color": "#16a34a",
+            "detail": ocr_detail.strip(),
+        })
+    else:
+        layers.append({
+            "icon": "⚠️",
+            "title": "Layer 3 — OCR Text Extraction",
+            "status": "NOT FOUND",
+            "status_color": "#d97706",
+            "detail": "No PAN number or name could be extracted via OCR. Try a clearer scan.",
+        })
+
+    # Layer 4 — Tampering (ELA)
+    tampering_score_val = None
+    if pan_img_bytes:
+        t_result = _pan_tampering_check(pan_img_bytes)
+        tampering_score_val = t_result.get("score")
+        if t_result.get("passed") is True:
+            layers.append({
+                "icon": "✅",
+                "title": "Layer 4 — Image Tampering (ELA)",
+                "status": f"CLEAN  ({tampering_score_val}/100)",
+                "status_color": "#16a34a",
+                "detail": t_result["reason"],
+            })
+        elif t_result.get("passed") is False:
+            layers.append({
+                "icon": "🚨",
+                "title": "Layer 4 — Image Tampering (ELA)",
+                "status": f"SUSPECT  ({tampering_score_val}/100)",
+                "status_color": "#dc2626",
+                "detail": t_result["reason"],
+            })
+        else:
+            layers.append({
+                "icon": "⚠️",
+                "title": "Layer 4 — Image Tampering (ELA)",
+                "status": "INCONCLUSIVE",
+                "status_color": "#d97706",
+                "detail": t_result["reason"],
+            })
+    else:
+        layers.append({
+            "icon": "⚪",
+            "title": "Layer 4 — Image Tampering (ELA)",
+            "status": "N/A",
+            "status_color": "#94a3b8",
+            "detail": "Upload a PAN card image to run tampering detection.",
+        })
+
+    # Layer 5 — Face match (runs when user clicks Verify)
+    if selfie_bytes:
+        layers.append({
+            "icon": "🔄",
+            "title": "Layer 5 — Face Match (ArcFace)",
+            "status": "PENDING",
+            "status_color": "#7c3aed",
+            "detail": "Selfie uploaded. Face match runs in **Step 4 — Run Identity Verification** below.",
+        })
+    else:
+        layers.append({
+            "icon": "⚪",
+            "title": "Layer 5 — Face Match (ArcFace)",
+            "status": "N/A",
+            "status_color": "#94a3b8",
+            "detail": "Upload a selfie or use the camera below to enable face matching.",
+        })
+
+    for layer in layers:
+        layer_html = (
+            f'<div style="display:flex;align-items:flex-start;gap:12px;'
+            f'padding:14px 16px;border-radius:12px;margin-bottom:8px;'
+            f'background:var(--secondary-background-color,#f8fafc);'
+            f'border:1px solid rgba(0,0,0,0.06);border-left:4px solid {layer["status_color"]};">'
+            f'<span style="font-size:1.1rem;flex-shrink:0;margin-top:1px;">{layer["icon"]}</span>'
+            f'<div style="flex:1;">'
+            f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;">'
+            f'<strong style="font-size:.9rem;">{layer["title"]}</strong>'
+            f'<span style="font-size:.75rem;font-weight:700;padding:2px 9px;border-radius:6px;'
+            f'background:{layer["status_color"]}1a;color:{layer["status_color"]};">'
+            f'{layer["status"]}</span>'
+            f"</div>"
+            f'<div style="font-size:.82rem;color:var(--text-color,#475569);">{layer["detail"]}</div>'
+            f"</div></div>"
+        )
+        st.markdown(layer_html, unsafe_allow_html=True)
+
+    scores = [s for s in [tampering_score_val] if s is not None]
+    if pan_validation.get("valid"):
+        scores.append(100)
+    if pan_data.get("pan_number"):
+        scores.append(80)
+    if scores:
+        overall = sum(scores) // len(scores)
+        risk_label = "LOW RISK" if overall >= 75 else "MEDIUM RISK" if overall >= 50 else "HIGH RISK"
+        risk_color = "#16a34a" if overall >= 75 else "#d97706" if overall >= 50 else "#dc2626"
+        st.markdown(
+            f'<div style="margin-top:12px;padding:14px 20px;border-radius:12px;'
+            f'background:{risk_color}1a;border:1px solid {risk_color}44;">'
+            f'<strong style="font-size:.9rem;color:{risk_color};">Overall PAN Fraud Score: '
+            f'<span style="font-size:1.2rem;">{overall}/100</span> — {risk_label}</strong>'
+            f"</div>",
+            unsafe_allow_html=True,
+        )
 
 
 def _validate_pan(pan: str) -> Dict[str, Any]:
@@ -3624,6 +3840,17 @@ def _page_identity_verification() -> None:
                 pv = _validate_pan(pan_data.get("pan_number", ""))
                 if not pv.get("valid"):
                     st.warning(f"**PAN Format: INVALID** — {pv.get('error', '')}")
+
+        # Layered PAN fraud analysis (5 layers)
+        if pan_file:
+            st.divider()
+            _render_pan_layers(
+                pan_data,
+                pan_validation,
+                pan_file.getvalue(),
+                selfie_bytes,
+                aadhaar_qr.get("name", "") if aadhaar_qr.get("qr_type") == "xml" else "",
+            )
 
     # ── Step 4: Applicant details form (auto-filled from documents) ────────
     st.divider()
@@ -4087,30 +4314,44 @@ def main() -> None:
     page = _sidebar()
     service = _get_service()
 
+    # Route to modular page implementations (pages/ sub-package)
+    from basetruth.ui.pages.dashboard import _page_dashboard as _m_dashboard  # noqa: PLC0415
+    from basetruth.ui.pages.scan import _page_scan as _m_scan  # noqa: PLC0415
+    from basetruth.ui.pages.bulk import _page_bulk as _m_bulk  # noqa: PLC0415
+    from basetruth.ui.pages.cases import _page_cases as _m_cases  # noqa: PLC0415
+    from basetruth.ui.pages.records import _page_records as _m_records  # noqa: PLC0415
+    from basetruth.ui.pages.reports import _page_reports as _m_reports  # noqa: PLC0415
+    from basetruth.ui.pages.datasources import _page_datasources as _m_datasources  # noqa: PLC0415
+    from basetruth.ui.pages.logs import _page_logs as _m_logs  # noqa: PLC0415
+    from basetruth.ui.pages.database import _page_database as _m_database  # noqa: PLC0415
+    from basetruth.ui.pages.settings import _page_settings as _m_settings  # noqa: PLC0415
+    from basetruth.ui.pages.identity import _page_identity_verification as _m_identity  # noqa: PLC0415
+    from basetruth.ui.pages.video_kyc import _page_video_kyc as _m_video_kyc  # noqa: PLC0415
+
     if page == "dashboard":
-        _page_dashboard(service)
+        _m_dashboard(service)
     elif page == "scan":
-        _page_scan(service)
+        _m_scan(service)
     elif page == "bulk":
-        _page_bulk(service)
+        _m_bulk(service)
     elif page == "cases":
-        _page_cases(service)
+        _m_cases(service)
     elif page == "records":
-        _page_records()
+        _m_records()
     elif page == "reports":
-        _page_reports(service)
+        _m_reports(service)
     elif page == "datasources":
-        _page_datasources(service)
+        _m_datasources(service)
     elif page == "logs":
-        _page_logs()
+        _m_logs()
     elif page == "database":
-        _page_database()
+        _m_database()
     elif page == "settings":
-        _page_settings()
+        _m_settings()
     elif page == "identity":
-        _page_identity_verification()
+        _m_identity()
     elif page == "video_kyc":
-        _page_video_kyc()
+        _m_video_kyc()
     else:
         st.warning(f"Unknown page: {page}")
 
