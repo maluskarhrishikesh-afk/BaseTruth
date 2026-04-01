@@ -2492,7 +2492,7 @@ def _page_logs() -> None:
     )
 
     # ── Header row ──────────────────────────────────────────────────────────
-    _hdr_l, _hdr_r = st.columns([6, 1])
+    _hdr_l, _hdr_r, _hdr_clr = st.columns([5, 1, 1])
     _hdr_l.markdown('<div class="log-header"><h1>📋 Log Analyzer</h1></div>', unsafe_allow_html=True)
     if _hdr_r.button("🔄 Refresh", use_container_width=True, key="log_refresh"):
         st.rerun()
@@ -2505,6 +2505,15 @@ def _page_logs() -> None:
             f"Expected location: `{lp}`"
         )
         return
+
+    # Clear logs button — shown only when a log file exists
+    if _hdr_clr.button("🗑 Clear", use_container_width=True, key="log_clear"):
+        try:
+            lp.write_text("", encoding="utf-8")
+            st.success("Log file cleared.")
+            st.rerun()
+        except Exception as _clr_exc:
+            st.error(f"Could not clear log file: {_clr_exc}")
 
     raw_lines: list[str] = []
     try:
@@ -3308,37 +3317,103 @@ def _parse_aadhaar_qr(img_bytes: bytes) -> Dict[str, Any]:
 
 
 def _extract_pan_info(img_bytes: bytes) -> Dict[str, Any]:
-    """OCR a PAN card image and extract PAN number + name."""
+    """OCR a PAN card image and extract PAN number + name.
+
+    Uses multiple preprocessing strategies and psm modes to handle varying
+    scan quality. Tries each strategy until a PAN number is found.
+    """
     try:
         import cv2
         import numpy as np
         nparr = np.frombuffer(img_bytes, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
-        if img is None:
+        orig = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if orig is None:
             return {}
-        # Upscale then de-noise for better OCR
-        img = cv2.resize(img, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
-        img = cv2.GaussianBlur(img, (1, 1), 0)
-        try:
-            import pytesseract
-            text = pytesseract.image_to_string(img, config="--psm 6")
-        except Exception:  # noqa: BLE001
-            return {}
+
+        def _try_ocr(gray_img) -> str:
+            """Run pytesseract with multiple psm modes and return best text."""
+            try:
+                import pytesseract
+            except ImportError:
+                return ""
+            best = ""
+            for psm in (6, 11, 3, 8, 7):
+                try:
+                    t = pytesseract.image_to_string(
+                        gray_img,
+                        config=f"--psm {psm} --oem 3 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ",
+                    )
+                    if len(t) > len(best):
+                        best = t
+                    # Stop early if we already found a PAN pattern
+                    if _re.search(r"[A-Z]{5}[0-9]{4}[A-Z]", t.upper()):
+                        return t
+                except Exception:  # noqa: BLE001
+                    pass
+            return best
+
+        def _preprocess(img_bgr):
+            """Return a list of preprocessed grayscale variants."""
+            variants = []
+            # 1) Upscale 3x (best for small PAN scans)
+            big = cv2.resize(img_bgr, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
+            gray3x = cv2.cvtColor(big, cv2.COLOR_BGR2GRAY)
+            variants.append(gray3x)
+            # 2) Adaptive threshold
+            _, otsu = cv2.threshold(gray3x, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            variants.append(otsu)
+            # 3) CLAHE for low-contrast scans
+            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+            enhanced = clahe.apply(gray3x)
+            variants.append(enhanced)
+            # 4) Deskew + sharpen
+            kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
+            sharp = cv2.filter2D(gray3x, -1, kernel)
+            variants.append(sharp)
+            # 5) Original 2x (fallback)
+            orig2x = cv2.resize(img_bgr, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+            gray2x = cv2.cvtColor(orig2x, cv2.COLOR_BGR2GRAY)
+            variants.append(gray2x)
+            return variants
+
+        _pan_re_global = _re.compile(r"[A-Z]{5}[0-9]{4}[A-Z]")
+        _skip_words = {"INCOME", "DEPARTMENT", "GOVT", "INDIA", "TAX", "PERMANENT",
+                       "ACCOUNT", "NUMBER", "CARD", "OF", "SIGNATURE", "FATHER"}
+
         result: Dict[str, Any] = {}
-        pan_match = _re.search(r"[A-Z]{5}[0-9]{4}[A-Z]", text.upper())
-        if pan_match:
-            result["pan_number"] = pan_match.group()
-        # Name line: all-caps, 2+ words, no digits, not header boilerplate
-        _skip = {"INCOME", "DEPARTMENT", "GOVT", "INDIA", "TAX", "PERMANENT", "ACCOUNT", "NUMBER"}
-        for line in text.splitlines():
-            clean = line.strip()
-            if (
-                _re.match(r"^[A-Z][A-Z\s]{4,49}$", clean)
-                and len(clean.split()) >= 2
-                and not any(kw in clean for kw in _skip)
-            ):
-                result["name"] = clean
+        all_text = ""
+
+        for variant in _preprocess(orig):
+            text = _try_ocr(variant)
+            if not text.strip():
+                continue
+            all_text += "\n" + text
+            # Look for PAN number
+            if not result.get("pan_number"):
+                pan_match = _pan_re_global.search(text.upper())
+                if pan_match:
+                    result["pan_number"] = pan_match.group()
+            # Look for cardholder name (upper-case line, multi-word, no boilerplate)
+            if not result.get("name"):
+                for line in text.splitlines():
+                    clean = _re.sub(r"[^A-Z\s]", "", line.strip().upper()).strip()
+                    words = [w for w in clean.split() if len(w) >= 2]
+                    if (
+                        len(words) >= 2
+                        and not any(kw in clean for kw in _skip_words)
+                        and not _pan_re_global.search(clean)
+                    ):
+                        result["name"] = " ".join(words)
+                        break
+            if result.get("pan_number") and result.get("name"):
                 break
+
+        # Last-resort: search the entire accumulated text dump
+        if not result.get("pan_number") and all_text:
+            m = _pan_re_global.search(all_text.upper())
+            if m:
+                result["pan_number"] = m.group()
+
         return result
     except Exception:  # noqa: BLE001
         return {}
@@ -3571,24 +3646,41 @@ def _page_identity_verification() -> None:
     # Aadhaar UID (usually masked in QR, but include if available)
     _default_aadh = aadhaar_qr.get("uid", "")
 
+    # Push extracted values into session state so that text_input widgets
+    # pick them up even after the page has already rendered once.
+    # We track a "source key" so we only overwrite when the uploaded file changes,
+    # never when the user has already edited the field manually.
+    _auto_key = f"_idv_auto_{getattr(aadhaar_file, 'size', 0)}_{getattr(pan_file, 'size', 0)}"
+    if st.session_state.get("_idv_auto_key") != _auto_key:
+        # New files uploaded — push fresh extracted values
+        if _default_fn:
+            st.session_state["idv_ei_fn"] = _default_fn
+        if _default_ln:
+            st.session_state["idv_ei_ln"] = _default_ln
+        if _default_pan:
+            st.session_state["idv_ei_pan"] = _default_pan
+        if _default_aadh:
+            st.session_state["idv_ei_aadh"] = _default_aadh
+        st.session_state["_idv_auto_key"] = _auto_key
+
     mc1, mc2 = st.columns(2)
     e_fn = mc1.text_input(
         "First name  *(auto-filled)*" if _default_fn else "First name",
-        value=_default_fn, key="idv_ei_fn",
+        key="idv_ei_fn",
     )
     e_ln = mc2.text_input(
         "Last name  *(auto-filled)*" if _default_ln else "Last name",
-        value=_default_ln, key="idv_ei_ln",
+        key="idv_ei_ln",
     )
     mc3, mc4 = st.columns(2)
     e_pan = mc3.text_input(
         "PAN number  *(auto-filled)*" if _default_pan else "PAN number",
-        value=_default_pan, key="idv_ei_pan",
+        key="idv_ei_pan",
         placeholder="ABCDE1234F",
     )
     e_aadh = mc4.text_input(
         "Aadhaar number  *(from QR)*" if _default_aadh else "Aadhaar number",
-        value=_default_aadh, key="idv_ei_aadh",
+        key="idv_ei_aadh",
         placeholder="1234 5678 9012",
     )
     mc5, mc6 = st.columns(2)
@@ -3982,6 +4074,15 @@ def main() -> None:
         st.session_state["artifact_root"] = str(_default_artifact_root())
     if "page" not in st.session_state:
         st.session_state["page"] = "dashboard"
+
+    # Ensure all DB tables exist on first load (non-fatal if DB is offline)
+    if "db_init_done" not in st.session_state:
+        if _DB_IMPORTS_OK:
+            try:
+                init_db()
+            except Exception:  # noqa: BLE001
+                pass
+        st.session_state["db_init_done"] = True
 
     page = _sidebar()
     service = _get_service()
