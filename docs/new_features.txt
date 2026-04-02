@@ -1,32 +1,55 @@
-This things are still visible in the left panel, please remove them permanently ->
 
-app
 
-bulk
-
-cases
-
-dashboard
-
-database
-
-datasources
-
-identity
-
-logs
-
-records
-
-reports
-
-View 3 more
-
-------------------------------------------------------------------------------------------------------
 
 When I click photos of Aadhar, PAN Card and self, the image quality or camera quality is not top notch.
 Can we improve the image quality?
 Issue is that Aadhar QR code and PAN card details cannot be fetched properly.
+
+main issue is that all the details cannot be extracted from the image ->
+Step 1 — Provide Documents
+
+📁 Upload Documents
+
+
+📷 Capture with Camera
+
+📷
+Click Open Camera for each document, then use the shutter button inside the camera view to capture the photo.
+
+📸 Tips for best results: Place the document on a flat surface in good light. Hold the camera directly above — avoid tilting. For Aadhaar, ensure the entire QR code is visible and in focus. For PAN card, make sure all text is sharp and not in shadow.
+📄 Aadhaar Card
+
+Snapshot
+✅ Photo captured
+
+0
+Aadhaar — captured
+
+
+💳 PAN Card
+
+Snapshot
+✅ Photo captured
+
+0
+PAN — captured
+
+
+🤳 Selfie Photo
+
+
+No Aadhaar QR code detected in the captured photo.
+
+✅ PAN extracted — AQVPM3058P (Individual)
+
+------------------------------------------------------------------------------------------------------
+
+Also coming to Video KYC, how should this exactly be?
+
+Shall we have options like setup calendar meeting with the customer and send a zoom or teams invite.
+I was wondering how can this be done.
+How have others achieved this in the market right now and what is the most modern way of doing it.
+How can we do it on out platform/product?
 
 ------------------------------------------------------------------------------------------------------
 

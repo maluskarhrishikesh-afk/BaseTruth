@@ -43,8 +43,11 @@ _PAN_ENTITY_TYPES = {
 def _parse_aadhaar_qr(img_bytes: bytes) -> Dict[str, Any]:
     """Decode the QR code on an Aadhaar card and return extracted fields.
 
-    Uses a cascade of preprocessing strategies so camera-captured images
-    (which may have glare, shadows or low resolution) still decode reliably.
+    Strategy (in order of robustness):
+    1. WeChatQRCode detector (opencv-contrib, deep-learning based — best for
+       blurry / low-resolution camera captures)
+    2. Standard cv2.QRCodeDetector with a full preprocessing cascade tried at
+       original size then at 2×, 3×, 4× upscale
     """
     try:
         import cv2  # noqa: PLC0415
@@ -55,17 +58,53 @@ def _parse_aadhaar_qr(img_bytes: bytes) -> Dict[str, Any]:
         if img is None:
             return {}
 
+        def _parse_data(data: str) -> Dict[str, Any]:
+            """Turn raw QR string into a structured dict."""
+            try:
+                root = _ET.fromstring(data)
+                a = root.attrib
+                return {
+                    "qr_found": True,
+                    "qr_type": "xml",
+                    "name": a.get("name", ""),
+                    "dob": a.get("dob", ""),
+                    "yob": a.get("yob", ""),
+                    "gender": a.get("gender", ""),
+                    "uid": a.get("uid", ""),
+                    "co": a.get("co", ""),
+                    "vtc": a.get("vtc", ""),
+                    "dist": a.get("dist", ""),
+                    "state": a.get("state", ""),
+                    "pc": a.get("pc", ""),
+                }
+            except _ET.ParseError:
+                return {
+                    "qr_found": True,
+                    "qr_type": "secure",
+                    "note": "Secure Aadhaar QR detected (2018+). Demographic data is "
+                    "cryptographically signed and cannot be displayed offline.",
+                }
+
+        # ── Strategy 1: WeChatQRCode (deep-learning, handles blur/perspective) ──
+        try:
+            wechat = cv2.wechat_qrcode_WeChatQRCode()
+            decoded_list, _ = wechat.detectAndDecode(img)
+            if decoded_list:
+                for d in decoded_list:
+                    if d:
+                        return _parse_data(d)
+        except Exception:  # noqa: BLE001
+            pass  # opencv-contrib not available in this build — fall through
+
+        # ── Strategy 2: Classic QRCodeDetector with preprocessing cascade ────
         detector = cv2.QRCodeDetector()
         h, w = img.shape[:2]
 
         def _variants(src_bgr: "np.ndarray") -> "list[np.ndarray]":
-            """Return a list of preprocessed images to try QR detection on."""
             gray = cv2.cvtColor(src_bgr, cv2.COLOR_BGR2GRAY)
-            # Remove camera noise before processing
             denoised = cv2.fastNlMeansDenoising(gray, h=10)
             clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
             eq = clahe.apply(denoised)
-            # Adaptive threshold handles uneven camera lighting / glare
             adapt = cv2.adaptiveThreshold(
                 denoised, 255,
                 cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
@@ -76,26 +115,32 @@ def _parse_aadhaar_qr(img_bytes: bytes) -> Dict[str, Any]:
                 cv2.ADAPTIVE_THRESH_MEAN_C,
                 cv2.THRESH_BINARY, 11, 2,
             )
-            # Otsu global threshold
             _, otsu = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            # Sharpening
             kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
             sharp = cv2.filter2D(denoised, -1, kernel)
             return [src_bgr, gray, denoised, eq, adapt, adapt2, otsu, sharp]
 
-        # Try original size first
         data = ""
         for variant in _variants(img):
             data, _, _ = detector.detectAndDecode(variant)
             if data:
                 break
 
-        # Try progressively higher upscales until QR is found
         if not data:
             for scale in (2, 3, 4):
                 big = cv2.resize(
                     img, (w * scale, h * scale), interpolation=cv2.INTER_CUBIC
                 )
+                # Also try WeChatQRCode on upscaled variants
+                try:
+                    wechat = cv2.wechat_qrcode_WeChatQRCode()
+                    decoded_list, _ = wechat.detectAndDecode(big)
+                    if decoded_list:
+                        for d in decoded_list:
+                            if d:
+                                return _parse_data(d)
+                except Exception:  # noqa: BLE001
+                    pass
                 for variant in _variants(big):
                     data, _, _ = detector.detectAndDecode(variant)
                     if data:
@@ -106,30 +151,7 @@ def _parse_aadhaar_qr(img_bytes: bytes) -> Dict[str, Any]:
         if not data:
             return {"qr_found": False}
 
-        try:
-            root = _ET.fromstring(data)
-            a = root.attrib
-            return {
-                "qr_found": True,
-                "qr_type": "xml",
-                "name": a.get("name", ""),
-                "dob": a.get("dob", ""),
-                "yob": a.get("yob", ""),
-                "gender": a.get("gender", ""),
-                "uid": a.get("uid", ""),
-                "co": a.get("co", ""),
-                "vtc": a.get("vtc", ""),
-                "dist": a.get("dist", ""),
-                "state": a.get("state", ""),
-                "pc": a.get("pc", ""),
-            }
-        except _ET.ParseError:
-            return {
-                "qr_found": True,
-                "qr_type": "secure",
-                "note": "Secure Aadhaar QR detected (2018+). Demographic data is "
-                "cryptographically signed and cannot be displayed offline.",
-            }
+        return _parse_data(data)
     except Exception:  # noqa: BLE001
         return {}
 

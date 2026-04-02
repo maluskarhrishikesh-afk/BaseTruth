@@ -206,7 +206,7 @@ The Identity Verification page (`pages/identity.py`) accepts documents in two mo
 | Tab | How it works |
 |---|---|
 | **📁 Upload Documents** | Three drag-and-drop uploaders — Aadhaar Card, PAN Card, Selfie. Aadhaar QR is decoded and PAN OCR runs immediately on upload, results shown inline in the same column. |
-| **📷 Capture with Camera** | Per-document "Open Camera" buttons. Camera only opens on click. The native shutter button takes the photo. Photos are stored in session state and persist across rerenders. A tips banner guides the user to get a sharp, well-lit capture. |
+| **📷 Capture with Camera** | Per-document "Open Camera" buttons. Camera only opens on click. The native shutter button takes the photo. Photos are stored in session state and persist across re-renders. A tips banner guides the user to get a sharp, well-lit capture. |
 
 Camera captures are wrapped in a `_DocumentCapture` class that matches the `UploadedFile` API (`.size`, `.name`, `.getvalue()`) so all downstream processing is source-agnostic.
 
@@ -216,25 +216,49 @@ Camera images often suffer from glare, shadows, or lower resolution. Both the QR
 
 **Aadhaar QR (`_parse_aadhaar_qr`)**
 
-The function tries the following in order, stopping as soon as the QR code decodes successfully:
+The function tries the following in order, stopping as soon as the QR code decodes:
 
-1. Original colour image
-2. Grayscale
-3. Denoised grayscale (`fastNlMeansDenoising` — removes camera sensor noise)
-4. CLAHE contrast-enhanced
-5. Adaptive Gaussian threshold (handles uneven lighting)
-6. Adaptive mean threshold
-7. Otsu global threshold
-8. Sharpened
-9. Each of the above at **2×, 3×, 4× upscale** (for low-resolution captures)
+1. **WeChatQRCode** (OpenCV contrib, deep-learning based) — best for blurry, perspective-distorted, or low-resolution camera captures
+2. Classic `QRCodeDetector` with a preprocessing cascade:
+   - Original colour → grayscale → denoised → CLAHE → adaptive Gaussian threshold → adaptive mean threshold → Otsu → sharpened
+3. WeChatQRCode again on each **2×, 3×, 4× upscale** of the image
+4. Classic detector on each upscaled variant
+
+`opencv-contrib-python` (replaces `opencv-python` in `requirements.txt`) provides the WeChatQRCode model.
 
 **PAN Card OCR (`_extract_pan_info`)**
 
-- Image is resized to a maximum of **2 400 px wide** (raised from 1 200) and upscaled up to **2.5×** (raised from 1.5×) for small camera captures
-- Preprocessing variants: plain gray → denoised → Otsu → CLAHE → sharpened → adaptive Gaussian threshold
-- Multiple Tesseract PSM modes are tried; the one that returns a valid PAN format wins
+- Image resized to max **2 400 px wide** (raised from 1 200) and upscaled up to **2.5×** (raised from 1.5×) for small camera captures
+- Preprocessing variants: plain gray → denoised (`fastNlMeansDenoising`) → Otsu → CLAHE → sharpened → adaptive Gaussian threshold
+- Multiple Tesseract PSM modes tried; first one to return a valid PAN format wins
 
 **PDF report** — `render_identity_check_pdf()` embeds the ID document image and selfie as a Photo Evidence section alongside the match verdict and similarity scores.
+
+## 12. Video KYC Workflow
+
+The Video KYC page (`pages/video_kyc.py`) has two tabs:
+
+### Tab 1 — 📅 Schedule Session
+
+The agent fills in a form with customer name, date/time, duration, video platform, and meeting join link (Zoom / Teams / Google Meet). The system generates:
+
+1. A **.ics calendar file** — open it on any device to add the event to Google Calendar, Outlook, or Apple Calendar. Forward the same file to the customer.
+2. A **ready-to-copy email body** — paste it into any email or WhatsApp message to the customer.
+
+**No API keys required.** The agent creates the Zoom/Teams/Meet meeting themselves and pastes the join link into the form. This works with any video platform.
+
+**How the market does Video KYC:**
+Banks and fintechs schedule a live video call with a KYC agent. The customer joins via Zoom/Teams/Meet. During the call, the agent runs AI face-match and liveness checks. This is the same workflow — schedule here, verify in the next tab.
+
+### Tab 2 — 🎥 Conduct Verification
+
+The agent uploads the customer's reference ID document. BaseTruth extracts the face embedding (RetinaFace + ArcFace). The agent then uses `st.camera_input` to capture a live frame of the customer's face (via the video call screen, or directly if in-person). BaseTruth runs:
+
+1. **Face detection** — RetinaFace locates the face and 5 landmarks
+2. **Liveness check** — head-turn heuristic using eye/nose keypoint ratios
+3. **Face match** — ArcFace cosine similarity vs. reference embedding
+
+Result + annotated image + PDF report are saved to the database.
 
 ## Why This Shape
 
@@ -242,4 +266,4 @@ This architecture lets BaseTruth scale from a local analyst tool into an enterpr
 
 The key product decision is to keep client data sources read-only and pull from them into BaseTruth snapshots. That is safer than treating a single mutable shared folder as the system of record.
 
-PDF reports are stored in PostgreSQL alongside the JSON so auditors can retrieve the full explanation for any historical flag without needing filesystem access.  This is the foundation for the chain-of-custody export planned in Phase 4.
+PDF reports are stored in PostgreSQL alongside the JSON so auditors can retrieve the full explanation for any historical flag without needing filesystem access. This is the foundation for the chain-of-custody export planned in Phase 4.

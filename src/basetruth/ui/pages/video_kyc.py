@@ -1,6 +1,10 @@
-"""Video KYC page — real-time liveness detection and face matching via webcam."""
+"""Video KYC page — schedule sessions and conduct real-time liveness + face match."""
 from __future__ import annotations
 
+import io
+import textwrap
+import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
 import streamlit as st
@@ -13,10 +17,254 @@ from basetruth.ui.components import (
     save_identity_check,
 )
 
+# ---------------------------------------------------------------------------
+# ICS calendar invite generator (no external library needed)
+# ---------------------------------------------------------------------------
+
+def _make_ics(
+    customer_name: str,
+    agent_name: str,
+    meeting_link: str,
+    start_dt: datetime,
+    duration_minutes: int,
+    description: str,
+) -> bytes:
+    """Generate a .ics calendar invite as raw bytes."""
+    end_dt = start_dt + timedelta(minutes=duration_minutes)
+    fmt = "%Y%m%dT%H%M%SZ"
+
+    lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//BaseTruth//Video KYC//EN",
+        "CALSCALE:GREGORIAN",
+        "METHOD:REQUEST",
+        "BEGIN:VEVENT",
+        f"UID:{uuid.uuid4()}@basetruth",
+        f"DTSTAMP:{datetime.now(timezone.utc).strftime(fmt)}",
+        f"DTSTART:{start_dt.strftime(fmt)}",
+        f"DTEND:{end_dt.strftime(fmt)}",
+        f"SUMMARY:Video KYC Session — {customer_name}",
+        f"ORGANIZER;CN={agent_name}:mailto:noreply@basetruth.local",
+        f"ATTENDEE;CN={customer_name};ROLE=REQ-PARTICIPANT;RSVP=TRUE:mailto:customer@placeholder",
+        "STATUS:CONFIRMED",
+    ]
+
+    # Fold long lines per RFC 5545 (max 75 octets)
+    desc_safe = description.replace("\n", "\\n").replace(",", "\\,").replace(";", "\\;")
+    location_safe = meeting_link.replace(",", "\\,").replace(";", "\\;")
+    for key, val in [("DESCRIPTION", desc_safe), ("LOCATION", val if (val := location_safe) else "")]:
+        raw = f"{key}:{val}"
+        # fold at 75 chars
+        folded = "\r\n ".join(textwrap.wrap(raw, 75, break_long_words=True, break_on_hyphens=False))
+        lines.append(folded)
+
+    lines += ["END:VEVENT", "END:VCALENDAR"]
+    return ("\r\n".join(lines) + "\r\n").encode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Schedule tab
+# ---------------------------------------------------------------------------
+
+def _tab_schedule() -> None:
+    st.markdown(
+        """
+        <div style="background:linear-gradient(135deg,#0f172a 0%,#1e293b 100%);
+                    border:1px solid #334155;border-radius:12px;padding:1.2rem 1.4rem;
+                    margin-bottom:1.2rem;">
+        <h4 style="color:#e2e8f0;margin:0 0 0.5rem;">How Video KYC works in the market</h4>
+        <p style="color:#94a3b8;font-size:0.88rem;margin:0;line-height:1.6;">
+        The most modern approach used by banks and fintechs today is a <strong style="color:#c4b5fd">
+        scheduled live video call</strong> where a KYC agent verifies identity in real time.<br>
+        The customer receives a calendar invite with a secure video link (Zoom, Teams, or Google Meet).
+        During the call the agent uses an AI tool to run face-match and liveness checks.<br>
+        This is exactly what BaseTruth enables — you schedule the session here, the customer joins
+        the video call, and the <em>Conduct Verification</em> tab performs the AI checks live.
+        </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.form("vkyc_schedule_form", clear_on_submit=False):
+        st.subheader("Session Details")
+        c1, c2 = st.columns(2)
+        with c1:
+            customer_name = st.text_input("Customer Name *", placeholder="e.g. Rahul Sharma")
+            agent_name = st.text_input(
+                "Agent / Your Name *", placeholder="e.g. Priya Mehta"
+            )
+        with c2:
+            session_date = st.date_input("Session Date *", min_value=datetime.today().date())
+            session_time = st.time_input("Session Time (IST) *", value=None)
+
+        duration = st.selectbox(
+            "Duration",
+            options=[15, 20, 30, 45, 60],
+            index=2,
+            format_func=lambda x: f"{x} minutes",
+        )
+
+        platform = st.selectbox(
+            "Video Platform",
+            options=["Zoom", "Microsoft Teams", "Google Meet", "Other"],
+        )
+        meeting_link = st.text_input(
+            "Meeting / Join Link *",
+            placeholder="https://zoom.us/j/... or https://teams.microsoft.com/...",
+            help=(
+                "Create a meeting in Zoom/Teams/Meet first, copy the join link, "
+                "then paste it here. BaseTruth will embed it in the calendar invite."
+            ),
+        )
+
+        notes = st.text_area(
+            "Additional Notes (optional)",
+            placeholder="e.g. Please keep your Aadhaar card and PAN card handy.",
+            height=80,
+        )
+
+        submitted = st.form_submit_button("📅 Generate Calendar Invite", type="primary", use_container_width=True)
+
+    if submitted:
+        errors = []
+        if not customer_name.strip():
+            errors.append("Customer Name is required.")
+        if not agent_name.strip():
+            errors.append("Agent Name is required.")
+        if not meeting_link.strip():
+            errors.append("Meeting link is required.")
+        if session_time is None:
+            errors.append("Session Time is required.")
+
+        if errors:
+            for e in errors:
+                st.error(e)
+            return
+
+        # Build UTC datetime (assume IST = UTC+5:30)
+        ist_offset = timezone(timedelta(hours=5, minutes=30))
+        start_dt_ist = datetime(
+            session_date.year, session_date.month, session_date.day,
+            session_time.hour, session_time.minute, tzinfo=ist_offset,
+        )
+        start_dt_utc = start_dt_ist.astimezone(timezone.utc)
+
+        description = textwrap.dedent(f"""\
+            Video KYC Session scheduled via BaseTruth.
+
+            Customer: {customer_name.strip()}
+            Agent: {agent_name.strip()}
+            Platform: {platform}
+            Join Link: {meeting_link.strip()}
+
+            What to prepare:
+            - Original Aadhaar Card (physical or digital)
+            - Original PAN Card
+            - Good lighting and a stable internet connection
+
+            {('Notes: ' + notes.strip()) if notes.strip() else ''}
+
+            The agent will use BaseTruth AI to verify your identity during this call.
+            This is a secure, automated check — no data is shared externally.
+        """).strip()
+
+        ics_bytes = _make_ics(
+            customer_name=customer_name.strip(),
+            agent_name=agent_name.strip(),
+            meeting_link=meeting_link.strip(),
+            start_dt=start_dt_utc,
+            duration_minutes=duration,
+            description=description,
+        )
+
+        st.success(
+            f"✅ Calendar invite ready for **{customer_name.strip()}** — "
+            f"{session_date.strftime('%d %b %Y')} at "
+            f"{session_time.strftime('%I:%M %p')} IST ({duration} min)"
+        )
+
+        col_dl, col_copy = st.columns([1, 1])
+
+        with col_dl:
+            st.download_button(
+                label="⬇️ Download .ics (Calendar Invite)",
+                data=ics_bytes,
+                file_name=f"vkyc_{customer_name.strip().replace(' ', '_')}.ics",
+                mime="text/calendar",
+                use_container_width=True,
+                help=(
+                    "Open this file on your computer or phone to add the event to "
+                    "your calendar. Forward the same file to the customer so they "
+                    "can add it to their Google Calendar / Outlook / Apple Calendar."
+                ),
+            )
+
+        with col_copy:
+            st.info("Forward the downloaded .ics file to your customer via email or WhatsApp.", icon="📧")
+
+        with st.expander("📋 Email invite text (copy & paste)", expanded=False):
+            email_body = textwrap.dedent(f"""\
+                Subject: Video KYC Session — {session_date.strftime('%d %b %Y')} at {session_time.strftime('%I:%M %p')} IST
+
+                Dear {customer_name.strip()},
+
+                Your Video KYC session has been scheduled. Please find the details below:
+
+                Date & Time : {session_date.strftime('%d %B %Y')} at {session_time.strftime('%I:%M %p')} IST
+                Duration    : {duration} minutes
+                Platform    : {platform}
+                Join Link   : {meeting_link.strip()}
+
+                What to keep ready:
+                  • Original Aadhaar Card (physical or digital copy)
+                  • Original PAN Card
+                  • Good lighting and a stable internet connection
+
+                {('Additional Notes: ' + notes.strip()) if notes.strip() else ''}
+
+                A calendar invite (.ics file) is attached. Click it to add this event
+                to your Google Calendar / Outlook / Apple Calendar.
+
+                Regards,
+                {agent_name.strip()}
+            """).strip()
+            st.code(email_body, language="text")
+
+        with st.expander("ℹ️ How to share in Zoom / Teams / Google Meet"):
+            st.markdown(
+                """
+                **Zoom** — Open Zoom → Schedule a Meeting → copy the Join URL → paste it above.
+
+                **Microsoft Teams** — Open Teams → Calendar → New Meeting → copy Join Link → paste above.
+
+                **Google Meet** — Open Google Calendar → create event → add Google Meet → copy link → paste above.
+
+                After generating the invite, send the **.ics file** to the customer.
+                They click it and it appears directly in their calendar with the join link.
+                """
+            )
+
+
+# ---------------------------------------------------------------------------
+# Main page
+# ---------------------------------------------------------------------------
 
 def _page_video_kyc() -> None:
-    st.markdown(_page_title("🎥", "Video KYC (Real-Time)"), unsafe_allow_html=True)
-    st.caption("Perform live liveness detection and face matching via webcam.")
+    st.markdown(_page_title("🎥", "Video KYC"), unsafe_allow_html=True)
+    st.caption("Schedule sessions and conduct AI-powered live identity verification.")
+
+    tab_schedule, tab_conduct = st.tabs(["📅 Schedule Session", "🎥 Conduct Verification"])
+
+    with tab_schedule:
+        _tab_schedule()
+
+    with tab_conduct:
+        _tab_conduct()
+
+
+def _tab_conduct() -> None:
 
     with st.expander("ℹ️ How it works", expanded=False):
         st.markdown(
