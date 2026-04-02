@@ -10,6 +10,7 @@ from basetruth.service import BaseTruthService
 from basetruth.ui.components import (
     _DB_IMPORTS_OK,
     _display_truth_score,
+    _page_title,
     db_available,
     get_all_entities_with_scans,
     get_scan_pdf,
@@ -19,7 +20,7 @@ from basetruth.ui.components import (
 
 
 def _page_reports(service: BaseTruthService) -> None:
-    st.markdown("# 📈 Reports")
+    st.markdown(_page_title("📈", "Reports"), unsafe_allow_html=True)
 
     with st.expander("ℹ️ How to use this screen", expanded=False):
         st.markdown(

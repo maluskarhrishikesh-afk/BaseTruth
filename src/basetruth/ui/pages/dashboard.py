@@ -10,6 +10,7 @@ from basetruth.ui.components import (
     _DB_IMPORTS_OK,
     _badge,
     _display_truth_score,
+    _page_title,
     db_available,
     db_dashboard_stats,
     search_entities,
@@ -17,7 +18,7 @@ from basetruth.ui.components import (
 
 
 def _page_dashboard(service: BaseTruthService) -> None:
-    st.markdown("# 🏠 Dashboard")
+    st.markdown(_page_title("🏠", "Dashboard"), unsafe_allow_html=True)
 
     with st.expander("ℹ️ How to use this screen", expanded=False):
         st.markdown(

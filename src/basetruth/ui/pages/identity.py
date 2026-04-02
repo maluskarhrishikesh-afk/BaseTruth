@@ -9,6 +9,7 @@ import streamlit as st
 
 from basetruth.ui.components import (
     _DB_IMPORTS_OK,
+    _page_title,
     _render_entity_link_widget,
     db_available,
     get_entity_identity_checks,
@@ -511,7 +512,7 @@ def _render_pan_layers(
 
 
 def _page_identity_verification() -> None:
-    st.title("🧑‍💻 Identity Verification")
+    st.markdown(_page_title("🧑‍💻", "Identity Verification"), unsafe_allow_html=True)
     st.caption(
         "Upload Aadhaar + PAN card + Selfie to verify identity offline using "
         "QR parsing, PAN validation, name cross-check, and ArcFace face matching."
@@ -529,124 +530,285 @@ def _page_identity_verification() -> None:
 
     IMG_TYPES = ["jpg", "jpeg", "png", "webp"]
 
-    # ── Step 1: Document uploads ───────────────────────────────────────────
-    st.subheader("Step 1 — Upload Documents")
-    col_a, col_p, col_s = st.columns(3)
+    # ── Step 1: Document Input ────────────────────────────────────────────
+    # Tiny wrapper so camera-captured bytes behave like an UploadedFile
+    class _DocumentCapture:
+        """Wraps raw bytes from st.camera_input to match UploadedFile API."""
+        def __init__(self, data: bytes, name: str) -> None:
+            self._data = data
+            self.size = len(data)
+            self.name = name
 
-    with col_a:
-        st.markdown("**📄 Aadhaar Card**")
-        aadhaar_file = st.file_uploader(
-            "Upload Aadhaar card photo",
-            type=IMG_TYPES,
-            key="idv_aadhaar",
-            label_visibility="collapsed",
-        )
+        def getvalue(self) -> bytes:
+            return self._data
 
-    with col_p:
-        st.markdown("**💳 PAN Card**")
-        pan_file = st.file_uploader(
-            "Upload PAN card photo",
-            type=IMG_TYPES,
-            key="idv_pan",
-            label_visibility="collapsed",
-        )
+    st.subheader("Step 1 — Provide Documents")
 
-    with col_s:
-        st.markdown("**🤳 Selfie Photo**")
-        selfie_file = st.file_uploader(
-            "Upload selfie",
-            type=IMG_TYPES,
-            key="idv_selfie",
-            label_visibility="collapsed",
-        )
+    tab_upload, tab_camera = st.tabs(["📁 Upload Documents", "📷 Capture with Camera"])
 
+    # Effective document sources — populated by whichever tab the user interacts with
+    aadhaar_file: _DocumentCapture | None = None  # type: ignore[assignment]
+    pan_file: _DocumentCapture | None = None       # type: ignore[assignment]
     selfie_bytes: bytes | None = None
     selfie_name = "selfie.jpg"
-    if selfie_file:
-        selfie_bytes = selfie_file.getvalue()
-        selfie_name = selfie_file.name
-    else:
-        with col_s:
-            st.caption("No selfie uploaded — take a photo with your camera:")
-            cam = st.camera_input(
-                "Take photo", key="idv_camera", label_visibility="collapsed"
-            )
-            if cam:
-                selfie_bytes = cam.getvalue()
-                selfie_name = "camera_capture.jpg"
 
-    # ── Step 2: Parse & validate uploaded documents ────────────────────────
+    # ---- Upload tab -------------------------------------------------------
+    with tab_upload:
+        col_a, col_p, col_s = st.columns(3)
+
+        with col_a:
+            st.markdown("**📄 Aadhaar Card**")
+            _up_aadhaar = st.file_uploader(
+                "Drag and drop file here",
+                type=IMG_TYPES,
+                key="idv_aadhaar",
+                label_visibility="visible",
+            )
+            st.caption("Limit 200MB per file • JPG, JPEG, PNG, WEBP")
+            if _up_aadhaar:
+                aadhaar_file = _up_aadhaar  # type: ignore[assignment]
+                # Preview + QR inline in the upload tab
+                _a_key = f"_idv_qr_{_up_aadhaar.size}"
+                if _a_key not in st.session_state:
+                    with st.spinner("Scanning Aadhaar QR code..."):
+                        st.session_state[_a_key] = _parse_aadhaar_qr(_up_aadhaar.getvalue())
+                _aq = st.session_state[_a_key]
+                st.image(_up_aadhaar.getvalue(), caption="Aadhaar card", use_container_width=True)
+                if _aq.get("qr_found") is False:
+                    st.warning("No QR code detected. Ensure the QR code is visible.")
+                elif _aq.get("qr_type") == "xml":
+                    st.success("QR decoded successfully")
+                    st.markdown(
+                        f"**Name:** {_aq.get('name', '—')}  \n"
+                        f"**DOB/YOB:** {_aq.get('dob') or _aq.get('yob', '—')}  \n"
+                        f"**Gender:** {_aq.get('gender', '—')}  \n"
+                        f"**District:** {_aq.get('dist', '—')}, {_aq.get('state', '—')}"
+                    )
+                elif _aq.get("qr_type") == "secure":
+                    st.info(_aq.get("note", "Secure QR detected."))
+                elif not _aq:
+                    st.warning("QR scan error — check that OpenCV is available.")
+
+        with col_p:
+            st.markdown("**💳 PAN Card**")
+            _up_pan = st.file_uploader(
+                "Drag and drop file here",
+                type=IMG_TYPES,
+                key="idv_pan",
+                label_visibility="visible",
+            )
+            st.caption("Limit 200MB per file • JPG, JPEG, PNG, WEBP")
+            if _up_pan:
+                pan_file = _up_pan  # type: ignore[assignment]
+                # Preview + OCR inline in the upload tab
+                _p_key = f"_idv_pan_{_up_pan.size}"
+                if _p_key not in st.session_state:
+                    with st.spinner("Reading PAN card..."):
+                        st.session_state[_p_key] = _extract_pan_info(_up_pan.getvalue())
+                _pd = st.session_state[_p_key]
+                st.image(_up_pan.getvalue(), caption="PAN card", use_container_width=True)
+                _extracted_pan = _pd.get("pan_number", "")
+                if _extracted_pan:
+                    _pv = _validate_pan(_extracted_pan)
+                    if _pv["valid"]:
+                        st.success(
+                            f"PAN: **{_extracted_pan}**  \n"
+                            f"Entity type: {_pv['entity_type']}"
+                        )
+                    else:
+                        st.warning(f"PAN read: `{_extracted_pan}` — {_pv.get('error', '')}")
+                else:
+                    st.info("PAN number not detected via OCR. Enter it manually below.")
+                if _pd.get("name"):
+                    st.caption(f"Name on PAN: **{_pd['name']}**")
+
+        with col_s:
+            st.markdown("**🤳 Selfie Photo**")
+            _up_selfie = st.file_uploader(
+                "Drag and drop file here",
+                type=IMG_TYPES,
+                key="idv_selfie",
+                label_visibility="visible",
+            )
+            st.caption("Limit 200MB per file • JPG, JPEG, PNG, WEBP")
+            if _up_selfie:
+                selfie_bytes = _up_selfie.getvalue()
+                selfie_name = _up_selfie.name
+                st.image(selfie_bytes, caption="Selfie", use_container_width=True)
+
+    # ---- Camera tab -------------------------------------------------------
+    with tab_camera:
+        st.info(
+            "Click **Open Camera** for each document, then use the shutter button "
+            "inside the camera view to capture the photo.",
+            icon="📷",
+        )
+        cam_col_a, cam_col_p, cam_col_s = st.columns(3)
+
+        # ---- Aadhaar camera
+        with cam_col_a:
+            st.markdown("**📄 Aadhaar Card**")
+            if not st.session_state.get("idv_cam_a_open"):
+                if st.button("📷 Open Camera", key="btn_cam_a_open", use_container_width=True):
+                    st.session_state["idv_cam_a_open"] = True
+                    st.rerun()
+            else:
+                _cam_a = st.camera_input(
+                    "Take Photo",
+                    key="cam_aadhaar_input",
+                    label_visibility="collapsed",
+                )
+                if _cam_a:
+                    st.session_state["idv_cam_a_bytes"] = _cam_a.getvalue()
+                if st.session_state.get("idv_cam_a_bytes"):
+                    st.success("✅ Photo captured")
+                    st.image(
+                        st.session_state["idv_cam_a_bytes"],
+                        caption="Aadhaar — captured",
+                        use_container_width=True,
+                    )
+                if st.button("✖ Close Camera", key="btn_cam_a_close", use_container_width=True):
+                    st.session_state["idv_cam_a_open"] = False
+                    st.rerun()
+            # Show thumbnail if captured but camera closed
+            if (
+                not st.session_state.get("idv_cam_a_open")
+                and st.session_state.get("idv_cam_a_bytes")
+            ):
+                st.image(
+                    st.session_state["idv_cam_a_bytes"],
+                    caption="Aadhaar — captured",
+                    use_container_width=True,
+                )
+
+        # ---- PAN camera
+        with cam_col_p:
+            st.markdown("**💳 PAN Card**")
+            if not st.session_state.get("idv_cam_p_open"):
+                if st.button("📷 Open Camera", key="btn_cam_p_open", use_container_width=True):
+                    st.session_state["idv_cam_p_open"] = True
+                    st.rerun()
+            else:
+                _cam_p = st.camera_input(
+                    "Take Photo",
+                    key="cam_pan_input",
+                    label_visibility="collapsed",
+                )
+                if _cam_p:
+                    st.session_state["idv_cam_p_bytes"] = _cam_p.getvalue()
+                if st.session_state.get("idv_cam_p_bytes"):
+                    st.success("✅ Photo captured")
+                    st.image(
+                        st.session_state["idv_cam_p_bytes"],
+                        caption="PAN — captured",
+                        use_container_width=True,
+                    )
+                if st.button("✖ Close Camera", key="btn_cam_p_close", use_container_width=True):
+                    st.session_state["idv_cam_p_open"] = False
+                    st.rerun()
+            if (
+                not st.session_state.get("idv_cam_p_open")
+                and st.session_state.get("idv_cam_p_bytes")
+            ):
+                st.image(
+                    st.session_state["idv_cam_p_bytes"],
+                    caption="PAN — captured",
+                    use_container_width=True,
+                )
+
+        # ---- Selfie camera
+        with cam_col_s:
+            st.markdown("**🤳 Selfie Photo**")
+            if not st.session_state.get("idv_cam_s_open"):
+                if st.button("📷 Open Camera", key="btn_cam_s_open", use_container_width=True):
+                    st.session_state["idv_cam_s_open"] = True
+                    st.rerun()
+            else:
+                _cam_s = st.camera_input(
+                    "Take Photo",
+                    key="cam_selfie_input",
+                    label_visibility="collapsed",
+                )
+                if _cam_s:
+                    st.session_state["idv_cam_s_bytes"] = _cam_s.getvalue()
+                if st.session_state.get("idv_cam_s_bytes"):
+                    st.success("✅ Selfie captured")
+                    st.image(
+                        st.session_state["idv_cam_s_bytes"],
+                        caption="Selfie — captured",
+                        use_container_width=True,
+                    )
+                if st.button("✖ Close Camera", key="btn_cam_s_close", use_container_width=True):
+                    st.session_state["idv_cam_s_open"] = False
+                    st.rerun()
+            if (
+                not st.session_state.get("idv_cam_s_open")
+                and st.session_state.get("idv_cam_s_bytes")
+            ):
+                st.image(
+                    st.session_state["idv_cam_s_bytes"],
+                    caption="Selfie — captured",
+                    use_container_width=True,
+                )
+
+    # ---- Resolve effective sources (uploaded files take priority) ---------
+    if aadhaar_file is None and st.session_state.get("idv_cam_a_bytes"):
+        aadhaar_file = _DocumentCapture(
+            st.session_state["idv_cam_a_bytes"], "aadhaar_camera.jpg"
+        )
+    if pan_file is None and st.session_state.get("idv_cam_p_bytes"):
+        pan_file = _DocumentCapture(
+            st.session_state["idv_cam_p_bytes"], "pan_camera.jpg"
+        )
+    if selfie_bytes is None and st.session_state.get("idv_cam_s_bytes"):
+        selfie_bytes = st.session_state["idv_cam_s_bytes"]
+        selfie_name = "camera_selfie.jpg"
+
+    # ── Parse & validate documents ─────────────────────────────────────────
     aadhaar_qr: Dict[str, Any] = {}
     pan_data: Dict[str, Any] = {}
     pan_validation: Dict[str, Any] = {}
 
-    if aadhaar_file:
+    # For camera-captured Aadhaar, run QR parse and show results below tabs
+    if aadhaar_file is not None:
         _a_key = f"_idv_qr_{aadhaar_file.size}"
         if _a_key not in st.session_state:
             with st.spinner("Scanning Aadhaar QR code..."):
                 st.session_state[_a_key] = _parse_aadhaar_qr(aadhaar_file.getvalue())
         aadhaar_qr = st.session_state[_a_key]
 
-        with col_a:
-            st.image(
-                aadhaar_file.getvalue(),
-                caption="Aadhaar card preview",
-                use_container_width=True,
-            )
-            if aadhaar_qr.get("qr_found") is False:
-                st.warning(
-                    "No QR code detected. Ensure the QR code is visible and the image is clear."
-                )
-            elif aadhaar_qr.get("qr_type") == "xml":
-                st.success("QR decoded successfully")
-                st.markdown(
-                    f"**Name:** {aadhaar_qr.get('name', '—')}  \n"
-                    f"**DOB/YOB:** {aadhaar_qr.get('dob') or aadhaar_qr.get('yob', '—')}  \n"
-                    f"**Gender:** {aadhaar_qr.get('gender', '—')}  \n"
-                    f"**District:** {aadhaar_qr.get('dist', '—')}, "
-                    f"{aadhaar_qr.get('state', '—')}"
-                )
-            elif aadhaar_qr.get("qr_type") == "secure":
-                st.info(aadhaar_qr.get("note", "Secure QR detected."))
-            elif not aadhaar_qr:
-                st.warning("QR scan error — check that OpenCV is available.")
-
-    if pan_file:
+    # For camera-captured PAN, run OCR and show validation below tabs
+    if pan_file is not None:
         _p_key = f"_idv_pan_{pan_file.size}"
         if _p_key not in st.session_state:
             with st.spinner("Reading PAN card..."):
                 st.session_state[_p_key] = _extract_pan_info(pan_file.getvalue())
         pan_data = st.session_state[_p_key]
+        _extracted_pan = pan_data.get("pan_number", "")
+        if _extracted_pan:
+            pan_validation = _validate_pan(_extracted_pan)
 
-        with col_p:
-            st.image(
-                pan_file.getvalue(),
-                caption="PAN card preview",
-                use_container_width=True,
+    # Show camera-source parse results below the tabs (upload-source ones shown inside tab)
+    _is_cam_aadhaar = isinstance(aadhaar_file, _DocumentCapture) and aadhaar_file is not None
+    _is_cam_pan = isinstance(pan_file, _DocumentCapture) and pan_file is not None
+    if _is_cam_aadhaar and aadhaar_qr:
+        if aadhaar_qr.get("qr_type") == "xml":
+            st.success(
+                f"✅ **Aadhaar QR decoded** — Name: {aadhaar_qr.get('name', '—')}, "
+                f"DOB: {aadhaar_qr.get('dob') or aadhaar_qr.get('yob', '—')}"
             )
-            extracted_pan = pan_data.get("pan_number", "")
-            if extracted_pan:
-                pan_validation = _validate_pan(extracted_pan)
-                if pan_validation["valid"]:
-                    st.success(
-                        f"PAN: **{extracted_pan}**  \n"
-                        f"Entity type: {pan_validation['entity_type']}"
-                    )
-                else:
-                    st.warning(
-                        f"PAN read: `{extracted_pan}` — "
-                        f"{pan_validation.get('error', '')}"
-                    )
-            else:
-                st.info(
-                    "PAN number not detected via OCR. You can enter it manually below."
-                )
-            if pan_data.get("name"):
-                st.caption(f"Name on PAN card: **{pan_data['name']}**")
-
-    if selfie_bytes:
-        with col_s:
-            st.image(selfie_bytes, caption="Selfie preview", use_container_width=True)
+        elif aadhaar_qr.get("qr_type") == "secure":
+            st.info(aadhaar_qr.get("note", "Secure Aadhaar QR detected."))
+        elif aadhaar_qr.get("qr_found") is False:
+            st.warning("No Aadhaar QR code detected in the captured photo.")
+    if _is_cam_pan and pan_data.get("pan_number"):
+        if pan_validation.get("valid"):
+            st.success(
+                f"✅ **PAN extracted** — {pan_data['pan_number']} "
+                f"({pan_validation.get('entity_type', '')})"
+            )
+        else:
+            st.warning(f"PAN read: `{pan_data['pan_number']}` — {pan_validation.get('error', '')}")
 
     # ── Step 2 — Document Cross-Checks and PAN Layers ─────────────────────
     if aadhaar_file or pan_file:
@@ -934,6 +1096,8 @@ def _page_identity_verification() -> None:
                             entity_name=_name_for_pdf,
                             doc_filename=aadhaar_file.name,
                             selfie_filename=selfie_name,
+                            doc_image_bytes=aadhaar_file.getvalue() if aadhaar_file else None,
+                            selfie_image_bytes=selfie_bytes,
                         )
                     except Exception:  # noqa: BLE001
                         pdf_bytes = None

@@ -5,11 +5,11 @@ from pathlib import Path
 
 import streamlit as st
 
-from basetruth.ui.components import _default_artifact_root
+from basetruth.ui.components import _default_artifact_root, _page_title
 
 
 def _page_settings() -> None:
-    st.markdown("# ⚙️ Settings")
+    st.markdown(_page_title("⚙️", "Settings"), unsafe_allow_html=True)
 
     with st.expander("ℹ️ How to use this screen", expanded=False):
         st.markdown(

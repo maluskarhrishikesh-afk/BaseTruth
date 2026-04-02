@@ -403,13 +403,13 @@ hr {
 }
 
 /* ---- Headers --------------------------------------------- */
+/* NOTE: Page titles use _page_title() helper (components.py) which renders
+   the emoji in its native colour and applies the gradient only to the text
+   span.  The global h1 rule below only sets typography — no gradient here
+   so that emoji characters are not incorrectly recoloured. */
 h1 {
     letter-spacing: -0.03em !important;
     font-weight: 800 !important;
-    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 60%, #06b6d4 100%) !important;
-    -webkit-background-clip: text !important;
-    -webkit-text-fill-color: transparent !important;
-    background-clip: text !important;
 }
 h2 { letter-spacing: -0.02em !important; font-weight: 700 !important; }
 h3 { letter-spacing: -0.01em !important; font-weight: 600 !important; }
@@ -641,7 +641,9 @@ h3 { letter-spacing: -0.01em !important; font-weight: 600 !important; }
     margin-top: 1.25rem !important;
 }
 
-/* ---- Page title gradient (h1) reaffirm --------------------- */
+/* ---- Page title (h1) typography reaffirm ------------------- */
+/* Gradient is applied per-element by _page_title() helper; only
+   set typographic properties here. */
 .main h1 {
     font-size: 2.1rem !important;
     font-weight: 800 !important;

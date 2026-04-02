@@ -9,6 +9,7 @@ import streamlit as st
 from basetruth.ui.components import (
     _DB_IMPORTS_OK,
     _badge,
+    _page_title,
     _render_report_summary,
     db_available,
     get_entity_identity_checks,
@@ -20,7 +21,7 @@ from basetruth.ui.components import (
 
 
 def _page_records() -> None:
-    st.markdown("# 🗂️ Records")
+    st.markdown(_page_title("🗂️", "Records"), unsafe_allow_html=True)
 
     with st.expander("ℹ️ How to use this screen", expanded=False):
         st.markdown(

@@ -5,7 +5,7 @@ import json
 
 import streamlit as st
 
-from basetruth.ui.components import _LOGGER_OK, _log_path
+from basetruth.ui.components import _LOGGER_OK, _log_path, _page_title
 
 
 def _page_logs() -> None:
@@ -56,10 +56,7 @@ def _page_logs() -> None:
     )
 
     _hdr_l, _hdr_r, _hdr_clr = st.columns([5, 1, 1])
-    _hdr_l.markdown(
-        '<div class="log-header"><h1>📋 Log Analyzer</h1></div>',
-        unsafe_allow_html=True,
-    )
+    _hdr_l.markdown(_page_title("📋", "Log Analyzer"), unsafe_allow_html=True)
     if _hdr_r.button("🔄 Refresh", use_container_width=True, key="log_refresh"):
         st.rerun()
 

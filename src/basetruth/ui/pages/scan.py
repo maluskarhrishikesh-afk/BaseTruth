@@ -11,6 +11,7 @@ import streamlit as st
 from basetruth.service import BaseTruthService
 from basetruth.ui.components import (
     _DB_IMPORTS_OK,
+    _page_title,
     _render_entity_link_widget,
     _render_report_summary,
     _save_uploaded_files,
@@ -19,7 +20,7 @@ from basetruth.ui.components import (
 
 
 def _page_scan(service: BaseTruthService) -> None:
-    st.markdown("# 🔍 Scan Document")
+    st.markdown(_page_title("🔍", "Scan Document"), unsafe_allow_html=True)
 
     with st.expander("ℹ️ How to use this screen", expanded=False):
         st.markdown(

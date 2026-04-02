@@ -144,6 +144,30 @@ except Exception:  # noqa: BLE001
 
 
 # ---------------------------------------------------------------------------
+# Page title helper — renders emoji in its native colour + text with gradient
+# ---------------------------------------------------------------------------
+
+def _page_title(emoji: str, title_text: str) -> str:
+    """Return an HTML string for a page <h1> where the emoji keeps its native
+    colour and the title text gets the standard BaseTruth indigo gradient.
+
+    Usage::
+
+        st.markdown(_page_title("💾", "Database Viewer"), unsafe_allow_html=True)
+    """
+    return (
+        '<h1 style="letter-spacing:-0.03em;font-weight:800;font-size:2.1rem;'
+        'line-height:1.15;margin-bottom:0.15rem;">'
+        f'<span style="-webkit-text-fill-color:initial !important;background:none !important;'
+        f'color:inherit;">{emoji}</span>'
+        '<span style="background:linear-gradient(135deg,#6366f1 0%,#8b5cf6 60%,#06b6d4 100%);'
+        '-webkit-background-clip:text;-webkit-text-fill-color:transparent;'
+        f'background-clip:text;"> {title_text}</span>'
+        "</h1>"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Service helpers
 # ---------------------------------------------------------------------------
 

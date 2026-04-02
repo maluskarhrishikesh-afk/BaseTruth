@@ -1085,17 +1085,21 @@ def render_identity_check_pdf(
     entity_name: str = "",
     doc_filename: str = "",
     selfie_filename: str = "",
+    doc_image_bytes: bytes | None = None,
+    selfie_image_bytes: bytes | None = None,
 ) -> bytes:
     """Generate a plain-English PDF for a face-match or Video KYC check.
 
     Parameters
     ----------
-    check_type:      'face_match' or 'video_kyc'
-    result:          The result dict from compare_faces() or the KYC processor.
-    entity_ref:      Entity reference (BT-XXXXXX).
-    entity_name:     Entity display name.
-    doc_filename:    Original ID document filename.
-    selfie_filename: Selfie filename (face_match only).
+    check_type:        'face_match' or 'video_kyc'
+    result:            The result dict from compare_faces() or the KYC processor.
+    entity_ref:        Entity reference (BT-XXXXXX).
+    entity_name:       Entity display name.
+    doc_filename:      Original ID document filename.
+    selfie_filename:   Selfie filename (face_match only).
+    doc_image_bytes:   Raw bytes of the ID document image to embed in the report.
+    selfie_image_bytes: Raw bytes of the selfie image to embed in the report.
 
     Returns
     -------
@@ -1248,6 +1252,41 @@ def render_identity_check_pdf(
         pdf.ln(_row_h)
 
     pdf.set_text_color(*_C_TEXT_DARK)
+
+    # ── Photo Evidence
+    if doc_image_bytes or selfie_image_bytes:
+        pdf.ln(4)
+        pdf.section_title("Photo Evidence")
+        _img_y = pdf.get_y()
+        _img_w = 85  # mm — two images side by side within 190mm content width
+        _img_h = 60  # mm — max height; fpdf keeps aspect ratio when only w is set
+        _advanced = False
+
+        if doc_image_bytes:
+            try:
+                pdf.image(io.BytesIO(doc_image_bytes), x=10, y=_img_y, w=_img_w)
+                pdf.set_xy(10, _img_y + _img_h + 1)
+                pdf.set_font("Helvetica", "I", 7)
+                pdf.set_text_color(100, 100, 100)
+                pdf.cell(_img_w, 4, "ID Document")
+                _advanced = True
+            except Exception:  # noqa: BLE001
+                pass
+
+        if selfie_image_bytes:
+            try:
+                pdf.image(io.BytesIO(selfie_image_bytes), x=105, y=_img_y, w=_img_w)
+                pdf.set_xy(105, _img_y + _img_h + 1)
+                pdf.set_font("Helvetica", "I", 7)
+                pdf.set_text_color(100, 100, 100)
+                pdf.cell(_img_w, 4, "Selfie Photo")
+                _advanced = True
+            except Exception:  # noqa: BLE001
+                pass
+
+        if _advanced:
+            pdf.set_y(_img_y + _img_h + 8)
+        pdf.set_text_color(*_C_TEXT_DARK)
 
     # ── Disclaimer
     pdf.ln(6)

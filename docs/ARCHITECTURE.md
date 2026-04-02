@@ -178,6 +178,42 @@ Key endpoints for auditor workflows:
 | `GET /api/v1/scans/recent` | Most-recent scans across all entities |
 | `GET /api/v1/db/stats` | Entity / scan / high-risk counts for dashboards |
 
+## 10. Operator UI — Page Routing
+
+The UI is a **single-entry Streamlit app** at `src/basetruth/ui/app.py`.
+
+Navigation is driven entirely by `st.session_state["page"]` — not by Streamlit's native page routing.  This gives full control over the sidebar and prevents Streamlit from auto-discovering `pages/` files.
+
+```text
+app.py  →  main()  →  session_state["page"]
+                            │
+       ┌────────────────────┼────────────────────────┐
+       │                    │                        │
+ pages/dashboard.py   pages/identity.py   pages/scan.py  …
+```
+
+Streamlit's built-in sidebar navigation is disabled via `.streamlit/config.toml`:
+
+```toml
+[client]
+hideSidebarNav = true
+```
+
+The custom sidebar in `app.py` renders navigation buttons and hides page-route clutter (the auto-detected `bulk`, `cases`, `identity`, etc. labels).
+
+## 11. Identity Verification UI
+
+The Identity Verification page (`pages/identity.py`) accepts documents in two modes, selectable via tabs:
+
+| Tab | How it works |
+|---|---|
+| **📁 Upload Documents** | Three drag-and-drop uploaders — Aadhaar Card, PAN Card, Selfie. Aadhaar QR is decoded and PAN OCR runs immediately on upload, with results shown inline. |
+| **📷 Capture with Camera** | Per-document "Open Camera" buttons. The camera view (powered by `st.camera_input`) only opens after the user clicks the button. The native shutter button inside the camera view takes the photo. Photos are stored in session state so they persist across rerenders. |
+
+Camera captures are wrapped in a `_DocumentCapture` class that matches the `UploadedFile` API (`.size`, `.name`, `.getvalue()`) so downstream processing is source-agnostic.
+
+The PDF report produced by `render_identity_check_pdf()` embeds both the ID document image and the selfie image as evidence alongside the match verdict and similarity scores.
+
 ## Why This Shape
 
 This architecture lets BaseTruth scale from a local analyst tool into an enterprise service without replacing the core reasoning model.

@@ -5,6 +5,7 @@ import streamlit as st
 
 from basetruth.ui.components import (
     _DB_IMPORTS_OK,
+    _page_title,
     db_available,
     db_table_counts,
     db_table_rows,
@@ -25,7 +26,7 @@ _DB_TABLE_LABELS: dict[str, str] = {
 
 
 def _page_database() -> None:
-    st.markdown("# 💾 Database Viewer")
+    st.markdown(_page_title("💾", "Database Viewer"), unsafe_allow_html=True)
 
     with st.expander("ℹ️ How to use this screen", expanded=False):
         st.markdown(

@@ -10,6 +10,7 @@ from basetruth.ui.components import (
     _DB_IMPORTS_OK,
     _DISPOSITION_ICONS,
     _badge,
+    _page_title,
     db_available,
     list_cases_from_db,
 )
@@ -229,7 +230,7 @@ def _render_case_card(
 
 
 def _page_cases(service: BaseTruthService) -> None:
-    st.markdown("# 📁 Cases")
+    st.markdown(_page_title("📁", "Cases"), unsafe_allow_html=True)
 
     with st.expander("ℹ️ How to use this screen", expanded=False):
         st.markdown(

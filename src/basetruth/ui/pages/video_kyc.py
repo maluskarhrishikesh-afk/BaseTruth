@@ -7,6 +7,7 @@ import streamlit as st
 
 from basetruth.ui.components import (
     _DB_IMPORTS_OK,
+    _page_title,
     _render_entity_link_widget,
     db_available,
     save_identity_check,
@@ -14,7 +15,7 @@ from basetruth.ui.components import (
 
 
 def _page_video_kyc() -> None:
-    st.title("🎥 Video KYC (Real-Time)")
+    st.markdown(_page_title("🎥", "Video KYC (Real-Time)"), unsafe_allow_html=True)
     st.caption("Perform live liveness detection and face matching via webcam.")
 
     with st.expander("ℹ️ How it works", expanded=False):

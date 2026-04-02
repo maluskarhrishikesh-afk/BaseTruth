@@ -7,6 +7,7 @@ import streamlit as st
 
 from basetruth.datasources import DatasourceConfig, DatasourceRegistry
 from basetruth.service import BaseTruthService
+from basetruth.ui.components import _page_title
 
 
 def _connector_settings_fields(kind: str, existing: Dict[str, Any]) -> Dict[str, Any]:
@@ -67,7 +68,7 @@ def _connector_settings_fields(kind: str, existing: Dict[str, Any]) -> Dict[str,
 
 
 def _page_datasources(service: BaseTruthService) -> None:
-    st.markdown("# 🔗 Datasources")
+    st.markdown(_page_title("🔗", "Datasources"), unsafe_allow_html=True)
     registry = DatasourceRegistry(service.artifact_root)
     sources = registry.list_sources()
 

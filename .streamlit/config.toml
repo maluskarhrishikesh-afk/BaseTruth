@@ -8,3 +8,8 @@ port = 8502
 
 [browser]
 gatherUsageStats = false
+
+[client]
+# Disable Streamlit's auto-generated sidebar navigation from the pages/ directory.
+# BaseTruth uses its own custom sidebar navigation built with st.button().
+hideSidebarNav = true

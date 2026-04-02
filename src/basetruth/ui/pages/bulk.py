@@ -12,6 +12,7 @@ from basetruth.service import BaseTruthService
 from basetruth.ui.components import (
     _DB_IMPORTS_OK,
     _display_truth_score,
+    _page_title,
     _render_entity_link_widget,
     _render_report_summary,
     _save_uploaded_files,
@@ -21,7 +22,7 @@ from basetruth.ui.components import (
 
 
 def _page_bulk(service: BaseTruthService) -> None:
-    st.markdown("# 📦 Bulk Scan")
+    st.markdown(_page_title("📦", "Bulk Scan"), unsafe_allow_html=True)
 
     with st.expander("ℹ️ How to use this screen", expanded=False):
         st.markdown(
