@@ -1,36 +1,4 @@
-
-In "Identity Verification" screen 
-
-Here we should have 2 options "Upload" and "Camera" (you can use proper naming convention as per modern standards)->
-Step 1 — Upload Documents
-📄 Aadhaar Card
-
-No file chosen
-Drag and drop file here
-Limit 200MB per file • JPG, JPEG, PNG, WEBP
-💳 PAN Card
-
-No file chosen
-Drag and drop file here
-Limit 200MB per file • JPG, JPEG, PNG, WEBP
-🤳 Selfie Photo
-
-No file chosen
-Drag and drop file here
-Limit 200MB per file • JPG, JPEG, PNG, WEBP
-
-If the users have scanned image with them then they can upload, else there should be a provision to take photos via
-camera on the fly.
-
-Dont open the camera by default, open it only when the user clicks on camera. After the camera opens 
-there should be a "Take Photo" button to capture the photo.
-
-Eventually when the data gets saved in the database, a proper pdf report should get saved in the database.
-We can also attach the photo in the pdf file.
-
-------------------------------------------------------------------------------------------------------
-
-In the left panel, I am getting some additional unwanted captions->
+This things are still visible in the left panel, please remove them permanently ->
 
 app
 
@@ -53,27 +21,17 @@ records
 reports
 
 View 3 more
-🛡
-BaseTruth
-Document Integrity
-
-I dont know where exactly its coming from, try to keep the UI?UX absolutely clean.
 
 ------------------------------------------------------------------------------------------------------
 
-In the title of every page, can we use real image color instead of blue ->
-💾 Database Viewer
-
-💾 -> This should be in its actual color instead of blue.
-
-Right now both this -> 💾 and this -> "Database Viewer" have the same color.
-
-This should be done for all the screens.
-
+When I click photos of Aadhar, PAN Card and self, the image quality or camera quality is not top notch.
+Can we improve the image quality?
+Issue is that Aadhar QR code and PAN card details cannot be fetched properly.
 
 ------------------------------------------------------------------------------------------------------
 
-Keep the documentation updated in very simple language and proepr architecture diagram.
+Keep the documentation updated in very simple language and proper architecture diagram.
+Remove any stale information from the documents.
 
 ------------------------------------------------------------------------------------------------------
 

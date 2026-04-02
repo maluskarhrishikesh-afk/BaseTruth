@@ -192,14 +192,12 @@ app.py  →  main()  →  session_state["page"]
  pages/dashboard.py   pages/identity.py   pages/scan.py  …
 ```
 
-Streamlit's built-in sidebar navigation is disabled via `.streamlit/config.toml`:
+Streamlit auto-discovers any `.py` file in a `pages/` directory and adds it to the sidebar.  We suppress this two ways:
 
-```toml
-[client]
-hideSidebarNav = true
-```
+1. **Config** — `.streamlit/config.toml`: `hideSidebarNav = true` (supported in most Streamlit versions)
+2. **CSS fallback** — `_CSS` in `app.py`: `[data-testid="stSidebarNav"] { display: none !important; }`
 
-The custom sidebar in `app.py` renders navigation buttons and hides page-route clutter (the auto-detected `bulk`, `cases`, `identity`, etc. labels).
+Both are applied so the nav items are hidden regardless of Streamlit version.
 
 ## 11. Identity Verification UI
 
@@ -207,12 +205,36 @@ The Identity Verification page (`pages/identity.py`) accepts documents in two mo
 
 | Tab | How it works |
 |---|---|
-| **📁 Upload Documents** | Three drag-and-drop uploaders — Aadhaar Card, PAN Card, Selfie. Aadhaar QR is decoded and PAN OCR runs immediately on upload, with results shown inline. |
-| **📷 Capture with Camera** | Per-document "Open Camera" buttons. The camera view (powered by `st.camera_input`) only opens after the user clicks the button. The native shutter button inside the camera view takes the photo. Photos are stored in session state so they persist across rerenders. |
+| **📁 Upload Documents** | Three drag-and-drop uploaders — Aadhaar Card, PAN Card, Selfie. Aadhaar QR is decoded and PAN OCR runs immediately on upload, results shown inline in the same column. |
+| **📷 Capture with Camera** | Per-document "Open Camera" buttons. Camera only opens on click. The native shutter button takes the photo. Photos are stored in session state and persist across rerenders. A tips banner guides the user to get a sharp, well-lit capture. |
 
-Camera captures are wrapped in a `_DocumentCapture` class that matches the `UploadedFile` API (`.size`, `.name`, `.getvalue()`) so downstream processing is source-agnostic.
+Camera captures are wrapped in a `_DocumentCapture` class that matches the `UploadedFile` API (`.size`, `.name`, `.getvalue()`) so all downstream processing is source-agnostic.
 
-The PDF report produced by `render_identity_check_pdf()` embeds both the ID document image and the selfie image as evidence alongside the match verdict and similarity scores.
+### Image Quality Pipeline for Camera Captures
+
+Camera images often suffer from glare, shadows, or lower resolution. Both the QR decoder and PAN OCR apply a multi-strategy preprocessing cascade before analysis:
+
+**Aadhaar QR (`_parse_aadhaar_qr`)**
+
+The function tries the following in order, stopping as soon as the QR code decodes successfully:
+
+1. Original colour image
+2. Grayscale
+3. Denoised grayscale (`fastNlMeansDenoising` — removes camera sensor noise)
+4. CLAHE contrast-enhanced
+5. Adaptive Gaussian threshold (handles uneven lighting)
+6. Adaptive mean threshold
+7. Otsu global threshold
+8. Sharpened
+9. Each of the above at **2×, 3×, 4× upscale** (for low-resolution captures)
+
+**PAN Card OCR (`_extract_pan_info`)**
+
+- Image is resized to a maximum of **2 400 px wide** (raised from 1 200) and upscaled up to **2.5×** (raised from 1.5×) for small camera captures
+- Preprocessing variants: plain gray → denoised → Otsu → CLAHE → sharpened → adaptive Gaussian threshold
+- Multiple Tesseract PSM modes are tried; the one that returns a valid PAN format wins
+
+**PDF report** — `render_identity_check_pdf()` embeds the ID document image and selfie as a Photo Evidence section alongside the match verdict and similarity scores.
 
 ## Why This Shape
 

@@ -136,6 +136,13 @@ html, body, [class*="css"] {
     max-width: 1440px !important;
 }
 
+/* ---- Hide Streamlit's auto-generated page navigation -------- */
+/* Streamlit auto-discovers files in the pages/ directory and renders them
+   as navigation links. We use custom session-state routing so we hide these. */
+[data-testid="stSidebarNav"] {
+    display: none !important;
+}
+
 /* ---- Sidebar root ----------------------------------------- */
 /* NOTE: No min/max-width here — those break the native resize handle */
 [data-testid="stSidebar"] {
@@ -820,6 +827,18 @@ hr {
 /* ---- Dark mode: PDF banner title text ---------------------- */
 [data-testid="stApp"][data-theme="dark"] .bt-pdf-banner div[style*="color:var(--text-color"] {
     color: #f1f5f9 !important;
+}
+
+/* ---- Camera input — full-width so the browser allocates max resolution -- */
+[data-testid="stCameraInputButton"],
+[data-testid="stCameraInput"] {
+    width: 100% !important;
+}
+[data-testid="stCameraInput"] video,
+[data-testid="stCameraInput"] canvas,
+[data-testid="stCameraInput"] img {
+    width: 100% !important;
+    max-width: 100% !important;
 }
 </style>
 """

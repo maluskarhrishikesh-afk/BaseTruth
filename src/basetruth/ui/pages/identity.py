@@ -41,7 +41,11 @@ _PAN_ENTITY_TYPES = {
 
 
 def _parse_aadhaar_qr(img_bytes: bytes) -> Dict[str, Any]:
-    """Decode the QR code on an Aadhaar card and return extracted fields."""
+    """Decode the QR code on an Aadhaar card and return extracted fields.
+
+    Uses a cascade of preprocessing strategies so camera-captured images
+    (which may have glare, shadows or low resolution) still decode reliably.
+    """
     try:
         import cv2  # noqa: PLC0415
         import numpy as np  # noqa: PLC0415
@@ -50,14 +54,58 @@ def _parse_aadhaar_qr(img_bytes: bytes) -> Dict[str, Any]:
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if img is None:
             return {}
+
         detector = cv2.QRCodeDetector()
-        data, _pts, _ = detector.detectAndDecode(img)
+        h, w = img.shape[:2]
+
+        def _variants(src_bgr: "np.ndarray") -> "list[np.ndarray]":
+            """Return a list of preprocessed images to try QR detection on."""
+            gray = cv2.cvtColor(src_bgr, cv2.COLOR_BGR2GRAY)
+            # Remove camera noise before processing
+            denoised = cv2.fastNlMeansDenoising(gray, h=10)
+            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+            eq = clahe.apply(denoised)
+            # Adaptive threshold handles uneven camera lighting / glare
+            adapt = cv2.adaptiveThreshold(
+                denoised, 255,
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY, 15, 4,
+            )
+            adapt2 = cv2.adaptiveThreshold(
+                eq, 255,
+                cv2.ADAPTIVE_THRESH_MEAN_C,
+                cv2.THRESH_BINARY, 11, 2,
+            )
+            # Otsu global threshold
+            _, otsu = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            # Sharpening
+            kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
+            sharp = cv2.filter2D(denoised, -1, kernel)
+            return [src_bgr, gray, denoised, eq, adapt, adapt2, otsu, sharp]
+
+        # Try original size first
+        data = ""
+        for variant in _variants(img):
+            data, _, _ = detector.detectAndDecode(variant)
+            if data:
+                break
+
+        # Try progressively higher upscales until QR is found
         if not data:
-            h, w = img.shape[:2]
-            big = cv2.resize(img, (w * 2, h * 2), interpolation=cv2.INTER_CUBIC)
-            data, _pts, _ = detector.detectAndDecode(big)
+            for scale in (2, 3, 4):
+                big = cv2.resize(
+                    img, (w * scale, h * scale), interpolation=cv2.INTER_CUBIC
+                )
+                for variant in _variants(big):
+                    data, _, _ = detector.detectAndDecode(variant)
+                    if data:
+                        break
+                if data:
+                    break
+
         if not data:
             return {"qr_found": False}
+
         try:
             root = _ET.fromstring(data)
             a = root.attrib
@@ -133,25 +181,36 @@ def _extract_pan_info(img_bytes: bytes) -> Dict[str, Any]:
             return best
 
         def _preprocess(img_bgr):  # type: ignore[no-untyped-def]
-            """Return a list of preprocessed grayscale variants.
+            """Return a list of preprocessed grayscale variants for OCR.
 
-            Cap the image at max_w=1200 so pytesseract never receives a
-            5000×7000 px bitmap. Small images are still upscaled up to 1.5×.
+            For camera-captured images the cap is raised to 2400 px and the
+            max upscale to 2.5× so small/low-res captures still get useful
+            text extraction. Adaptive threshold and denoising are added to
+            handle uneven lighting and camera noise.
             """
             h_orig, w_orig = img_bgr.shape[:2]
-            max_w = 1200
-            scale = min(max_w / max(w_orig, 1), 1.5)
+            max_w = 2400  # raised from 1200 — camera images need more detail
+            scale = min(max_w / max(w_orig, 1), 2.5)  # raised from 1.5×
             resized = cv2.resize(
                 img_bgr, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC
             )
             gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
-            variants = [gray]
-            _, otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            # Denoise first — camera sensors add noise that hurts OCR
+            denoised = cv2.fastNlMeansDenoising(gray, h=12)
+            variants = [gray, denoised]
+            _, otsu = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             variants.append(otsu)
             clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-            variants.append(clahe.apply(gray))
+            variants.append(clahe.apply(denoised))
             kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
-            variants.append(cv2.filter2D(gray, -1, kernel))
+            variants.append(cv2.filter2D(denoised, -1, kernel))
+            # Adaptive threshold — best for uneven camera lighting / shadows
+            adapt = cv2.adaptiveThreshold(
+                denoised, 255,
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY, 15, 4,
+            )
+            variants.append(adapt)
             return variants
 
         _pan_re_global = _re.compile(r"[A-Z]{5}[0-9]{4}[A-Z]")
@@ -642,6 +701,19 @@ def _page_identity_verification() -> None:
             "Click **Open Camera** for each document, then use the shutter button "
             "inside the camera view to capture the photo.",
             icon="📷",
+        )
+        st.markdown(
+            """
+            <div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;
+                        padding:0.6rem 0.9rem;font-size:0.85rem;margin-bottom:0.75rem;">
+            📸 <strong>Tips for best results:</strong>
+            Place the document on a flat surface in good light.
+            Hold the camera directly above — avoid tilting.
+            For Aadhaar, ensure the entire QR code is visible and in focus.
+            For PAN card, make sure all text is sharp and not in shadow.
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
         cam_col_a, cam_col_p, cam_col_s = st.columns(3)
 
