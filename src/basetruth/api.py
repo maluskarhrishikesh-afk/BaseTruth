@@ -41,11 +41,286 @@ try:
         note_text: str = Field("", description="Text of the new note to append, if any.")
         note_author: str = Field("api", description="Author name for the note.")
 
+    class CreateKYCSessionRequest(BaseModel):
+        customer_name:           str            = Field("", description="Customer display name.")
+        entity_ref:              str            = Field("", description="Entity / case reference ID.")
+        challenges:              List[str]      = Field([], description="Liveness challenges to present.")
+        reference_embedding_b64: Optional[str]  = Field(None, description="Base-64 ArcFace embedding from the reference ID document.")
+
 except ImportError:
     _FASTAPI_AVAILABLE = False
 
 
 _DEFAULT_ARTIFACT_ROOT = Path("artifacts")
+
+# ---------------------------------------------------------------------------
+# Customer-facing Video KYC HTML page (served at GET /kyc/{session_id})
+# Placeholders replaced at request-time:
+#   __SESSION_ID__        → session ID token
+#   __CHALLENGES_COUNT__  → integer number of challenges
+#   __CUSTOMER_NAME__     → customer display name (may be empty)
+#   __CHALLENGES_JSON__   → JSON array of challenge names, e.g. ["blink","nod"]
+# ---------------------------------------------------------------------------
+_KYC_PAGE_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>BaseTruth · Video KYC</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  background:#0f172a;color:#e2e8f0;min-height:100vh;
+  display:flex;flex-direction:column;align-items:center;padding:1rem 0.75rem}
+.logo{margin:1.2rem 0 0.8rem;font-size:1.35rem;font-weight:800;
+  background:linear-gradient(135deg,#6366f1,#8b5cf6);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.card{background:#1e293b;border:1px solid #334155;border-radius:16px;
+  padding:1.4rem 1.25rem;width:100%;max-width:460px;margin-bottom:0.75rem}
+.video-wrap{position:relative;width:100%;border-radius:12px;overflow:hidden;
+  background:#000;aspect-ratio:4/3}
+video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+.oval{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+  width:52%;aspect-ratio:3/4;border:3px solid rgba(99,102,241,.65);
+  border-radius:50%;pointer-events:none}
+.badge{position:absolute;top:.6rem;right:.6rem;padding:.28rem .7rem;
+  border-radius:99px;font-size:.72rem;font-weight:700;backdrop-filter:blur(8px)}
+.b-ok{background:rgba(34,197,94,.18);color:#4ade80;border:1px solid rgba(34,197,94,.3)}
+.b-warn{background:rgba(234,179,8,.18);color:#facc15;border:1px solid rgba(234,179,8,.3)}
+.b-idle{background:rgba(148,163,184,.18);color:#94a3b8;border:1px solid rgba(148,163,184,.3)}
+.ch-card{background:linear-gradient(135deg,rgba(99,102,241,.14),rgba(139,92,246,.09));
+  border:1px solid rgba(99,102,241,.38);border-radius:12px;
+  padding:.9rem 1.1rem;margin-top:.9rem;text-align:center}
+.ch-label{font-size:1.15rem;font-weight:800;color:#c4b5fd;margin-bottom:.35rem;
+  letter-spacing:.04em}
+.ch-inst{font-size:.84rem;color:#94a3b8;line-height:1.55}
+.prog-wrap{background:#0f172a;border-radius:99px;height:7px;margin-top:.7rem;overflow:hidden}
+.prog-fill{height:100%;border-radius:99px;background:linear-gradient(90deg,#6366f1,#8b5cf6);
+  transition:width .35s ease}
+.dots{display:flex;gap:.45rem;justify-content:center;margin-top:.65rem}
+.dot{width:10px;height:10px;border-radius:50%;border:2px solid #475569;background:transparent;transition:all .2s}
+.dot.active{border-color:#6366f1;background:#6366f1}
+.dot.done{border-color:#4ade80;background:#4ade80}
+.fb{text-align:center;font-size:.88rem;margin-top:.65rem;min-height:1.2em;
+  color:#94a3b8;transition:color .25s}
+.fb.pass{color:#4ade80}.fb.fail{color:#f87171}
+.btn{display:block;width:100%;padding:.82rem;
+  background:linear-gradient(135deg,#4f46e5,#6366f1);color:#fff;
+  border:none;border-radius:10px;font-size:1rem;font-weight:700;
+  cursor:pointer;margin-top:.9rem;transition:opacity .2s}
+.btn:hover{opacity:.88}.btn:disabled{opacity:.45;cursor:not-allowed}
+.res-card{border-radius:12px;padding:1.4rem;text-align:center;margin-top:.4rem}
+.res-pass{background:rgba(34,197,94,.09);border:1px solid rgba(34,197,94,.38)}
+.res-fail{background:rgba(239,68,68,.09);border:1px solid rgba(239,68,68,.38)}
+.res-icon{font-size:2.8rem;margin-bottom:.6rem}
+.res-title{font-size:1.3rem;font-weight:800;margin-bottom:.45rem}
+.res-pass .res-title{color:#4ade80}.res-fail .res-title{color:#f87171}
+.res-det{font-size:.84rem;color:#94a3b8;line-height:1.55}
+.sec-note{font-size:.72rem;color:#475569;text-align:center;margin-top:.5rem;padding-bottom:1.5rem}
+.info-row{font-size:.78rem;color:#64748b;text-align:center;
+  background:#0f172a;border-radius:8px;padding:.55rem;margin:.5rem 0}
+#s-idle,#s-verify,#s-result{display:none}
+#s-idle.on,#s-verify.on,#s-result.on{display:block}
+</style>
+</head>
+<body>
+<div class="logo">🛡️ BaseTruth KYC</div>
+
+<!-- IDLE -->
+<div id="s-idle" class="card on">
+  <h2 style="font-size:1.15rem;font-weight:700;margin-bottom:.45rem">Video Identity Verification</h2>
+  <p style="font-size:.85rem;color:#94a3b8;line-height:1.6;margin-bottom:.9rem">
+    You have been asked to complete a quick AI-powered identity check.<br>
+    This takes about <strong style="color:#e2e8f0">30–60 seconds</strong> and runs entirely
+    on our secure server. No data is shared with third parties.
+  </p>
+  <p style="font-size:.85rem;color:#94a3b8;line-height:1.6">
+    <strong style="color:#c4b5fd">Prepare:</strong><br>
+    · Good lighting — face a window or bright light source<br>
+    · Position your face inside the oval guide when prompted<br>
+    · Follow on-screen prompts carefully
+  </p>
+  <div class="info-row" id="cust-info"></div>
+  <button class="btn" id="btn-start">Start Verification</button>
+</div>
+
+<!-- VERIFY -->
+<div id="s-verify" class="card">
+  <div class="video-wrap">
+    <video id="vid" autoplay muted playsinline></video>
+    <div class="oval"></div>
+    <div class="badge b-idle" id="face-badge">Searching…</div>
+  </div>
+  <div class="ch-card" id="ch-card">
+    <div class="ch-label" id="ch-label">Please wait…</div>
+    <div class="ch-inst" id="ch-inst">Preparing your session.</div>
+    <div class="prog-wrap"><div class="prog-fill" id="prog-fill" style="width:0%"></div></div>
+    <div class="dots" id="dots"></div>
+  </div>
+  <div class="fb" id="fb-msg"></div>
+</div>
+
+<!-- RESULT -->
+<div id="s-result" class="card">
+  <div class="res-card" id="res-inner">
+    <div class="res-icon" id="res-icon">⏳</div>
+    <div class="res-title" id="res-title">Processing…</div>
+    <div class="res-det" id="res-det"></div>
+  </div>
+</div>
+
+<p class="sec-note">🔒 Video processed on BaseTruth secure servers. Not shared externally.</p>
+
+<script>
+const SESSION_ID       = '__SESSION_ID__';
+const TOTAL_CHALLENGES = __CHALLENGES_COUNT__;
+const CUSTOMER_NAME    = '__CUSTOMER_NAME__';
+const CHALLENGES       = __CHALLENGES_JSON__;
+
+const LABELS = {
+  blink:      'CLOSE YOUR EYES',
+  turn_left:  'TURN YOUR HEAD LEFT',
+  turn_right: 'TURN YOUR HEAD RIGHT',
+  nod:        'NOD YOUR HEAD',
+};
+const INSTR = {
+  blink:      'Slowly close both eyes completely, then open them again',
+  turn_left:  'Slowly turn your head to YOUR left (left ear toward camera)',
+  turn_right: 'Slowly turn your head to YOUR right (right ear toward camera)',
+  nod:        'Slowly nod your head down and then back up to center',
+};
+
+let ws = null, stream = null, captureTimer = null, done = 0;
+let resultShown = false;  // guard: don't overwrite a result already displayed
+
+const sIdle   = document.getElementById('s-idle');
+const sVerify = document.getElementById('s-verify');
+const sResult = document.getElementById('s-result');
+const vid     = document.getElementById('vid');
+const badge   = document.getElementById('face-badge');
+const chLabel = document.getElementById('ch-label');
+const chInst  = document.getElementById('ch-inst');
+const prog    = document.getElementById('prog-fill');
+const dots    = document.getElementById('dots');
+const fb      = document.getElementById('fb-msg');
+
+const ci = document.getElementById('cust-info');
+if (CUSTOMER_NAME) ci.textContent = 'Session prepared for: ' + CUSTOMER_NAME;
+else ci.style.display = 'none';
+
+for (let i = 0; i < TOTAL_CHALLENGES; i++) {
+  const d = document.createElement('div');
+  d.className = 'dot'; d.id = 'dot' + i; dots.appendChild(d);
+}
+
+function show(name){
+  [sIdle,sVerify,sResult].forEach(s=>s.classList.remove('on'));
+  if(name==='idle')   sIdle.classList.add('on');
+  if(name==='verify') sVerify.classList.add('on');
+  if(name==='result') sResult.classList.add('on');
+}
+
+document.getElementById('btn-start').addEventListener('click', async ()=>{
+  const btn = document.getElementById('btn-start');
+  btn.disabled = true; btn.textContent = 'Opening camera…';
+  try {
+    stream = await navigator.mediaDevices.getUserMedia(
+      {video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}},audio:false});
+    vid.srcObject = stream;
+    await vid.play();
+  } catch(e){
+    alert('Camera access denied. Please allow camera access and reload the page.');
+    btn.disabled = false; btn.textContent = 'Start Verification'; return;
+  }
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}/kyc/ws/${SESSION_ID}`);
+  ws.onopen = ()=>{ show('verify'); startCapture(); };
+  ws.onmessage = e=>{ try{ handle(JSON.parse(e.data)); }catch(_){} };
+  ws.onerror = ()=>{ if(!resultShown) showResult(false,0,'Connection error — could not reach the server. Please try again.'); };
+  ws.onclose = e=>{ if(!resultShown && e.code!==1000 && done<TOTAL_CHALLENGES) showResult(false,0,'Session disconnected.'); stopCapture(); };
+});
+
+function startCapture(){
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  captureTimer = setInterval(()=>{
+    if(!ws || ws.readyState!==1) return;
+    if(!vid.videoWidth) return;
+    canvas.width  = 640;
+    canvas.height = Math.round(640 * vid.videoHeight / vid.videoWidth);
+    // Draw un-mirrored (raw camera data) — CSS mirrors the preview only
+    ctx.drawImage(vid,0,0,canvas.width,canvas.height);
+    canvas.toBlob(blob=>{
+      if(!blob) return;
+      const fr = new FileReader();
+      fr.onloadend = ()=>{
+        const b64 = fr.result.split(',')[1];
+        if(ws && ws.readyState===1) ws.send(JSON.stringify({type:'frame',data:b64}));
+      };
+      fr.readAsDataURL(blob);
+    },'image/jpeg',0.82);
+  },310);
+}
+
+function stopCapture(){
+  if(captureTimer){clearInterval(captureTimer);captureTimer=null;}
+  if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
+}
+
+function handle(msg){
+  if(msg.type==='status')      updateUI(msg);
+  else if(msg.type==='result'){ stopCapture(); if(ws)ws.close(1000); showResult(msg.passed,msg.display_score||0,msg.message||''); }
+  else if(msg.type==='error'){  stopCapture(); showResult(false,0,msg.message||'Verification failed.'); }
+}
+
+function updateUI(msg){
+  if(msg.face_detected){ badge.className='badge b-ok'; badge.textContent='✓ Face detected'; }
+  else{                   badge.className='badge b-warn'; badge.textContent='Center your face'; }
+  if(msg.challenge){
+    chLabel.textContent = LABELS[msg.challenge] || msg.challenge.toUpperCase();
+    chInst.textContent  = INSTR[msg.challenge]  || '';
+  }
+  done = msg.challenges_completed||0;
+  const total = msg.total_challenges || TOTAL_CHALLENGES;
+  prog.style.width = total>0 ? (done/total*100)+'%' : '0%';
+  for(let i=0;i<total;i++){
+    const d=document.getElementById('dot'+i);
+    if(!d) continue;
+    d.className = i<done ? 'dot done' : (i===done ? 'dot active' : 'dot');
+  }
+  if(msg.feedback){
+    fb.textContent  = msg.feedback;
+    fb.className    = 'fb' + (msg.challenge_just_passed ? ' pass' : '');
+  }
+}
+
+function showResult(passed,score,message){
+  resultShown = true;  // prevent onclose from re-showing
+  show('result');
+  const inner = document.getElementById('res-inner');
+  const icon  = document.getElementById('res-icon');
+  const title = document.getElementById('res-title');
+  const det   = document.getElementById('res-det');
+  if(passed){
+    inner.className = 'res-card res-pass';
+    icon.textContent = '✅';
+    title.textContent = 'Identity Verified';
+    det.innerHTML = 'Your identity has been successfully verified by BaseTruth AI.<br>'
+      + '<span style="color:#4ade80">Match score: '+(score).toFixed(1)+'%</span><br><br>'
+      + 'You may close this window.';
+  } else {
+    inner.className = 'res-card res-fail';
+    icon.textContent = '❌';
+    title.textContent = 'Verification Failed';
+    det.innerHTML = (message || 'Verification could not be completed.')
+      + '<br><br>Please contact the agent for assistance.';
+  }
+}
+
+window.addEventListener('beforeunload',()=>{ stopCapture(); if(ws)ws.close(); });
+</script>
+</body>
+</html>"""
 
 
 def _service(artifact_root: str | Path | None = None) -> Any:
@@ -180,50 +455,203 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
             note_author=request.note_author,
         )
 
-    # ── Video KYC endpoints ─────────────────────────────────────────
-    
-    import uuid
-    from fastapi import WebSocket, WebSocketDisconnect, Body
-    from basetruth.vision.video_kyc import VideoKYCProcessor
-    import numpy as np
-    
-    # Global memory cache for in-flight KYC sessions
-    _kyc_sessions: Dict[str, Any] = {}
+    # ── Video KYC — challenge-based liveness + face-match ─────────────────────
 
-    @app.post("/api/v1/kyc/session", tags=["VideoKYC"])
-    def create_kyc_session(req: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
-        """Creates a secure session referencing a parsed face embedding."""
-        session_id = str(uuid.uuid4())
-        _kyc_sessions[session_id] = np.array(req["embedding"], dtype=np.float32)
-        return {"session_id": session_id}
+    import asyncio as _asyncio
+    import base64 as _base64
+    import json as _json
+    import random as _random
+    import threading as _threading
 
-    @app.websocket("/ws/video_kyc/{session_id}")
-    async def websocket_video_kyc(websocket: WebSocket, session_id: str):
-        """Standard HTTP/TCP WebSocket for 15 FPS Video processing (Bypasses Docker UDP)."""
+    import cv2 as _cv2
+    import numpy as _np
+    from fastapi import WebSocket, WebSocketDisconnect
+    from fastapi.responses import HTMLResponse as _HTMLResponse
+
+    from basetruth.kyc.session import ALL_CHALLENGES, SessionStore
+    from basetruth.kyc.liveness import analyze_challenge, extract_features, run_face_match
+    from basetruth.vision.face import get_face_analyzer
+
+    # One store per application instance (survives across requests)
+    _kyc_store    = SessionStore()
+    _kyc_face_lock = _threading.Lock()
+
+    def _process_kyc_frame(session: Any, b64_frame: str) -> Dict[str, Any]:
+        """CPU-bound per-frame analysis — called in a thread-pool executor."""
+        try:
+            raw   = _base64.b64decode(b64_frame)
+            nparr = _np.frombuffer(raw, _np.uint8)
+            img   = _cv2.imdecode(nparr, _cv2.IMREAD_COLOR)
+            if img is None:
+                return {"type": "status", "face_detected": False, "feedback": "Invalid frame."}
+        except Exception:
+            return {"type": "status", "face_detected": False, "feedback": "Decode error."}
+
+        face_app = get_face_analyzer()
+        with _kyc_face_lock:
+            faces = face_app.get(img)
+
+        if not faces:
+            return {
+                "type": "status",
+                "face_detected": False,
+                "challenge": session.current_challenge,
+                "challenges_completed": session.current_challenge_idx,
+                "total_challenges": len(session.challenges),
+                "feedback": "No face detected — move into the oval.",
+                "challenge_just_passed": False,
+            }
+
+        face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
+        # Store the last clear frame for later use in PDF reports
+        session.last_live_frame_bytes = raw
+
+        if session.all_done:
+            return _finish_session(session, face)
+
+        features = extract_features(face)
+        history  = session.current_frame_history()
+        history.append(features)
+
+        current_ch = session.current_challenge
+        analysis   = analyze_challenge(history, current_ch)
+        just_passed = False
+        if analysis["passed"]:
+            session.advance_challenge()
+            just_passed = True
+            if session.all_done:
+                return _finish_session(session, face)
+
+        return {
+            "type": "status",
+            "face_detected": True,
+            "challenge": current_ch,
+            "challenges_completed": session.current_challenge_idx,
+            "total_challenges": len(session.challenges),
+            "feedback": analysis["feedback"],
+            "challenge_just_passed": just_passed,
+        }
+
+    def _finish_session(session: Any, face: Any) -> Dict[str, Any]:
+        """Called once all liveness challenges pass — runs the face-match check."""
+        if session.reference_embedding_b64:
+            match = run_face_match(face, session.reference_embedding_b64)
+            session.status = "completed" if match["passed"] else "failed"
+            session.result = match
+            return {"type": "result", **match}
+        # No reference embedding → liveness-only session
+        result = {
+            "passed": True,
+            "match_score": 1.0,
+            "display_score": 100.0,
+            "cosine_similarity": 1.0,
+            "message": "Liveness checks passed (no ID reference provided).",
+        }
+        session.status = "completed"
+        session.result = result
+        return {"type": "result", **result}
+
+    @app.post("/kyc/sessions", tags=["Video KYC"])
+    def create_kyc_session(req: CreateKYCSessionRequest) -> Dict[str, Any]:
+        """Create a challenge-based Video KYC session. Returns a session URL."""
+        challenges = req.challenges or _random.sample(ALL_CHALLENGES, k=2)
+        session = _kyc_store.create(
+            challenges=challenges,
+            reference_embedding_b64=req.reference_embedding_b64,
+            customer_name=req.customer_name,
+            entity_ref=req.entity_ref,
+        )
+        return {
+            **session.to_status_dict(),
+            "session_url": f"/kyc/{session.session_id}",
+        }
+
+    @app.get("/kyc/sessions/{session_id}", tags=["Video KYC"])
+    def get_kyc_session_status(session_id: str) -> Dict[str, Any]:
+        """Poll the status of a KYC session from the agent dashboard."""
+        session = _kyc_store.get(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found or expired.")
+        return session.to_status_dict()
+
+    @app.get("/kyc/{session_id}", response_class=_HTMLResponse, tags=["Video KYC"])
+    def kyc_session_page(session_id: str) -> Any:
+        """Serve the customer-facing Video KYC browser page."""
+        session = _kyc_store.get(session_id)
+        if not session:
+            return _HTMLResponse(
+                "<html><body style='font-family:sans-serif;background:#0f172a;color:#f87171;"
+                "display:flex;justify-content:center;align-items:center;height:100vh;margin:0'>"
+                "<h2>Session not found or has expired.</h2></body></html>",
+                status_code=404,
+            )
+        html = _KYC_PAGE_HTML.replace("__SESSION_ID__", session.session_id)
+        html = html.replace("__CHALLENGES_COUNT__", str(len(session.challenges)))
+        html = html.replace("__CUSTOMER_NAME__", session.customer_name or "")
+        html = html.replace("__CHALLENGES_JSON__", _json.dumps(session.challenges))
+        return _HTMLResponse(html)
+
+    @app.websocket("/kyc/ws/{session_id}")
+    async def kyc_websocket(websocket: WebSocket, session_id: str) -> None:
+        """WebSocket: browser streams base64 JPEG frames; server replies with JSON status/result."""
         await websocket.accept()
-        if session_id not in _kyc_sessions:
+        session = _kyc_store.get(session_id)
+        if not session:
+            await websocket.send_json({"type": "error", "message": "Session not found or expired."})
             await websocket.close(code=1008)
             return
-            
-        processor = VideoKYCProcessor()
-        processor.set_reference_embedding(_kyc_sessions[session_id])
-        
+        if session.status not in ("waiting", "active"):
+            await websocket.send_json({"type": "error", "message": f"Session is {session.status}."})
+            await websocket.close(code=1008)
+            return
+
+        session.status = "active"
+        loop = _asyncio.get_running_loop()
+        _clean_exit = False
         try:
             while True:
-                # Receive base64 frame string from JS client
-                b64_str = await websocket.receive_text()
-                
-                # Send frame into OpenCV + ArcFace pipeline
-                out_b64 = processor.process_base64_frame(b64_str)
-                
-                # Echo annotated frame back to the browser
-                if out_b64:
-                    await websocket.send_text(out_b64)
-        except WebSocketDisconnect:
+                try:
+                    data = await _asyncio.wait_for(websocket.receive_json(), timeout=15.0)
+                except _asyncio.TimeoutError:
+                    # Client went silent — send a gentle nudge and keep waiting
+                    try:
+                        await websocket.send_json({"type": "status", "face_detected": False,
+                                                   "feedback": "No frames received — check your camera."})
+                    except Exception:
+                        pass
+                    continue
+                except WebSocketDisconnect:
+                    _clean_exit = True
+                    break
+                if data.get("type") != "frame":
+                    continue
+                b64_frame = data.get("data", "")
+                if not b64_frame:
+                    continue
+                try:
+                    result = await loop.run_in_executor(None, _process_kyc_frame, session, b64_frame)
+                except Exception as _frame_exc:
+                    # Surface the real error to the browser instead of silently disconnecting.
+                    _err_msg = str(_frame_exc) or "Frame processing error."
+                    try:
+                        await websocket.send_json({"type": "error", "message": _err_msg})
+                    except Exception:
+                        pass
+                    _clean_exit = True
+                    break
+                await websocket.send_json(result)
+                if result.get("type") == "result":
+                    _clean_exit = True
+                    break
+        except Exception:
             pass
         finally:
-            if session_id in _kyc_sessions:
-                del _kyc_sessions[session_id]
+            if session.status == "active":
+                session.status = "failed" if not _clean_exit else session.status
+            try:
+                await websocket.close(code=1000)
+            except Exception:
+                pass
 
     # ── Entity registry endpoints ─────────────────────────────────────────
 

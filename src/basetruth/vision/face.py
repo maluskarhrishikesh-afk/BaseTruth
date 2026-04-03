@@ -22,46 +22,58 @@ def _ensure_insightface():
     if _insightface is None:
         try:
             import os
-            # Prevent matplotlib (used internally by insightface) from trying to write
-            # to the non-existent or read-only /home/basetruth directory
-            os.environ["MPLCONFIGDIR"] = "/tmp/matplotlib"
-            os.environ["XDG_CACHE_HOME"] = "/tmp/cache"
-            os.environ["XDG_CONFIG_HOME"] = "/tmp/config"
-            
+            import tempfile
+            # Prevent matplotlib from trying to write to Docker-only directories.
+            # Use the system temp dir so this works on both Windows and Linux.
+            _tmp = tempfile.gettempdir()
+            os.environ.setdefault("MPLCONFIGDIR", os.path.join(_tmp, "matplotlib"))
+            os.environ.setdefault("XDG_CACHE_HOME",  os.path.join(_tmp, "cache"))
+            os.environ.setdefault("XDG_CONFIG_HOME", os.path.join(_tmp, "config"))
+
             import insightface
             _insightface = insightface
         except ImportError:
-            raise ImportError("Please install insightface and onnxruntime to use face verification.")
+            raise ImportError(
+                "insightface is not installed. "
+                "Run: pip install insightface onnxruntime  "
+                "(requires Python ≤ 3.12 on Windows; use Docker for Python 3.13+)."
+            )
 
 def get_face_analyzer() -> Any:
-    """Lazy initialize and download the InsightFace models (RetinaFace + ArcFace)."""
+    """Lazy-initialize InsightFace (RetinaFace + ArcFace). Downloads ~300 MB models on first run."""
     global _face_app
     _ensure_insightface()
     if _face_app is None:
         from insightface.app import FaceAnalysis
         import os
-        
-        # Override the default download directory (~/.insightface) since the docker user
-        # doesn't have a home directory. We write it to the persistent your_data mount instead.
-        models_dir = os.path.join(os.environ.get("BASETRUTH_ARTIFACT_ROOT", "/app/artifacts").replace("artifacts", "your_data"), "models")
-        os.makedirs(models_dir, exist_ok=True)
+        from pathlib import Path
+
+        # Resolve a cross-platform models directory:
+        #   Docker:  BASETRUTH_ARTIFACT_ROOT=/app/artifacts  →  /app/your_data/models
+        #   Local:   BASETRUTH_ARTIFACT_ROOT not set          →  <repo>/your_data/models
+        artifact_root = os.environ.get("BASETRUTH_ARTIFACT_ROOT", "")
+        if artifact_root:
+            models_dir = str(Path(artifact_root).parent / "your_data" / "models")
+        else:
+            # Derive from the location of this source file: src/basetruth/vision/face.py
+            # Walk up to the repo root (parent of src/)
+            _here = Path(__file__).resolve()
+            _repo_root = _here.parent.parent.parent.parent  # vision -> basetruth -> src -> repo
+            models_dir = str(_repo_root / "your_data" / "models")
+
+        Path(models_dir).mkdir(parents=True, exist_ok=True)
         os.environ["INSIGHTFACE_HOME"] = models_dir
 
-        # buffalo_l is the default high-accuracy model pack (includes RetinaFace and ArcFace).
-        # It's roughly ~300MB and auto-downloads to INSIGHTFACE_HOME/models/ on first run.
-        log.info(f"Initializing FaceAnalyzer (may download ~300MB of ONNX models to {models_dir} on first run)...")
+        log.info("Initializing FaceAnalyzer (may download ~300 MB to %s on first run)...", models_dir)
         _face_app = FaceAnalysis(
             name="buffalo_l",
             root=models_dir,
             allowed_modules=["detection", "recognition"],
-            providers=["CPUExecutionProvider"] # Force CPU for universal compat; switch to CUDA if needed
+            providers=["CPUExecutionProvider"],
         )
-        
-        # det_size ensures bounding box scaling works reliably
-        # ctx_id=0 uses GPU if available, but since we set CPU provider it will use CPU
         _face_app.prepare(ctx_id=-1, det_size=(640, 640))
-        log.info("FaceAnalyzer initialized successfully.")
-        
+        log.info("FaceAnalyzer initialized.")
+
     return _face_app
 
 def _draw_face(img: np.ndarray, face: Any) -> np.ndarray:

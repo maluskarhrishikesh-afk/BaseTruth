@@ -1,55 +1,41 @@
 
+This page opened ->
+Upload a reference ID above to enable face-match (optional — liveness-only is also supported).
 
 
-When I click photos of Aadhar, PAN Card and self, the image quality or camera quality is not top notch.
-Can we improve the image quality?
-Issue is that Aadhar QR code and PAN card details cannot be fetched properly.
+Session created — share this URL with your customer:
 
-main issue is that all the details cannot be extracted from the image ->
-Step 1 — Provide Documents
+http://localhost:8000/kyc/KUBZ6dwqb0p5GTby-wU0fQ
+Open KYC Page
 
-📁 Upload Documents
+The customer opens this link in their browser — no app or plugin needed.
 
+----------------
 
-📷 Capture with Camera
+Aftre I clicked "Open KYC Page", i got this ->
+Video Identity Verification
+You have been asked to complete a quick AI-powered identity check.
+This takes about 30–60 seconds and runs entirely on our secure server. No data is shared with third parties.
 
-📷
-Click Open Camera for each document, then use the shutter button inside the camera view to capture the photo.
+Prepare:
+· Good lighting — face a window or bright light source
+· Position your face inside the oval guide when prompted
+· Follow on-screen prompts carefully
 
-📸 Tips for best results: Place the document on a flat surface in good light. Hold the camera directly above — avoid tilting. For Aadhaar, ensure the entire QR code is visible and in focus. For PAN card, make sure all text is sharp and not in shadow.
-📄 Aadhaar Card
+Session prepared for: Hrishikesh Maluskar
+Start Verification
 
-Snapshot
-✅ Photo captured
+---------------
 
-0
-Aadhaar — captured
+Finally when i clicked on "Start Verification", got this error ->
 
+🛡️ BaseTruth KYC
+❌
+Verification Failed
+Session disconnected.
 
-💳 PAN Card
-
-Snapshot
-✅ Photo captured
-
-0
-PAN — captured
-
-
-🤳 Selfie Photo
-
-
-No Aadhaar QR code detected in the captured photo.
-
-✅ PAN extracted — AQVPM3058P (Individual)
-
-------------------------------------------------------------------------------------------------------
-
-Also coming to Video KYC, how should this exactly be?
-
-Shall we have options like setup calendar meeting with the customer and send a zoom or teams invite.
-I was wondering how can this be done.
-How have others achieved this in the market right now and what is the most modern way of doing it.
-How can we do it on out platform/product?
+Please contact the agent for assistance.
+🔒 Video processed on BaseTruth secure servers. Not shared externally.
 
 ------------------------------------------------------------------------------------------------------
 

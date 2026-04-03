@@ -177,6 +177,10 @@ Key endpoints for auditor workflows:
 | `GET /api/v1/scans/{id}/report.pdf` | Download the PDF audit report for a specific scan |
 | `GET /api/v1/scans/recent` | Most-recent scans across all entities |
 | `GET /api/v1/db/stats` | Entity / scan / high-risk counts for dashboards |
+| `POST /kyc/sessions` | Create a Video KYC session (returns a shareable URL) |
+| `GET /kyc/{session_id}` | Customer-facing Video KYC page (served in browser) |
+| `GET /kyc/sessions/{session_id}` | Poll session status from the operator dashboard |
+| `WS /kyc/ws/{session_id}` | WebSocket: browser streams frames; server sends liveness results |
 
 ## 10. Operator UI — Page Routing
 
@@ -236,29 +240,80 @@ The function tries the following in order, stopping as soon as the QR code decod
 
 ## 12. Video KYC Workflow
 
-The Video KYC page (`pages/video_kyc.py`) has two tabs:
+The Video KYC page (`pages/video_kyc.py`) has **three tabs**.
 
-### Tab 1 — 📅 Schedule Session
+### Why a Dedicated Video SDK?
 
-The agent fills in a form with customer name, date/time, duration, video platform, and meeting join link (Zoom / Teams / Google Meet). The system generates:
+Third-party platforms (Zoom, Teams, Google Meet) do not expose raw frame data to server-side code. That makes reliable AI liveness checks and face-matching impossible over those channels. BaseTruth instead runs its own **WebSocket-based video layer**:
 
-1. A **.ics calendar file** — open it on any device to add the event to Google Calendar, Outlook, or Apple Calendar. Forward the same file to the customer.
-2. A **ready-to-copy email body** — paste it into any email or WhatsApp message to the customer.
+- Customer opens a URL in their browser — no app, no plugin, no account needed.
+- `getUserMedia` captures the camera at ~3 fps and streams JPEG frames through a WebSocket.
+- The server runs **RetinaFace** (face detection) + **active liveness challenge analysis** + **ArcFace** (face match) on every frame.
+- The result is sent back in real time as JSON.
 
-**No API keys required.** The agent creates the Zoom/Teams/Meet meeting themselves and pastes the join link into the form. This works with any video platform.
+### Frame Processing Pipeline
 
-**How the market does Video KYC:**
-Banks and fintechs schedule a live video call with a KYC agent. The customer joins via Zoom/Teams/Meet. During the call, the agent runs AI face-match and liveness checks. This is the same workflow — schedule here, verify in the next tab.
+```
+Browser                          FastAPI server (port 8000)
+──────                           ─────────────────────────
+getUserMedia → canvas.toBlob     base64 decode → cv2.imdecode
+→ base64 → WebSocket JSON  ───→  RetinaFace detect → extract_features()
+                                 analyze_challenge() per frame
+                            ←──  {type:"status", face_detected, challenge,
+                                  challenges_completed, feedback}
+[all challenges passed]     ←──  run_face_match() → ArcFace cosine sim
+                            ←──  {type:"result", passed, display_score, message}
+```
 
-### Tab 2 — 🎥 Conduct Verification
+Thread safety: InsightFace's `face_app.get()` is not thread-safe. A `threading.Lock()` (`_kyc_face_lock`) wraps every call inside `_process_kyc_frame`, which itself runs in asyncio's thread-pool executor so the WebSocket handler never blocks the event loop.
 
-The agent uploads the customer's reference ID document. BaseTruth extracts the face embedding (RetinaFace + ArcFace). The agent then uses `st.camera_input` to capture a live frame of the customer's face (via the video call screen, or directly if in-person). BaseTruth runs:
+### Session Management (`src/basetruth/kyc/session.py`)
 
-1. **Face detection** — RetinaFace locates the face and 5 landmarks
-2. **Liveness check** — head-turn heuristic using eye/nose keypoint ratios
-3. **Face match** — ArcFace cosine similarity vs. reference embedding
+- **`KYCSession`** dataclass: holds challenges list, per-challenge frame history, reference embedding (base64 float32 bytes), status, and the last live frame bytes (for PDF evidence).
+- **`SessionStore`**: thread-safe in-memory dict with 30-minute TTL.
+- Statuses: `waiting → active → completed | failed | expired`.
 
-Result + annotated image + PDF report are saved to the database.
+### Active Liveness Detection (`src/basetruth/kyc/liveness.py`)
+
+Uses InsightFace 5-point keypoints (kps[0]=left_eye, kps[1]=right_eye, kps[2]=nose, kps[3]=left_mouth, kps[4]=right_mouth). All features are normalized by the face bounding-box width.
+
+| Challenge     | Detection method                                       | Threshold              |
+|---------------|--------------------------------------------------------|------------------------|
+| `turn_left`   | `nose_rel_x = (nose_x − bbox_x1) / bbox_w`           | `> 0.62`               |
+| `turn_right`  | Same `nose_rel_x`                                      | `< 0.38`               |
+| `nod`         | `pitch = (nose_y − eye_mid_y) / interocular_px` range | range `> 0.28` over 6+ frames |
+| `blink`       | Face detection confidence (`det_score`) dip + recovery | baseline `> 0.88`, dip `< 0.84`, recovery `> 0.90` |
+
+By default 2 challenges are selected at random per session (the agent may override in the dashboard).
+
+### API Endpoints
+
+| Method      | Path                          | Description                               |
+|-------------|-------------------------------|-------------------------------------------|
+| `POST`      | `/kyc/sessions`               | Create session; returns `session_id` + URL |
+| `GET`       | `/kyc/{session_id}`           | Serve customer HTML page                  |
+| `WebSocket` | `/kyc/ws/{session_id}`        | Frame stream in, status/result JSON out   |
+| `GET`       | `/kyc/sessions/{session_id}`  | Agent polls for status and result         |
+
+### Tab 1 — 🔗 Start KYC Session
+
+Agent workflow:
+1. Upload reference ID → BaseTruth extracts the ArcFace embedding locally.
+2. Enter customer name / entity ref, select challenges (or leave empty for 2 random).
+3. Click **Create Secure KYC Session** → `POST /kyc/sessions` via internal Docker DNS.
+4. The session URL (`http://<host>:8000/kyc/<id>`) is shown and can be shared with the customer.
+5. Streamlit polls `/kyc/sessions/<id}` every 2 s and shows live challenge progress.
+6. On completion, the result (pass/fail + match score) is saved to PostgreSQL and a PDF is generated.
+
+### Tab 2 — 📅 Schedule Appointment
+
+The agent generates a `.ics` calendar invite. The **Meeting Link** field is pre-populated with the BaseTruth KYC URL from Tab 1 (if a session was created), eliminating any need for Zoom or Teams. No external API keys required.
+
+### Tab 3 — 📷 In-Person Verify
+
+Static webcam check (`st.camera_input`) for face-to-face on-site KYC. Runs entirely within the Streamlit container; no session API needed. Uses the same RetinaFace + ArcFace pipeline and saves to the same DB + PDF path.
+
+
 
 ## Why This Shape
 

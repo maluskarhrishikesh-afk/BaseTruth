@@ -38,14 +38,63 @@ The primary identity verification flow mandates **three document inputs**:
 6. **Auto-fill Entity Form** — Extracted name, PAN number, and masked Aadhaar UID are pre-populated in the "Applicant Details" form. The operator only needs to enter phone and email manually.
 7. **Persistence** — Results are stored in the `identity_checks` database table, linked to the entity. A PDF report is generated.
 
-### 2. Video KYC (Live Camera)
-Designed specifically to prevent impersonation or photo-spoofing fraud.
+### 2. Video KYC (WebSocket Liveness Challenge)
 
-1. **Reference Extraction**: The user provides the Aadhaar card. The AI extracts the face embedding.
-2. **Live Camera Capture**: The system uses Streamlit's native `st.camera_input()` to capture a live photo directly from the browser.
-3. **Liveness Detection**: The system calculates the lateral projection angle between the nose and eyes (using the RetinaFace spatial ratio). By asking the user to turn their head `Left` or `Right`, the system validates physical 3D presence rather than a flat, static printed photo.
-4. **Identity Matching**: ArcFace verifies the live capture against the Reference ID document.
-5. **Persistence**: Results (identity match + liveness) are stored in `identity_checks` and a PDF report is generated.
+Designed to prevent impersonation and photo-spoofing fraud.  
+The customer opens a link on **their own device** — no app or plugin needed.
+
+```
+Operator dashboard  ──POST /kyc/sessions──►  FastAPI server
+                                               │ creates session in memory
+                                               │ returns shareable URL
+Operator shares URL with customer
+                    ◄── Customer opens URL in browser
+                         (served by GET /kyc/{session_id})
+Customer opens camera
+Customer's browser ──WS /kyc/ws/{session_id}──► FastAPI server
+                    ◄── liveness instructions ──
+                    ──── camera frame (JPEG/B64) ──►
+                    ◄──── result / pass / fail ────
+```
+
+**Step-by-step:**
+
+1. **Create session** — Operator clicks "Create Secure KYC Session" on the Video KYC page.
+   - Optionally uploads the customer's ID document; the system extracts a face embedding (ArcFace) to use as a reference for later matching.
+   - `POST /kyc/sessions` is called on the FastAPI server; a 30-minute session is created.
+   - A shareable URL like `http://your-server:8000/kyc/<session_id>` is returned.
+
+2. **Customer opens the link** — The browser loads the self-contained HTML page served directly by the API server.
+   - Works on any modern mobile or desktop browser; no install required.
+   - Page shows: customer name, challenge count, and a "Start Verification" button.
+
+3. **Live challenges** — Customer clicks "Start Verification":
+   - Browser requests camera permission.
+   - A WebSocket connection opens to `/kyc/ws/<session_id>`.
+   - The browser captures a JPEG frame every ~310 ms and sends it as base64 over the WebSocket.
+   - The server runs **RetinaFace** to locate the face in each frame and extracts 5-point landmarks.
+   - A random set of 2–4 **active-liveness challenges** are assigned (configurable):
+
+     | Challenge | What the server looks for |
+     |---|---|
+     | `blink` | Detection confidence dips (eyes close) then recovers |
+     | `turn_left` | Nose `x` position moves right past threshold |
+     | `turn_right` | Nose `x` position moves left past threshold |
+     | `nod` | Nose `y` pitch range exceeds threshold across recent frames |
+
+   - After each challenge passes, the server advances to the next one and sends a progress update.
+
+4. **Face match (optional)** — Once all liveness challenges pass:
+   - If a reference embedding was provided in step 1, **ArcFace cosine similarity** is computed between the live face and the reference embedding.
+   - Threshold: similarity > 0.40 → PASS.
+   - If no reference was provided, the session completes as a liveness-only check.
+
+5. **Result** — Server sends a `{"type":"result","passed":true/false,...}` message via WebSocket.
+   - Browser shows a full-screen PASS ✅ or FAIL ❌ card.
+   - Operator dashboard polls `GET /kyc/sessions/{session_id}` for the outcome.
+
+**Dependency note:** Video KYC face analysis requires `insightface` and `onnxruntime`.  
+These packages install cleanly on Linux (Docker). On Windows, Python ≤ 3.12 is required to build the native extensions. When running locally on Python 3.13+, the WebSocket and liveness UI will still work but the server will return a clear error message if face analysis is unavailable instead of silently disconnecting.
 
 ## Cross-Document Checks
 
@@ -96,8 +145,10 @@ Many competitive products rely on AWS Rekognition or Azure Face API. BaseTruth u
 | File | Purpose |
 | --- | --- |
 | `src/basetruth/vision/face.py` | Core face detection and comparison (RetinaFace + ArcFace) |
-| `src/basetruth/vision/video_kyc.py` | Video KYC processor with liveness detection |
+| `src/basetruth/kyc/session.py` | In-memory session store with TTL and challenge sequencing |
+| `src/basetruth/kyc/liveness.py` | Per-frame feature extraction and challenge pass/fail logic |
+| `src/basetruth/api.py` | REST + WebSocket endpoints (`POST /kyc/sessions`, `WS /kyc/ws/{id}`, etc.) |
+| `src/basetruth/ui/pages/video_kyc.py` | Streamlit operator UI (create session, schedule, in-person verify) |
 | `src/basetruth/db.py` | `IdentityCheck` ORM model |
 | `src/basetruth/store.py` | `save_identity_check()`, `get_entity_identity_checks()` |
 | `src/basetruth/reporting/pdf.py` | `render_identity_check_pdf()` |
-| `src/basetruth/ui/app.py` | Identity and Video KYC page UI |

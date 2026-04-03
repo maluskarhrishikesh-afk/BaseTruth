@@ -65,6 +65,11 @@ services:
       MINIO_BUCKET: basetruth-reports
       BT_LOG_LEVEL: INFO
       BT_LOG_DIR: /app/logs
+      # Internal URL used by Streamlit (inside Docker) to reach the API container.
+      # Must use the Docker service name, NOT localhost (each container has its own network namespace).
+      BT_API_INTERNAL_URL: http://basetruth-api:8000
+      # External URL embedded in session links shared with customers (reachable from their browser).
+      BT_API_EXTERNAL_URL: http://localhost:8000
     depends_on:
       db:
         condition: service_healthy
