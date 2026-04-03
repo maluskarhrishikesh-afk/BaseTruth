@@ -136,15 +136,23 @@ ELA works by resaving the image at a known JPEG quality (95 %) and measuring per
 
 ### 6.1 Identity Verification Layer (`src/basetruth/vision/face.py`)
 
-A standalone offline deep-learning engine dedicated to verifying the identity of individuals across multiple documents (e.g., Aadhaar card vs. Live Selfie).
+A standalone offline deep-learning engine dedicated to verifying the identity of individuals across multiple documents (e.g., Aadhaar card vs. Live Selfie) and running real-time liveness challenges over WebSocket.
+
+**Face detector selection (automatic):**
+
+| Environment | Detector | Notes |
+|---|---|---|
+| Docker / Python ≤ 3.12 | InsightFace (RetinaFace + ArcFace, ONNX) | Full identity embedding + face match |
+| Python 3.13+ (local dev) | **MediaPipe FaceLandmarker** | Liveness-only; face match skipped |
 
 | Component | Purpose |
 |---|---|
-| RetinaFace (ONNX) | Detects facial boundaries and extracts 5-point alignment landmarks securely. |
-| ArcFace (ONNX) | Encodes the aligned face into a 512-dimensional vector. |
+| MediaPipe FaceLandmarker | Detects 468 facial landmarks and outputs blendshape scores (e.g. `eyeBlinkLeft`). Used as default on Python 3.13+. Model: `your_data/models/face_landmarker.task`. |
+| InsightFace RetinaFace (ONNX) | Detects facial boundaries and extracts 5-point alignment landmarks. Available on Linux/Python ≤ 3.12. |
+| InsightFace ArcFace (ONNX) | Encodes the aligned face into a 512-dimensional identity vector. Required for face-match scoring. |
 | OpenCV (`cv2`) | Handles bounding box tracing, BGR/RGB mapping, and image byte decoding prior to analysis. |
 
-*Detailed workflow and thresholds are documented in [Identity Verification](IDENTITY_VERIFICATION.md).*
+*Detailed workflow, challenge thresholds, and face-match scoring are documented in [Identity Verification](IDENTITY_VERIFICATION.md).*
 
 ### 7. Reporting Layer
 

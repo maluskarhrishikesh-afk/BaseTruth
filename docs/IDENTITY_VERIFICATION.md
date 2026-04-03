@@ -9,9 +9,9 @@ The pipeline runs locally without making any external API calls, ensuring high p
 | Component | Responsibility | Purpose in Flow |
 | --- | --- | --- |
 | **OpenCV** (`cv2`) | Image Processing | Decodes raw byte streams from the UI, manages RGB/BGR color space conversions, heavily resizes images for memory safety, draws visual forensic evidence (bounding boxes), and detects/decodes QR codes on Aadhaar cards. |
-| **RetinaFace** | Face Detection | Deep learning model that acts as the "eyes". It aggressively searches the document to locate the face, cropping it securely and mapping 5 key facial landmarks (eyes, nose, mouth) required to properly align the face angle. |
-| **ArcFace** | Identity Recognition | Deep learning model that acts as the "brain". It takes the aligned face from RetinaFace and translates it into a 512-dimensional vector (an embedding). |
-| **ONNX Runtime** | Inference Engine | Executes both RetinaFace and ArcFace locally on the CPU (or GPU if available) using the `buffalo_l` pre-trained model pack, bypassing heavy dependencies like PyTorch. |
+| **MediaPipe FaceLandmarker** | Face Detection (primary) | Google's on-device model that detects 468 facial landmarks and outputs blendshape scores (e.g. `eyeBlinkLeft`, `eyeBlinkRight`). Used as the default face detector on Python 3.13+. Model file: `your_data/models/face_landmarker.task` (auto-downloaded on first run). |
+| **InsightFace (RetinaFace + ArcFace)** | Face Detection + Identity Recognition (optional) | Deep learning models that detect faces and produce 512-dimensional identity embeddings. Required for face-match scoring. Installs cleanly on Linux (Docker) or Windows with Python ≤ 3.12. |
+| **ONNX Runtime** | Inference Engine | Executes InsightFace models locally on the CPU using the `buffalo_l` model pack. Required only when InsightFace is available. |
 | **pytesseract** | OCR | Extracts text from PAN card images to read the PAN number and cardholder name for cross-document verification. |
 
 ## Workflow
@@ -60,7 +60,7 @@ Customer's browser ──WS /kyc/ws/{session_id}──► FastAPI server
 **Step-by-step:**
 
 1. **Create session** — Operator clicks "Create Secure KYC Session" on the Video KYC page.
-   - Optionally uploads the customer's ID document; the system extracts a face embedding (ArcFace) to use as a reference for later matching.
+   - Optionally uploads the customer's ID document; the system extracts a face embedding (ArcFace/InsightFace) to use as a reference for later matching.
    - `POST /kyc/sessions` is called on the FastAPI server; a 30-minute session is created.
    - A shareable URL like `http://your-server:8000/kyc/<session_id>` is returned.
 
@@ -72,15 +72,15 @@ Customer's browser ──WS /kyc/ws/{session_id}──► FastAPI server
    - Browser requests camera permission.
    - A WebSocket connection opens to `/kyc/ws/<session_id>`.
    - The browser captures a JPEG frame every ~310 ms and sends it as base64 over the WebSocket.
-   - The server runs **RetinaFace** to locate the face in each frame and extracts 5-point landmarks.
+   - The server runs **MediaPipe FaceLandmarker** (or InsightFace if available) to locate the face in each frame and extracts 5 key landmarks (eyes, nose, mouth corners).
    - A random set of 2–4 **active-liveness challenges** are assigned (configurable):
 
      | Challenge | What the server looks for |
      |---|---|
-     | `blink` | Detection confidence dips (eyes close) then recovers |
-     | `turn_left` | Nose `x` position moves right past threshold |
-     | `turn_right` | Nose `x` position moves left past threshold |
-     | `nod` | Nose `y` pitch range exceeds threshold across recent frames |
+     | `blink` | EAR (Eye Aspect Ratio) dips below 0.15 (eyes close), then recovers above 0.18 (eyes open); fallback: InsightFace detection confidence dip |
+     | `turn_left` | Nose `x` position (relative to face width) moves right past 0.62 |
+     | `turn_right` | Nose `x` position moves left below 0.38 |
+     | `nod` | Pitch (nose height relative to eye midpoint) range exceeds 0.28 across recent frames |
 
    - After each challenge passes, the server advances to the next one and sends a progress update.
 
@@ -93,8 +93,15 @@ Customer's browser ──WS /kyc/ws/{session_id}──► FastAPI server
    - Browser shows a full-screen PASS ✅ or FAIL ❌ card.
    - Operator dashboard polls `GET /kyc/sessions/{session_id}` for the outcome.
 
-**Dependency note:** Video KYC face analysis requires `insightface` and `onnxruntime`.  
-These packages install cleanly on Linux (Docker). On Windows, Python ≤ 3.12 is required to build the native extensions. When running locally on Python 3.13+, the WebSocket and liveness UI will still work but the server will return a clear error message if face analysis is unavailable instead of silently disconnecting.
+**Face detection strategy:**
+
+| Environment | Face Detector | Liveness | Face Match |
+|---|---|---|---|
+| Docker (Linux) | InsightFace (RetinaFace) | EAR + det_score fallback | ArcFace cosine similarity |
+| Windows Python ≤ 3.12 | InsightFace (RetinaFace) | EAR + det_score fallback | ArcFace cosine similarity |
+| Windows Python 3.13+ | **MediaPipe FaceLandmarker** | EAR via blendshapes | Skipped (liveness-only) |
+
+On Python 3.13+, `insightface` cannot be installed (native extension build fails). The server automatically falls back to MediaPipe — all liveness challenges work fully, and the face-match step is skipped with a clear message instead of failing silently.
 
 ## Cross-Document Checks
 

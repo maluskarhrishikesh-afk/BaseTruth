@@ -23,8 +23,9 @@ pillow==12.1.1
 opencv-contrib-python==4.13.0.92
 ImageHash==4.3.2
 PyWavelets==1.9.0
-insightface>=0.7.3
-onnxruntime>=1.17.1
+insightface>=0.7.3         # optional: Python ≤ 3.12 only; MediaPipe used as fallback
+onnxruntime>=1.17.1        # required by insightface when available
+mediapipe>=0.10.0          # face mesh fallback for Python 3.13+
 
 # ── EXIF / metadata ───────────────────────────────────────────────────────────
 ExifRead==3.5.1

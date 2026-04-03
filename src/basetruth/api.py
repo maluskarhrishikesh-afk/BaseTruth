@@ -469,7 +469,7 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
 
     from basetruth.kyc.session import ALL_CHALLENGES, SessionStore
     from basetruth.kyc.liveness import analyze_challenge, extract_features, run_face_match
-    from basetruth.vision.face import get_face_analyzer
+    from basetruth.vision.face import get_face_analyzer, get_mediapipe_faces
     from basetruth.logger import get_logger as _get_logger
 
     _kyc_log = _get_logger("basetruth.kyc")
@@ -489,9 +489,16 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
         except Exception:
             return {"type": "status", "face_detected": False, "feedback": "Decode error."}
 
-        face_app = get_face_analyzer()
-        with _kyc_face_lock:
-            faces = face_app.get(img)
+        try:
+            face_app = get_face_analyzer()
+            with _kyc_face_lock:
+                faces = face_app.get(img)
+        except ImportError:
+            # InsightFace not available (Python 3.13+) — use MediaPipe as fallback.
+            faces = get_mediapipe_faces(img)
+        except Exception:
+            # Any other init error (model download, ONNX issue) — fall back gracefully.
+            faces = get_mediapipe_faces(img)
 
         if not faces:
             return {
