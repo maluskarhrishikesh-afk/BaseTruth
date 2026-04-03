@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 try:
-    from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+    from fastapi import FastAPI, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
     from pydantic import BaseModel, Field
 
@@ -465,12 +465,14 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
 
     import cv2 as _cv2
     import numpy as _np
-    from fastapi import WebSocket, WebSocketDisconnect
     from fastapi.responses import HTMLResponse as _HTMLResponse
 
     from basetruth.kyc.session import ALL_CHALLENGES, SessionStore
     from basetruth.kyc.liveness import analyze_challenge, extract_features, run_face_match
     from basetruth.vision.face import get_face_analyzer
+    from basetruth.logger import get_logger as _get_logger
+
+    _kyc_log = _get_logger("basetruth.kyc")
 
     # One store per application instance (survives across requests)
     _kyc_store    = SessionStore()
@@ -561,6 +563,15 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
             customer_name=req.customer_name,
             entity_ref=req.entity_ref,
         )
+        _kyc_log.info(
+            "KYC session created",
+            extra={
+                "session_id": session.session_id,
+                "customer_name": req.customer_name,
+                "entity_ref": req.entity_ref,
+                "challenges": challenges,
+            },
+        )
         return {
             **session.to_status_dict(),
             "session_url": f"/kyc/{session.session_id}",
@@ -597,15 +608,21 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
         await websocket.accept()
         session = _kyc_store.get(session_id)
         if not session:
+            _kyc_log.warning("KYC WS rejected — session not found", extra={"session_id": session_id})
             await websocket.send_json({"type": "error", "message": "Session not found or expired."})
             await websocket.close(code=1008)
             return
         if session.status not in ("waiting", "active"):
+            _kyc_log.warning(
+                "KYC WS rejected — wrong status",
+                extra={"session_id": session_id, "status": session.status},
+            )
             await websocket.send_json({"type": "error", "message": f"Session is {session.status}."})
             await websocket.close(code=1008)
             return
 
         session.status = "active"
+        _kyc_log.info("KYC WebSocket connected", extra={"session_id": session_id})
         loop = _asyncio.get_running_loop()
         _clean_exit = False
         try:
@@ -633,6 +650,10 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
                 except Exception as _frame_exc:
                     # Surface the real error to the browser instead of silently disconnecting.
                     _err_msg = str(_frame_exc) or "Frame processing error."
+                    _kyc_log.error(
+                        "KYC frame processing error",
+                        extra={"session_id": session_id, "error": _err_msg},
+                    )
                     try:
                         await websocket.send_json({"type": "error", "message": _err_msg})
                     except Exception:
@@ -641,6 +662,14 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
                     break
                 await websocket.send_json(result)
                 if result.get("type") == "result":
+                    _kyc_log.info(
+                        "KYC session result",
+                        extra={
+                            "session_id": session_id,
+                            "passed": result.get("passed"),
+                            "score": result.get("display_score"),
+                        },
+                    )
                     _clean_exit = True
                     break
         except Exception:
@@ -795,7 +824,7 @@ def _serve(host: str = "0.0.0.0", port: int = 8502, artifact_root: str | None = 
         sys.exit(1)
 
     _app = create_app(artifact_root)
-    uvicorn.run(_app, host=host, port=port)
+    uvicorn.run(_app, host=host, port=port, ws="websockets-sansio")
 
 
 if __name__ == "__main__":

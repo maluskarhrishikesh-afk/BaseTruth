@@ -121,7 +121,8 @@ services:
       db:
         condition: service_healthy
     entrypoint: ["python", "-m", "uvicorn", "basetruth.api:app",
-                 "--host", "0.0.0.0", "--port", "8000", "--reload"]
+                 "--host", "0.0.0.0", "--port", "8000", "--reload",
+                 "--ws", "websockets-sansio"]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
       interval: 30s

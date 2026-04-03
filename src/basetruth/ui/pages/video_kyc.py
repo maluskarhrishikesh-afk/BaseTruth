@@ -69,12 +69,16 @@ def _ensure_local_api() -> bool:
     if _port_open():
         return True
 
-    # Spawn uvicorn as a background process
+    # Spawn uvicorn as a background process.
+    # --ws websockets-sansio avoids the HTTP 403 bug in the legacy websockets
+    # implementation that ships as the default in uvicorn ≤ 0.42 when paired
+    # with websockets 13.x.
     subprocess.Popen(
         [
             sys.executable, "-m", "uvicorn", "basetruth.api:app",
             "--host", "127.0.0.1",
             "--port", str(_API_PORT),
+            "--ws", "websockets-sansio",
             "--log-level", "warning",
         ],
         stdout=subprocess.DEVNULL,
