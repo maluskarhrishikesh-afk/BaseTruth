@@ -852,9 +852,15 @@ def _default_artifact_root() -> Path:
     return Path.cwd() / "artifacts"
 
 
-def _get_service() -> BaseTruthService:
-    artifact_root = Path(str(st.session_state.get("artifact_root", _default_artifact_root())))
-    return BaseTruthService(artifact_root)
+@st.cache_resource
+def _get_cached_service(artifact_root_str: str) -> "BaseTruthService":
+    """Create and cache BaseTruthService — avoids recreating it on every Streamlit re-run."""
+    return BaseTruthService(Path(artifact_root_str))
+
+
+def _get_service() -> "BaseTruthService":
+    artifact_root = str(st.session_state.get("artifact_root", _default_artifact_root()))
+    return _get_cached_service(artifact_root)
 
 
 def _badge(level: str, label: str = "") -> str:

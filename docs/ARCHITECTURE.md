@@ -248,78 +248,103 @@ The function tries the following in order, stopping as soon as the QR code decod
 
 ## 12. Video KYC Workflow
 
-The Video KYC page (`pages/video_kyc.py`) has **three tabs**.
+The Video KYC page (`pages/video_kyc.py`) has three tabs: **Start Session**, **Schedule**, and **In-Person Verify**.
 
-### Why a Dedicated Video SDK?
+### Why Build Our Own Video Layer?
 
-Third-party platforms (Zoom, Teams, Google Meet) do not expose raw frame data to server-side code. That makes reliable AI liveness checks and face-matching impossible over those channels. BaseTruth instead runs its own **WebSocket-based video layer**:
+Zoom and Teams do not let the server touch raw video frames — so AI face-match and liveness checks are impossible on those platforms. BaseTruth solves this by running its own lightweight WebSocket video layer:
 
-- Customer opens a URL in their browser — no app, no plugin, no account needed.
-- `getUserMedia` captures the camera at ~3 fps and streams JPEG frames through a WebSocket.
-- The server runs **RetinaFace** (face detection) + **active liveness challenge analysis** + **ArcFace** (face match) on every frame.
-- The result is sent back in real time as JSON.
+- The customer opens a URL in their browser. No app, no plugin, no account needed.
+- Their camera streams JPEG frames to the server every ~300 ms.
+- The server runs RetinaFace (face detection) and ArcFace (face match) on every frame.
+- Results flow back as JSON in real time.
 
-### Frame Processing Pipeline
+### How It Works — Architecture Diagram
+
+```mermaid
+flowchart TD
+    A([Agent Dashboard\nStreamlit :8501]) -->|POST /kyc/sessions\nreference embedding + challenges| B[FastAPI :8000]
+    B -->|session_id + URL| A
+    A -->|shares URL| C([Customer Browser])
+
+    C -->|opens /kyc/{session_id}| B
+    B -->|serves KYC HTML page| C
+
+    C -->|getUserMedia → canvas → JPEG| D{WebSocket\n/kyc/ws/{id}}
+    D -->|base64 frame| E[_process_kyc_frame]
+    E --> F[RetinaFace\nface detect]
+    F -->|no face| G[status: no face]
+    F -->|face found| H[extract_features\n5-pt landmarks]
+    H --> I[analyze_challenge\nturn / nod / blink]
+    I -->|not passed yet| J[status: feedback hint]
+    I -->|challenge passed| K{All challenges\ndone?}
+    K -->|no| L[advance to next\nchallenge]
+    K -->|yes| M[run_face_match\nArcFace cosine sim]
+    M -->|sim ≥ 0.40| N([result: PASS ✅])
+    M -->|sim < 0.40| O([result: FAIL ❌])
+
+    G & J & L --> D
+    N & O --> A
+```
+
+### Session Lifecycle
 
 ```
-Browser                          FastAPI server (port 8000)
-──────                           ─────────────────────────
-getUserMedia → canvas.toBlob     base64 decode → cv2.imdecode
-→ base64 → WebSocket JSON  ───→  RetinaFace detect → extract_features()
-                                 analyze_challenge() per frame
-                            ←──  {type:"status", face_detected, challenge,
-                                  challenges_completed, feedback}
-[all challenges passed]     ←──  run_face_match() → ArcFace cosine sim
-                            ←──  {type:"result", passed, display_score, message}
+waiting  →  active  →  completed
+                    ↘  failed
+                    ↘  expired (after 30 min)
 ```
 
-Thread safety: InsightFace's `face_app.get()` is not thread-safe. A `threading.Lock()` (`_kyc_face_lock`) wraps every call inside `_process_kyc_frame`, which itself runs in asyncio's thread-pool executor so the WebSocket handler never blocks the event loop.
+### Challenge Detection (5-point RetinaFace landmarks)
 
-### Session Management (`src/basetruth/kyc/session.py`)
+All positions are normalised by face bounding-box width so they work at any camera distance.
 
-- **`KYCSession`** dataclass: holds challenges list, per-challenge frame history, reference embedding (base64 float32 bytes), status, and the last live frame bytes (for PDF evidence).
-- **`SessionStore`**: thread-safe in-memory dict with 30-minute TTL.
-- Statuses: `waiting → active → completed | failed | expired`.
+| Challenge      | How it is detected                                                | Pass condition                              |
+|----------------|-------------------------------------------------------------------|---------------------------------------------|
+| `turn_left`    | Nose moves right in image → `nose_rel_x` rises                   | `nose_rel_x > 0.62` in any recent frame     |
+| `turn_right`   | Nose moves left in image → `nose_rel_x` falls                    | `nose_rel_x < 0.38` in any recent frame     |
+| `nod`          | Nose moves below eye midpoint → `pitch` range widens             | pitch range `> 0.28` over ≥6 frames         |
+| `blink`        | Eyes close → Eye Aspect Ratio (EAR) drops then recovers          | EAR drops below 0.15 then recovers above 0.18 |
 
-### Active Liveness Detection (`src/basetruth/kyc/liveness.py`)
+> **EAR source:** MediaPipe FaceLandmarker blendshape scores are always used for blink detection, regardless of whether InsightFace or MediaPipe handles face detection. When InsightFace is active (Docker / Python ≤ 3.12), both models run per frame: InsightFace for face-match embedding and MediaPipe for EAR. This ensures reliable blink detection at any camera distance.
 
-Uses InsightFace 5-point keypoints (kps[0]=left_eye, kps[1]=right_eye, kps[2]=nose, kps[3]=left_mouth, kps[4]=right_mouth). All features are normalized by the face bounding-box width.
+By default, 2 challenges are chosen at random per session. The agent can override this in the dashboard.
 
-| Challenge     | Detection method                                       | Threshold              |
-|---------------|--------------------------------------------------------|------------------------|
-| `turn_left`   | `nose_rel_x = (nose_x − bbox_x1) / bbox_w`           | `> 0.62`               |
-| `turn_right`  | Same `nose_rel_x`                                      | `< 0.38`               |
-| `nod`         | `pitch = (nose_y − eye_mid_y) / interocular_px` range | range `> 0.28` over 6+ frames |
-| `blink`       | Face detection confidence (`det_score`) dip + recovery | baseline `> 0.88`, dip `< 0.84`, recovery `> 0.90` |
+### Key Files
 
-By default 2 challenges are selected at random per session (the agent may override in the dashboard).
+| File | Purpose |
+|------|---------|
+| `src/basetruth/kyc/session.py` | `KYCSession` dataclass + thread-safe `SessionStore` |
+| `src/basetruth/kyc/liveness.py` | `extract_features()`, `analyze_challenge()`, `run_face_match()` |
+| `src/basetruth/api.py` | FastAPI routes + WebSocket handler |
+| `src/basetruth/ui/pages/video_kyc.py` | Agent dashboard (3 tabs) |
+| `src/basetruth/vision/face.py` | InsightFace + MediaPipe initialisation |
 
 ### API Endpoints
 
-| Method      | Path                          | Description                               |
-|-------------|-------------------------------|-------------------------------------------|
-| `POST`      | `/kyc/sessions`               | Create session; returns `session_id` + URL |
-| `GET`       | `/kyc/{session_id}`           | Serve customer HTML page                  |
-| `WebSocket` | `/kyc/ws/{session_id}`        | Frame stream in, status/result JSON out   |
-| `GET`       | `/kyc/sessions/{session_id}`  | Agent polls for status and result         |
+| Method      | Path                         | Description                               |
+|-------------|------------------------------|-------------------------------------------|
+| `POST`      | `/kyc/sessions`              | Create session; returns session URL       |
+| `GET`       | `/kyc/{session_id}`          | Serve customer HTML page                  |
+| `WebSocket` | `/kyc/ws/{session_id}`       | Frame stream in → status/result JSON out  |
+| `GET`       | `/kyc/sessions/{session_id}` | Agent polls for live status + result      |
 
-### Tab 1 — 🔗 Start KYC Session
+### Agent Workflow (Tab 1 — Start KYC Session)
 
-Agent workflow:
-1. Upload reference ID → BaseTruth extracts the ArcFace embedding locally.
-2. Enter customer name / entity ref, select challenges (or leave empty for 2 random).
-3. Click **Create Secure KYC Session** → `POST /kyc/sessions` via internal Docker DNS.
-4. The session URL (`http://<host>:8000/kyc/<id>`) is shown and can be shared with the customer.
-5. Streamlit polls `/kyc/sessions/<id}` every 2 s and shows live challenge progress.
-6. On completion, the result (pass/fail + match score) is saved to PostgreSQL and a PDF is generated.
+1. Upload the customer's reference ID → BaseTruth extracts the face embedding.
+2. Enter customer name and entity ref; optionally pick which challenges to run.
+3. Click **Create Secure KYC Session** → the API returns a shareable URL.
+4. Send the URL to the customer (message, email, QR code on screen).
+5. The dashboard auto-refreshes every 2 s and shows challenge progress as the customer completes them.
+6. When done, the verdict (pass/fail + match score) is saved to the database and a PDF report is generated.
 
-### Tab 2 — 📅 Schedule Appointment
+### Tab 2 — Schedule Appointment
 
-The agent generates a `.ics` calendar invite. The **Meeting Link** field is pre-populated with the BaseTruth KYC URL from Tab 1 (if a session was created), eliminating any need for Zoom or Teams. No external API keys required.
+Generates a `.ics` calendar invite. The **Meeting Link** field auto-fills with the BaseTruth KYC URL from Tab 1, so the customer clicks the calendar event and lands directly on the verification page. No Zoom or Teams account needed.
 
-### Tab 3 — 📷 In-Person Verify
+### Tab 3 — In-Person Verify
 
-Static webcam check (`st.camera_input`) for face-to-face on-site KYC. Runs entirely within the Streamlit container; no session API needed. Uses the same RetinaFace + ArcFace pipeline and saves to the same DB + PDF path.
+For face-to-face KYC at a physical location. Uses `st.camera_input` to capture a single frame — no WebSocket needed. Same RetinaFace + ArcFace logic, saves to the same DB and PDF path.
 
 
 

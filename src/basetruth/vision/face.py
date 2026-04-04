@@ -217,6 +217,7 @@ def get_mediapipe_faces(img_bgr: np.ndarray) -> list:
     return faces
 
 
+def _draw_face(img: np.ndarray, face: Any) -> np.ndarray:
     """Draw bounding box and landmarks (eyes, nose, mouth) on a face."""
     out = copy.deepcopy(img)
     box = face.bbox.astype(int)

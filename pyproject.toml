@@ -52,6 +52,9 @@ basetruth = "basetruth.cli:main"
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+# test_kyc_ws.py is a standalone integration script that requires a live server.
+# Exclude it from the regular pytest run; run manually: python tests/test_kyc_ws.py
+addopts = "--ignore=tests/test_kyc_ws.py"
 
 [tool.setuptools.packages.find]
 where = ["src"]

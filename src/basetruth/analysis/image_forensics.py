@@ -20,7 +20,17 @@ Layers
    - Copy-pasted regions have a different noise signature than surrounding areas
    - Coefficient-of-variation (CV) across 16×16 blocks is used as the signal
 
-4. Perceptual hash drift check
+4. Copy-move detection
+   - ORB feature descriptors matched against themselves to find duplicate regions
+   - Suspicious when visually identical keypoints appear at different spatial locations
+
+5. GAN / AI-generated image detection
+   - DCT frequency analysis: GAN images exhibit characteristic high-frequency
+     artefacts and unnatural energy distributions across the spectrum
+   - Cross-channel noise correlation: AI-generated images have atypical
+     channel-to-channel noise correlations compared to real scans
+
+6. Perceptual hash drift check
    - Compares average-hash vs difference-hash; large deltas can indicate
      localised edits that left the bulk of the image unchanged
 
@@ -37,6 +47,8 @@ Returns a dict with keys:
   ela_score        -- float 0–100 (higher = more editing artefacts)
   high_error_frac  -- float 0–1 (fraction of blocks with ELA > threshold)
   noise_cv         -- float or None
+  copy_move_score  -- float 0–100 or None
+  gan_score        -- float 0–100 or None
   exif_metadata    -- flat dict of extracted EXIF fields
   suspicious_tool  -- str or None (the offending software name)
   limitations      -- list of explanatory strings
@@ -370,6 +382,181 @@ def is_supported_image(path: Path) -> bool:
     return path.suffix.lower() in _IMAGE_EXTENSIONS
 
 
+# ---------------------------------------------------------------------------
+# Copy-move detection — ORB self-matching to find duplicated regions
+# ---------------------------------------------------------------------------
+
+def run_copy_move_detection(path: Path) -> Optional[float]:
+    """Detect copy-pasted regions by finding duplicate local features.
+
+    Uses ORB (Oriented FAST and Rotated BRIEF) keypoint descriptors.  If
+    visually identical blobs appear at geographically distinct locations in the
+    same image, that is strong evidence of a copy-paste.
+
+    Returns a *suspicion score* 0–100 (higher = more suspicious), or None when
+    OpenCV is unavailable.
+
+    Threshold guidance:
+      < 10   — clean (no meaningful self-matching features)
+      10–35  — mild / inconclusive
+      > 35   — copy-move artefacts detected; manual review recommended
+    """
+    try:
+        import cv2  # type: ignore
+        import numpy as np  # type: ignore
+    except ImportError:
+        return None
+
+    try:
+        img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            return None
+
+        # Limit resolution for speed (4 MP is more than enough for copy-move)
+        max_dim = 1200
+        h, w = img.shape
+        if max(h, w) > max_dim:
+            scale = max_dim / max(h, w)
+            img = cv2.resize(img, (int(w * scale), int(h * scale)))
+
+        orb = cv2.ORB_create(nfeatures=1000, scaleFactor=1.2, nlevels=8)
+        kp, des = orb.detectAndCompute(img, None)
+
+        if des is None or len(kp) < 20:
+            return 0.0
+
+        # Self-match: each descriptor matched against the full descriptor set
+        bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+        matches = bf.knnMatch(des, des, k=3)
+
+        # Spatial threshold: matches closer than 15% of the image diagonal
+        # are considered the same region (not a copy-move)
+        diag = float(np.hypot(img.shape[0], img.shape[1]))
+        spatial_min = diag * 0.15
+
+        suspicious_pairs: int = 0
+        for match_group in matches:
+            for m in match_group:
+                # Skip trivial self-match and near-duplicate angles
+                if m.queryIdx == m.trainIdx:
+                    continue
+                if m.distance > 40:  # too dissimilar
+                    continue
+                pt1 = np.array(kp[m.queryIdx].pt)
+                pt2 = np.array(kp[m.trainIdx].pt)
+                spatial_dist = float(np.linalg.norm(pt1 - pt2))
+                if spatial_dist >= spatial_min:
+                    suspicious_pairs += 1
+
+        # Normalise: 0 suspicious pairs → 0; ≥200 pairs → 100
+        score = min(100.0, suspicious_pairs / 2.0)
+        return round(score, 2)
+
+    except Exception as exc:  # noqa: BLE001
+        log.debug("Copy-move detection failed for %s: %s", path.name, exc)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# GAN / AI-generated image detection — DCT frequency + channel analysis
+# ---------------------------------------------------------------------------
+
+def run_gan_detection(path: Path) -> Optional[float]:
+    """Heuristic detection of AI-generated or synthetically created images.
+
+    Two complementary signals are combined:
+
+    1. DCT frequency energy ratio — GAN generators and diffusion models tend
+       to produce images with abnormally high energy in mid-to-high frequency
+       DCT bands compared to genuine photos or scanned documents.
+
+    2. Cross-channel noise correlation — Genuine photographic noise is
+       independent across R/G/B channels; GAN models often introduce
+       correlated artefacts because each channel is generated from a shared
+       latent code.
+
+    Returns a *suspicion score* 0–100 (higher = more likely AI-generated), or
+    None when OpenCV / NumPy are unavailable.
+
+    Important caveat: this is a *heuristic* signal.  It is additional evidence,
+    not conclusive proof.  Use alongside EXIF tool detection (e.g. Midjourney
+    / Stable Diffusion tags in metadata).
+
+    Threshold guidance:
+      < 20   — plausible genuine scan
+      20–55  — ambiguous; cross-check with other signals
+      > 55   — likely AI-generated or heavily post-processed
+    """
+    try:
+        import cv2  # type: ignore
+        import numpy as np  # type: ignore
+    except ImportError:
+        return None
+
+    try:
+        img = cv2.imread(str(path))
+        if img is None:
+            return None
+
+        # ── Signal 1: DCT frequency energy ratio (grayscale) ──────────────
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        # Resize to 256×256 for consistent DCT comparison across image sizes
+        g256 = cv2.resize(gray, (256, 256)).astype(np.float32)
+        dct = cv2.dct(g256)
+
+        # Low-frequency block: top-left 32×32 (dominant energy for real images)
+        lf_energy = float(np.mean(np.abs(dct[:32, :32])))
+        # Mid-frequency ring: rows/cols 32–128
+        mf_energy = float(np.mean(np.abs(dct[32:128, 32:128])))
+        # High-frequency region: rows/cols 128+
+        hf_energy = float(np.mean(np.abs(dct[128:, 128:])))
+
+        if lf_energy < 1e-6:
+            freq_score = 0.0
+        else:
+            # Real scans: lf >> mf >> hf (natural roll-off)
+            # GAN images: flatter distribution; mf/hf ratio elevated
+            mf_ratio = mf_energy / (lf_energy + 1e-6)
+            hf_ratio = hf_energy / (lf_energy + 1e-6)
+            # Empirical thresholds (tuned on document images)
+            freq_score = min(100.0, (mf_ratio * 60.0 + hf_ratio * 300.0))
+
+        # ── Signal 2: Cross-channel noise correlation ──────────────────────
+        b, g, r = cv2.split(img.astype(np.float32))
+
+        def _channel_noise(ch: "np.ndarray") -> "np.ndarray":
+            lap = cv2.Laplacian(ch, cv2.CV_64F)
+            # Keep only residual (remove mean)
+            return lap - lap.mean()
+
+        nb, ng, nr = _channel_noise(b), _channel_noise(g), _channel_noise(r)
+
+        def _pearson(x: "np.ndarray", y: "np.ndarray") -> float:
+            flat_x = x.flatten()
+            flat_y = y.flatten()
+            if np.std(flat_x) < 1e-9 or np.std(flat_y) < 1e-9:
+                return 0.0
+            return float(np.corrcoef(flat_x, flat_y)[0, 1])
+
+        corr_rg = abs(_pearson(nr, ng))
+        corr_rb = abs(_pearson(nr, nb))
+        corr_gb = abs(_pearson(ng, nb))
+        mean_corr = (corr_rg + corr_rb + corr_gb) / 3.0
+
+        # For genuine photos: mean cross-channel noise correlation ≈ 0.0–0.15
+        # For GAN images: tends to be higher (0.25–0.90) due to shared latent
+        corr_score = min(100.0, max(0.0, (mean_corr - 0.1) * 120.0))
+
+        # Combine both signals (frequency dominates, correlation is secondary)
+        combined = 0.60 * freq_score + 0.40 * corr_score
+        return round(combined, 2)
+
+    except Exception as exc:  # noqa: BLE001
+        log.debug("GAN detection failed for %s: %s", path.name, exc)
+        return None
+
+
 def analyse_image(path: Path) -> Dict[str, Any]:
     """Run all forensic layers against an image file.
 
@@ -396,8 +583,6 @@ def analyse_image(path: Path) -> Dict[str, Any]:
     # ── 1. EXIF metadata ────────────────────────────────────────────────────
     exif_metadata = extract_image_metadata(path)
     suspicious_tool = detect_suspicious_tool(exif_metadata)
-
-    is_jpeg = path.suffix.lower() in {".jpg", ".jpeg"}
 
     # ── Signal: suspicious authoring tool ───────────────────────────────────
     signals.append(
@@ -545,6 +730,80 @@ def analyse_image(path: Path) -> Dict[str, Any]:
             )
         )
 
+    # ── 4. Copy-move detection ──────────────────────────────────────────────
+    copy_move_score = run_copy_move_detection(path)
+    if copy_move_score is None:
+        limitations.append(
+            "Copy-move detection unavailable — install opencv-python."
+        )
+    else:
+        cm_suspicious = copy_move_score > 35.0
+        cm_mild = 10.0 <= copy_move_score <= 35.0
+        cm_severity = "high" if cm_suspicious else ("low" if cm_mild else "info")
+        cm_penalty = 35 if cm_suspicious else (12 if cm_mild else 0)
+
+        signals.append(
+            Signal(
+                name="image_copy_move_detection",
+                severity=cm_severity,
+                score=cm_penalty,
+                summary=(
+                    f"Copy-move score {copy_move_score:.1f} / 100 — "
+                    + (
+                        "duplicate feature regions detected at spatially distinct "
+                        "locations, strongly indicating a copy-paste operation."
+                        if cm_suspicious
+                        else (
+                            "some self-similar regions detected; could be a repeating "
+                            "pattern or minor editing."
+                            if cm_mild
+                            else "no meaningful copy-move artefacts detected."
+                        )
+                    )
+                ),
+                passed=not cm_suspicious,
+                details={"copy_move_score": copy_move_score},
+            )
+        )
+
+    # ── 5. GAN / AI-generated image detection ──────────────────────────────
+    gan_score = run_gan_detection(path)
+    if gan_score is None:
+        limitations.append(
+            "GAN detection unavailable — install opencv-python and NumPy."
+        )
+    else:
+        gan_suspicious = gan_score > 55.0
+        gan_mild = 20.0 <= gan_score <= 55.0
+        gan_severity = "high" if gan_suspicious else ("low" if gan_mild else "info")
+        gan_penalty = 30 if gan_suspicious else (10 if gan_mild else 0)
+
+        signals.append(
+            Signal(
+                name="image_gan_ai_generation_score",
+                severity=gan_severity,
+                score=gan_penalty,
+                summary=(
+                    f"AI-generation score {gan_score:.1f} / 100 — "
+                    + (
+                        "frequency and noise patterns strongly suggest this image was "
+                        "synthetically generated by an AI model (GAN or diffusion). "
+                        "Cross-check EXIF metadata for authoring tool tags."
+                        if gan_suspicious
+                        else (
+                            "some spectral anomalies detected; image may be post-processed "
+                            "or partially AI-assisted."
+                            if gan_mild
+                            else "image frequency and noise patterns are consistent with a "
+                            "genuine scan or photograph."
+                        )
+                    )
+                ),
+                passed=not gan_suspicious,
+                details={"gan_score": gan_score},
+            )
+        )
+
     limitations += [
         "ELA analysis is most reliable on JPEG images; PNG results may be less informative.",
         "These are heuristic forensic signals — not conclusive proof of tampering.",
@@ -556,6 +815,8 @@ def analyse_image(path: Path) -> Dict[str, Any]:
         "ela_score": ela_score,
         "high_error_frac": high_error_frac,
         "noise_cv": noise_cv,
+        "copy_move_score": copy_move_score,
+        "gan_score": gan_score,
         "exif_metadata": exif_metadata,
         "suspicious_tool": suspicious_tool,
         "limitations": limitations,

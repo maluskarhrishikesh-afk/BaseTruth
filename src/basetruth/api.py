@@ -47,6 +47,10 @@ try:
         challenges:              List[str]      = Field([], description="Liveness challenges to present.")
         reference_embedding_b64: Optional[str]  = Field(None, description="Base-64 ArcFace embedding from the reference ID document.")
 
+    class WebRTCOfferRequest(BaseModel):
+        sdp:  str = Field(..., description="SDP offer string from RTCPeerConnection.createOffer().")
+        type: str = Field("offer", description="SDP type — always 'offer'.")
+
 except ImportError:
     _FASTAPI_AVAILABLE = False
 
@@ -493,6 +497,16 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
             face_app = get_face_analyzer()
             with _kyc_face_lock:
                 faces = face_app.get(img)
+            # InsightFace kps are eye-centre points only — they cannot compute EAR.
+            # Run MediaPipe in parallel to get Eye Aspect Ratio (needed for blink challenge).
+            try:
+                _mp_faces = get_mediapipe_faces(img)
+                if _mp_faces:
+                    _ear = _mp_faces[0].ear
+                    for _f in faces:
+                        _f.ear = _ear
+            except Exception:
+                pass  # EAR unavailable; blink will fall back to det_score path
         except ImportError:
             # InsightFace not available (Python 3.13+) — use MediaPipe as fallback.
             faces = get_mediapipe_faces(img)
@@ -516,9 +530,26 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
         session.last_live_frame_bytes = raw
 
         if session.all_done:
-            return _finish_session(session, face)
+            try:
+                return _finish_session(session, face)
+            except Exception as _fin_exc:
+                _kyc_log.error("KYC finish_session error", extra={"error": str(_fin_exc)})
+                session.status = "failed"
+                return {"type": "error", "message": "Face match failed — please retake the session."}
 
-        features = extract_features(face)
+        try:
+            features = extract_features(face)
+        except Exception:
+            # kps unavailable (face too small / angled) — skip this frame silently
+            return {
+                "type": "status",
+                "face_detected": True,
+                "challenge": session.current_challenge,
+                "challenges_completed": session.current_challenge_idx,
+                "total_challenges": len(session.challenges),
+                "feedback": "Hold still — aligning to your face…",
+                "challenge_just_passed": False,
+            }
         history  = session.current_frame_history()
         history.append(features)
 
@@ -529,7 +560,12 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
             session.advance_challenge()
             just_passed = True
             if session.all_done:
-                return _finish_session(session, face)
+                try:
+                    return _finish_session(session, face)
+                except Exception as _fin_exc:
+                    _kyc_log.error("KYC finish_session error", extra={"error": str(_fin_exc)})
+                    session.status = "failed"
+                    return {"type": "error", "message": "Face match failed — please retake the session."}
 
         return {
             "type": "status",
@@ -544,7 +580,18 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
     def _finish_session(session: Any, face: Any) -> Dict[str, Any]:
         """Called once all liveness challenges pass — runs the face-match check."""
         if session.reference_embedding_b64:
-            match = run_face_match(face, session.reference_embedding_b64)
+            try:
+                match = run_face_match(face, session.reference_embedding_b64)
+            except Exception as exc:
+                _kyc_log.error("run_face_match error", extra={"error": str(exc)})
+                match = {
+                    "passed": False,
+                    "match_score": 0.0,
+                    "display_score": 0.0,
+                    "cosine_similarity": 0.0,
+                    "threshold": 0.40,
+                    "message": "Face match error — please retry.",
+                }
             session.status = "completed" if match["passed"] else "failed"
             session.result = match
             return {"type": "result", **match}
@@ -688,6 +735,114 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
                 await websocket.close(code=1000)
             except Exception:
                 pass
+
+    # ── Video KYC — WebRTC signaling (lower latency, lower bandwidth) ─────
+
+    @app.post("/kyc/webrtc/{session_id}/offer", tags=["Video KYC"])
+    async def kyc_webrtc_offer(session_id: str, req: WebRTCOfferRequest) -> Dict[str, Any]:
+        """WebRTC signaling endpoint — accept an SDP offer and return an SDP answer.
+
+        The browser creates an RTCPeerConnection, adds the camera video track,
+        generates an SDP offer and POSTs it here.  The server returns an SDP
+        answer.  After ICE exchange completes the browser streams video directly
+        over WebRTC instead of the WebSocket JPEG loop, giving lower latency
+        and better CPU/bandwidth efficiency.
+
+        Results are delivered back to the browser via a polling endpoint at
+        GET /kyc/sessions/{session_id} — the browser polls every 500 ms.
+
+        Requires: ``pip install aiortc``
+        Falls back gracefully if aiortc is not installed (returns 501).
+        """
+        try:
+            from aiortc import RTCPeerConnection, RTCSessionDescription  # type: ignore
+        except ImportError:
+            from fastapi.responses import JSONResponse as _JR
+            return _JR(
+                status_code=501,
+                content={
+                    "error": "aiortc not installed",
+                    "detail": "Install with: pip install aiortc",
+                },
+            )
+
+        session = _kyc_store.get(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found or expired.")
+        if session.status not in ("waiting", "active"):
+            raise HTTPException(status_code=409, detail=f"Session is {session.status}.")
+
+        session.status = "active"
+
+        pc = RTCPeerConnection()
+        loop = _asyncio.get_running_loop()
+
+        @pc.on("track")
+        def on_track(track: Any) -> None:
+            if track.kind != "video":
+                return
+
+            async def _consume() -> None:
+                """Pull frames from the WebRTC video track and process them."""
+                try:
+                    while True:
+                        frame = await _asyncio.wait_for(track.recv(), timeout=5.0)
+                        # Convert aiortc VideoFrame → numpy BGR
+                        img = frame.to_ndarray(format="bgr24")
+                        import cv2 as _cv2_rtc
+                        import base64 as _b64_rtc
+                        _, buf = _cv2_rtc.imencode(".jpg", img, [_cv2_rtc.IMWRITE_JPEG_QUALITY, 80])
+                        b64 = _b64_rtc.b64encode(buf).decode("utf-8")
+                        result = await loop.run_in_executor(
+                            None, _process_kyc_frame, session, b64
+                        )
+                        if result.get("type") == "result":
+                            session.webrtc_result = result
+                            _kyc_log.info(
+                                "KYC WebRTC session result",
+                                extra={
+                                    "session_id": session_id,
+                                    "passed": result.get("passed"),
+                                    "score": result.get("display_score"),
+                                },
+                            )
+                            break
+                except _asyncio.TimeoutError:
+                    _kyc_log.warning("WebRTC track receive timeout", extra={"session_id": session_id})
+                except Exception as exc:  # noqa: BLE001
+                    _kyc_log.error("WebRTC frame error", extra={"session_id": session_id, "error": str(exc)})
+
+            _asyncio.ensure_future(_consume())
+
+        offer = RTCSessionDescription(sdp=req.sdp, type=req.type)
+        await pc.setRemoteDescription(offer)
+        answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
+
+        # Store the PC so it can be closed later
+        if not hasattr(session, "webrtc_pcs"):
+            session.webrtc_pcs = []
+        session.webrtc_pcs.append(pc)
+
+        _kyc_log.info("WebRTC offer accepted", extra={"session_id": session_id})
+        return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
+
+    @app.get("/kyc/webrtc/{session_id}/result", tags=["Video KYC"])
+    def kyc_webrtc_result(session_id: str) -> Dict[str, Any]:
+        """Poll for the result of a WebRTC KYC session.
+
+        Returns the current session status and, once complete, the face-match
+        result.  The browser polls this endpoint every 500 ms after establishing
+        the WebRTC connection.
+        """
+        session = _kyc_store.get(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found.")
+        result = getattr(session, "webrtc_result", None)
+        return {
+            "status": session.status,
+            "result": result,
+        }
 
     # ── Entity registry endpoints ─────────────────────────────────────────
 

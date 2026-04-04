@@ -544,7 +544,7 @@ def _tab_schedule() -> None:
                 use_container_width=True,
             )
         with col_info:
-            st.info("Forward the .ics to the customer via email or WhatsApp.", icon="info")
+            st.info("Forward the .ics to the customer via email or WhatsApp.", icon="📧")
 
         with st.expander("Email invite text (copy & paste)", expanded=False):
             email_body = textwrap.dedent(f"""\
@@ -785,7 +785,7 @@ def _page_video_kyc() -> None:
             "and reload this page."
         )
 
-    st.markdown(_page_title("Video KYC", "Video KYC"), unsafe_allow_html=True)
+    st.markdown(_page_title("🎥", "Video KYC"), unsafe_allow_html=True)
     st.caption(
         "AI-powered identity verification -- create sessions, schedule appointments, "
         "and conduct in-person checks."

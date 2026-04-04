@@ -154,7 +154,8 @@ This screen gives you direct visibility into what is stored in the system.
             )
             if st.button("💀 Empty Database", type="primary", key="db_reset_execute_btn"):
                 if db_confirm.strip() == "RESET":
-                    ok = reset_db()
+                    with st.spinner("Truncating all tables…"):
+                        ok = reset_db()
                     if ok:
                         st.session_state["db_reset_success"] = True
                         st.rerun()
@@ -178,7 +179,8 @@ This screen gives you direct visibility into what is stored in the system.
             )
             if st.button("🗑️ Empty MinIO Bucket", type="primary", key="minio_truncate_btn"):
                 if minio_confirm.strip() == "RESET":
-                    ok = minio_truncate_bucket()
+                    with st.spinner("Deleting all objects from the bucket…"):
+                        ok = minio_truncate_bucket()
                     if ok:
                         st.session_state["minio_reset_success"] = True
                         st.rerun()

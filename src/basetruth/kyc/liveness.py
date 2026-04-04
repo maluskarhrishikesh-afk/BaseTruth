@@ -42,6 +42,11 @@ _BLINK_BASELINE_MIN      = 0.880   # baseline (open-eye) confidence
 
 def extract_features(face: Any) -> Dict[str, float]:
     """Return normalized pose features from one face object (InsightFace or MediaPipe)."""
+    # Guard: some detectors may not provide keypoints (face too small, partial occlusion)
+    if getattr(face, "kps", None) is None:
+        raise ValueError(
+            "Face keypoints not available — move closer and ensure your full face is visible."
+        )
     kps  = face.kps.astype(float)   # shape (5, 2)
     bbox = face.bbox.astype(float)  # [x1, y1, x2, y2]
 
@@ -67,10 +72,12 @@ def extract_features(face: Any) -> Dict[str, float]:
         # Pitch: nose below/above eye midpoint (normalized by IOD)
         #   positive = chin down, negative = face up
         "pitch": (nose_y - eye_mid_y) / interocular_px,
-        # Detection confidence — drops slightly when eyes close (InsightFace only)
-        "det_score": float(getattr(face, "det_score", 1.0)),
+        # Detection confidence — drops slightly when eyes close (InsightFace only).
+        # Use `or` to convert explicit None to the safe default (getattr only substitutes
+        # the default when the attribute is *missing*, not when it is None).
+        "det_score": float(getattr(face, "det_score", None) or 1.0),
         # Eye Aspect Ratio — reliable blink indicator (MediaPipe); 0.30 default (open eye)
-        "ear": float(getattr(face, "ear", 0.30)),
+        "ear": float(getattr(face, "ear", None) or 0.30),
     }
 
 
@@ -148,9 +155,12 @@ def analyze_challenge(
         baseline_score = max(all_scores[:5])
         if baseline_score >= _BLINK_BASELINE_MIN:
             tail = all_scores[4:]
+            # Use a RELATIVE drop of ≥6% so this works regardless of baseline level
+            # (avoids missing blinks when baseline is 0.98 and dip only reaches 0.91)
+            dip_needed = baseline_score * 0.94
             min_tail  = min(tail)
             last5_avg = sum(tail[-5:]) / min(len(tail), 5)
-            if min_tail <= _BLINK_LOW_THRESHOLD and last5_avg >= _BLINK_RECOVER_THRESHOLD:
+            if min_tail < dip_needed and last5_avg >= baseline_score * 0.96:
                 return {"passed": True, "feedback": "✅ Blink detected!"}
 
         return {"passed": False, "feedback": "Close your eyes fully, then open them…"}

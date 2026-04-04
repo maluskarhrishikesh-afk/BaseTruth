@@ -255,6 +255,13 @@ def _render_entity_link_widget(
 ) -> Tuple[Optional[str], Optional[dict]]:
     """Render the 'Associate with a person' UI panel.
 
+    Reads ``st.session_state["active_entity_ref"]`` on first render so that
+    once a person is selected on any screen they are automatically pre-selected
+    on every other screen — the user never has to re-enter the same details.
+
+    When the user picks or confirms an entity, the selection is also written back
+    to ``st.session_state["active_entity_ref"]`` so it persists across pages.
+
     Returns
     -------
     forced_ref : str | None
@@ -262,13 +269,29 @@ def _render_entity_link_widget(
     extra_identity : dict | None
         Identity fields typed by the user (used as hints when forced_ref is None).
     """
+    # ── Retrieve / initialise session-level active entity ──────────────────
+    _active_ref: Optional[str] = st.session_state.get("active_entity_ref")
+    _active_label: str = st.session_state.get("active_entity_label", "")
+
     _widget_expanded = True if (key_prefix == "bulk" or mandatory) else False
     title_suffix = "(mandatory)" if mandatory else "(recommended)"
+
+    # Show a persistent "current applicant" banner when an entity is active
+    if _active_ref and _active_label:
+        st.info(
+            f"**Current applicant:** {_active_label} — all documents on this screen will be "
+            f"linked to this person automatically.  [Change below]",
+            icon="👤",
+        )
+
     with st.expander(f"👤 Associate documents with a person {title_suffix}", expanded=_widget_expanded):
         st.markdown(
             """
 Linking documents to an applicant **prevents duplicate entity records** and keeps all
 their documents grouped under one profile in the Records screen.
+
+Once you select a person here, they remain the **active applicant** across all screens
+until you change them — you will never need to re-enter the same details.
 
 **How it works:**
 - *Search an existing person* — type their name, PAN, Aadhaar, email, or reference number.  
@@ -290,10 +313,13 @@ their documents grouped under one profile in the Records screen.
 
         if link_mode == "Search existing person":
             if _DB_IMPORTS_OK and db_available():
+                # Pre-fill search box with the active entity ref if one is set
+                default_search = _active_ref or ""
                 search_q = st.text_input(
                     "Search by name / PAN / Aadhaar / email / phone / BT-ref",
                     key=f"{key_prefix}_entity_search",
                     placeholder="e.g. Aarini Parekh, MVWNV2212G, BT-000003…",
+                    value=default_search,
                 )
                 if search_q.strip():
                     matches = search_entities(search_q.strip(), "all", limit=10)
@@ -303,18 +329,35 @@ their documents grouped under one profile in the Records screen.
                             f"({m.get('pan_number') or m.get('email') or 'no id'})": m["entity_ref"]
                             for m in matches
                         }
+                        # Pre-select the active entity if present in results
+                        opt_keys = list(opts.keys())
+                        default_idx = 0
+                        if _active_ref:
+                            for idx, ref in enumerate(opts.values()):
+                                if ref == _active_ref:
+                                    default_idx = idx
+                                    break
                         chosen_label = st.selectbox(
                             "Select person",
-                            list(opts.keys()),
+                            opt_keys,
+                            index=default_idx,
                             key=f"{key_prefix}_entity_select",
                         )
                         forced_ref = opts[chosen_label]
-                        st.success(f"✅ Scans will be linked to **{chosen_label.split('—')[0].strip()}**")
+                        display_name = chosen_label.split("—")[0].strip()
+                        st.success(f"✅ Scans will be linked to **{display_name}**")
+
+                        # Persist active entity to session state
+                        st.session_state["active_entity_ref"] = forced_ref
+                        st.session_state["active_entity_label"] = display_name
                     else:
                         st.info(
                             "No matching person found. "
                             "Switch to 'Enter details manually' to create one."
                         )
+                elif _active_ref:
+                    # No new search typed — use the existing active entity
+                    forced_ref = _active_ref
             else:
                 st.warning("Database is offline — entity search unavailable.")
 
@@ -346,11 +389,31 @@ their documents grouped under one profile in the Records screen.
                     "email": e_email.strip().lower(),
                     "phone": e_phone.strip(),
                 }
+                # Store hints in session for propagation across screens
+                st.session_state["active_entity_identity"] = extra_identity
                 st.success(
                     "✅ Identity hints will be used to group documents under the right person."
                 )
 
     return forced_ref, extra_identity
+
+
+def set_active_entity(entity_ref: str, display_label: str = "") -> None:
+    """Programmatically set the active entity in session state.
+
+    Call this after a successful scan result that auto-detected an entity,
+    so subsequent screens pick it up without user interaction.
+    """
+    st.session_state["active_entity_ref"] = entity_ref
+    if display_label:
+        st.session_state["active_entity_label"] = display_label
+
+
+def clear_active_entity() -> None:
+    """Clear the active entity from session state (start fresh for new applicant)."""
+    st.session_state.pop("active_entity_ref", None)
+    st.session_state.pop("active_entity_label", None)
+    st.session_state.pop("active_entity_identity", None)
 
 
 # ---------------------------------------------------------------------------
