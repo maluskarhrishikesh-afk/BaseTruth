@@ -211,6 +211,16 @@ Streamlit auto-discovers any `.py` file in a `pages/` directory and adds it to t
 
 Both are applied so the nav items are hidden regardless of Streamlit version.
 
+### Sidebar navigation labels
+
+Each sidebar entry maps a display label → session-state page key.  The label emoji and title text must always match the corresponding `_page_title(emoji, "Title Text")` call in the page file.  See [FUNCTIONALITY.md](FUNCTIONALITY.md) for the full mapping and rules.
+
+### Performance: cached availability checks
+
+`db_available()` runs a live `SELECT 1` and `minio_available()` calls `list_buckets()`.  Calling either in the Streamlit render path freezes the UI for up to 5 seconds per click when the services are offline.
+
+**Rule:** always use `_db_available_cached()` and `_minio_available_cached()` from `components.py` (30-second TTL) in any render path.  Raw `db_available()` / `minio_available()` calls are only allowed in non-render code (background jobs, CLI tools).
+
 ## 11. Identity Verification UI
 
 The Identity Verification page (`pages/identity.py`) accepts documents in two modes, selectable via tabs:

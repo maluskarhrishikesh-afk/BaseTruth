@@ -20,7 +20,7 @@ from basetruth.ui.components import (
 
 
 def _page_reports(service: BaseTruthService) -> None:
-    st.markdown(_page_title("📈", "Reports"), unsafe_allow_html=True)
+    st.markdown(_page_title("�", "Reports"), unsafe_allow_html=True)
 
     with st.expander("ℹ️ How to use this screen", expanded=False):
         st.markdown(

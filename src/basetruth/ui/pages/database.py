@@ -5,11 +5,11 @@ import streamlit as st
 
 from basetruth.ui.components import (
     _DB_IMPORTS_OK,
+    _db_available_cached,
+    _minio_available_cached,
     _page_title,
-    db_available,
     db_table_counts,
     db_table_rows,
-    minio_available,
     minio_bucket_stats,
     minio_list_objects,
     minio_truncate_bucket,
@@ -26,7 +26,7 @@ _DB_TABLE_LABELS: dict[str, str] = {
 
 
 def _page_database() -> None:
-    st.markdown(_page_title("💾", "Database Viewer"), unsafe_allow_html=True)
+    st.markdown(_page_title("�️", "Database Viewer"), unsafe_allow_html=True)
 
     with st.expander("ℹ️ How to use this screen", expanded=False):
         st.markdown(
@@ -48,7 +48,7 @@ This screen gives you direct visibility into what is stored in the system.
 
     # ── PostgreSQL tab ───────────────────────────────────────────────────────
     with pg_tab:
-        if not _DB_IMPORTS_OK or not db_available():
+        if not _DB_IMPORTS_OK or not _db_available_cached():
             st.warning(
                 "PostgreSQL is not available.  Start the `db` Docker service and ensure "
                 "`DATABASE_URL` is set correctly."
@@ -96,7 +96,7 @@ This screen gives you direct visibility into what is stored in the system.
         if not _DB_IMPORTS_OK:
             st.warning("Store module not loaded.")
         else:
-            minio_up = minio_available()
+            minio_up = _minio_available_cached()
             if not minio_up:
                 st.warning(
                     "MinIO is not reachable. Check that the `minio` Docker service is running "

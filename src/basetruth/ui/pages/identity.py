@@ -1211,6 +1211,12 @@ def _page_identity_verification() -> None:
                             f"Saved to database — Entity: **{saved.get('entity_ref', 'unlinked')}**, "
                             f"Record ID: {saved['id']}"
                         )
+                    else:
+                        st.error(
+                            "⚠️ Result could not be saved to the database. "
+                            "The identity check ran successfully but the record was not persisted. "
+                            "Check the Logs screen for details."
+                        )
                     if pdf_bytes:
                         st.download_button(
                             "Download Identity Check Report (PDF)",

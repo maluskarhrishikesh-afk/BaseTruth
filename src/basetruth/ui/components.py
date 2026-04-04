@@ -144,6 +144,24 @@ except Exception:  # noqa: BLE001
 
 
 # ---------------------------------------------------------------------------
+# Cached availability helpers — avoids a live DB/MinIO round-trip on every
+# Streamlit re-render (tab click, widget change, etc.).  TTL = 30 s so the
+# status pill refreshes briefly after a service comes online.
+# ---------------------------------------------------------------------------
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _db_available_cached() -> bool:
+    """Cached wrapper around db_available() — 30-second TTL."""
+    return db_available()
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _minio_available_cached() -> bool:
+    """Cached wrapper around minio_available() — 30-second TTL."""
+    return minio_available()
+
+
+# ---------------------------------------------------------------------------
 # Page title helper — renders emoji in its native colour + text with gradient
 # ---------------------------------------------------------------------------
 
@@ -153,7 +171,7 @@ def _page_title(emoji: str, title_text: str) -> str:
 
     Usage::
 
-        st.markdown(_page_title("💾", "Database Viewer"), unsafe_allow_html=True)
+        st.markdown(_page_title("�️", "Database Viewer"), unsafe_allow_html=True)
     """
     return (
         '<h1 style="letter-spacing:-0.03em;font-weight:800;font-size:2.1rem;'

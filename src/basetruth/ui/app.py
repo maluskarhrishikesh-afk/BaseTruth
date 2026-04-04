@@ -43,6 +43,12 @@ except Exception:  # noqa: BLE001
     def db_available() -> bool: return False  # type: ignore[misc]
     def init_db() -> bool: return False  # type: ignore[misc]
 
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _db_available_cached() -> bool:
+    """Cached db_available() — avoids a live SELECT 1 on every sidebar render."""
+    return db_available()
+
 try:
     from basetruth.logger import log_path as _log_path
     _LOGGER_OK = True
@@ -927,16 +933,16 @@ def _display_truth_score(value: Any) -> str:
 
 _PAGES: Dict[str, str] = {
     "🏠  Dashboard": "dashboard",
-    "🧑‍💻  Identity": "identity",
+    "🧑‍💻  Identity Verification": "identity",
     "🎥  Video KYC": "video_kyc",
-    "🔍  Scan": "scan",
+    "🔍  Scan Document": "scan",
     "📦  Bulk Scan": "bulk",
     "📁  Cases": "cases",
     "🗂️  Records": "records",
     "📊  Reports": "reports",
     "🔗  Datasources": "datasources",
-    "📋  Logs": "logs",
-    "🗄️  Database": "database",
+    "📋  Log Analyzer": "logs",
+    "🗄️  Database Viewer": "database",
     "⚙️  Settings": "settings",
 }
 
@@ -966,7 +972,7 @@ def _sidebar() -> str:
         st.divider()
         # DB connection status pill
         if _DB_IMPORTS_OK:
-            _db_up = db_available()
+            _db_up = _db_available_cached()
             _dot = "🟢" if _db_up else "🔴"
             _label = "PostgreSQL connected" if _db_up else "DB offline (file mode)"
             st.markdown(
@@ -4329,14 +4335,15 @@ def main() -> None:
     if "page" not in st.session_state:
         st.session_state["page"] = "dashboard"
 
-    # Ensure all DB tables exist on first load (non-fatal if DB is offline)
-    if "db_init_done" not in st.session_state:
-        if _DB_IMPORTS_OK:
-            try:
-                init_db()
-            except Exception:  # noqa: BLE001
-                pass
-        st.session_state["db_init_done"] = True
+    # Ensure all DB tables exist on first load (non-fatal if DB is offline).
+    # Re-attempt init when the DB comes online after a failed first attempt.
+    if not st.session_state.get("db_init_done") and _DB_IMPORTS_OK:
+        try:
+            ok = init_db()
+        except Exception:  # noqa: BLE001
+            ok = False
+        if ok:
+            st.session_state["db_init_done"] = True
 
     page = _sidebar()
     service = _get_service()
