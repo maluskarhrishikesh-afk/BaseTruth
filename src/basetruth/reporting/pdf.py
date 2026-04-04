@@ -1307,3 +1307,251 @@ def render_identity_check_pdf(
     buf = io.BytesIO()
     pdf.output(buf)
     return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Consolidated entity report — one PDF covering all verification activity
+# ---------------------------------------------------------------------------
+
+def render_consolidated_entity_pdf(
+    entity: Dict[str, Any],
+    scans: List[Dict[str, Any]],
+    identity_checks: List[Dict[str, Any]],
+) -> bytes:
+    """Generate a single consolidated PDF for one entity covering all their
+    verification activity: face match checks, Video KYC sessions, and document
+    scans.
+
+    Parameters
+    ----------
+    entity:           Entity dict as returned by ``get_all_entities_with_scans``
+                      (keys: ``entity_ref``, ``name``, ``pan_number``, ``email``).
+    scans:            List of scan dicts (keys: ``source_name``, ``document_type``,
+                      ``truth_score``, ``risk_level``, ``verdict``, ``generated_at``).
+    identity_checks:  List of identity-check dicts as returned by
+                      ``get_entity_identity_checks`` (keys: ``check_type``,
+                      ``display_score``, ``is_match``, ``liveness_passed``, ``verdict``,
+                      ``created_at``, ``doc_filename``).
+    """
+    entity_ref  = entity.get("entity_ref", "")
+    entity_name = entity.get("name", "") or entity_ref
+    pan_number  = entity.get("pan_number", "")
+    email       = entity.get("email", "")
+
+    face_checks = [c for c in identity_checks if c.get("check_type") == "face_match"]
+    kyc_checks  = [c for c in identity_checks if c.get("check_type") == "video_kyc"]
+
+    # ── Overall verdict ────────────────────────────────────────────────────
+    all_verdicts: List[str] = [
+        *[c.get("verdict", "FAIL") for c in identity_checks],
+        *[s.get("verdict", "FAIL") for s in scans],
+    ]
+    if not all_verdicts:
+        overall_title = "NO CHECKS RECORDED"
+        overall_body  = "No verification activity has been recorded for this entity yet."
+        overall_colour = _C_WARN_AMBER
+    elif all(v.upper() in ("PASS", "CLEAR") for v in all_verdicts if v):
+        overall_title  = "ALL CHECKS PASSED"
+        overall_body   = "All recorded verification checks passed. The entity appears authentic."
+        overall_colour = _C_PASS_GREEN
+    elif any(v.upper() in ("FAIL", "CRITICAL") for v in all_verdicts if v):
+        overall_title  = "ONE OR MORE CHECKS FAILED"
+        overall_body   = "At least one verification check failed. Review the details below before proceeding."
+        overall_colour = _C_FAIL_RED
+    else:
+        overall_title  = "REVIEW REQUIRED"
+        overall_body   = "Some checks need manual review. Inspect the sections below."
+        overall_colour = _C_WARN_AMBER
+
+    # ── Build PDF ──────────────────────────────────────────────────────────
+    pdf = _ReportPDF(orientation="P", unit="mm", format="A4")
+    pdf.set_margins(left=10, top=5, right=10)
+    pdf.set_auto_page_break(auto=True, margin=18)
+    pdf.add_page()
+    pdf.set_text_color(*_C_TEXT_DARK)
+
+    # Header bar
+    pdf.set_fill_color(*_C_DARK_BLUE)
+    pdf.rect(0, 0, 210, 18, "F")
+    pdf.set_y(3)
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.set_text_color(*_C_TEXT_LIGHT)
+    pdf.cell(0, 12, _safe("BaseTruth - Consolidated Verification Report"), align="C")
+    pdf.ln(18)
+    pdf.set_text_color(*_C_TEXT_DARK)
+
+    # Entity info
+    pdf.section_title("Entity Information")
+    pdf.info_row("Entity Reference:", entity_ref)
+    pdf.info_row("Name:", entity_name)
+    if pan_number:
+        pdf.info_row("PAN:", pan_number)
+    if email:
+        pdf.info_row("Email:", email)
+    pdf.info_row(
+        "Report Generated:",
+        datetime.now(timezone.utc).strftime("%d %b %Y %H:%M UTC"),
+    )
+    pdf.info_row(
+        "Activity Summary:",
+        _safe(
+            f"{len(face_checks)} face match check(s), "
+            f"{len(kyc_checks)} Video KYC session(s), "
+            f"{len(scans)} document scan(s)"
+        ),
+    )
+    pdf.ln(2)
+
+    # Overall verdict box
+    pdf.verdict_box(overall_title, overall_body, overall_colour)
+
+    # ── Section A: Identity Verification (Face Match) ──────────────────────
+    if face_checks:
+        pdf.section_title("A. Identity Verification (Face Match)")
+        pdf.set_font("Helvetica", "", 9)
+
+        col_date    = 35
+        col_verdict = 22
+        col_score   = 22
+        col_match   = 18
+        col_doc     = 0  # fills remaining width
+
+        # Header row
+        pdf.set_fill_color(*_C_DARK_BLUE)
+        pdf.set_text_color(*_C_TEXT_LIGHT)
+        pdf.set_font("Helvetica", "B", 8)
+        pdf.cell(col_date,    6, "Date",    fill=True, border=0)
+        pdf.cell(col_verdict, 6, "Verdict", fill=True, border=0, align="C")
+        pdf.cell(col_score,   6, "Score",   fill=True, border=0, align="C")
+        pdf.cell(col_match,   6, "Match",   fill=True, border=0, align="C")
+        pdf.cell(col_doc,     6, "Document", fill=True, border=0, ln=True)
+
+        for i, c in enumerate(face_checks):
+            bg = _C_LIGHT_GRAY if i % 2 == 0 else _C_WHITE
+            pdf.set_fill_color(*bg)
+            pdf.set_text_color(*_C_TEXT_DARK)
+            pdf.set_font("Helvetica", "", 8)
+
+            date_str    = (c.get("created_at") or "")[:10]
+            verdict_str = (c.get("verdict") or "").upper()
+            score_str   = f"{c.get('display_score', 0) or 0:.1f}%"
+            match_str   = "Yes" if c.get("is_match") else "No"
+            doc_str     = c.get("doc_filename") or ""
+
+            if verdict_str in ("PASS",):
+                pdf.set_text_color(*_C_PASS_GREEN)
+            elif verdict_str in ("FAIL",):
+                pdf.set_text_color(*_C_FAIL_RED)
+
+            pdf.cell(col_date,    6, _safe(date_str),    fill=True, border=0)
+            pdf.set_text_color(*_C_TEXT_DARK)
+            pdf.cell(col_verdict, 6, _safe(verdict_str), fill=True, border=0, align="C")
+            pdf.cell(col_score,   6, _safe(score_str),   fill=True, border=0, align="C")
+            pdf.cell(col_match,   6, _safe(match_str),   fill=True, border=0, align="C")
+            pdf.cell(col_doc,     6, _safe(doc_str),     fill=True, border=0, ln=True)
+
+        pdf.ln(3)
+
+    # ── Section B: Video KYC ───────────────────────────────────────────────
+    if kyc_checks:
+        pdf.section_title("B. Video KYC (Liveness + Match)")
+        pdf.set_font("Helvetica", "", 9)
+
+        col_date     = 35
+        col_verdict  = 22
+        col_liveness = 25
+        col_score    = 22
+        col_doc      = 0
+
+        pdf.set_fill_color(*_C_DARK_BLUE)
+        pdf.set_text_color(*_C_TEXT_LIGHT)
+        pdf.set_font("Helvetica", "B", 8)
+        pdf.cell(col_date,     6, "Date",     fill=True, border=0)
+        pdf.cell(col_verdict,  6, "Verdict",  fill=True, border=0, align="C")
+        pdf.cell(col_liveness, 6, "Liveness", fill=True, border=0, align="C")
+        pdf.cell(col_score,    6, "Score",    fill=True, border=0, align="C")
+        pdf.cell(col_doc,      6, "Document", fill=True, border=0, ln=True)
+
+        for i, c in enumerate(kyc_checks):
+            bg = _C_LIGHT_GRAY if i % 2 == 0 else _C_WHITE
+            pdf.set_fill_color(*bg)
+            pdf.set_text_color(*_C_TEXT_DARK)
+            pdf.set_font("Helvetica", "", 8)
+
+            date_str     = (c.get("created_at") or "")[:10]
+            verdict_str  = (c.get("verdict") or "").upper()
+            liveness_str = "Pass" if c.get("liveness_passed") else "Fail"
+            score_str    = f"{c.get('display_score', 0) or 0:.1f}%"
+            doc_str      = c.get("doc_filename") or ""
+
+            pdf.cell(col_date,     6, _safe(date_str),     fill=True, border=0)
+            pdf.cell(col_verdict,  6, _safe(verdict_str),  fill=True, border=0, align="C")
+            pdf.cell(col_liveness, 6, _safe(liveness_str), fill=True, border=0, align="C")
+            pdf.cell(col_score,    6, _safe(score_str),    fill=True, border=0, align="C")
+            pdf.cell(col_doc,      6, _safe(doc_str),      fill=True, border=0, ln=True)
+
+        pdf.ln(3)
+
+    # ── Section C: Document Scans ──────────────────────────────────────────
+    if scans:
+        pdf.section_title("C. Document Scans")
+
+        col_date    = 30
+        col_type    = 35
+        col_score   = 22
+        col_risk    = 22
+        col_verdict = 22
+        col_doc     = 0
+
+        pdf.set_fill_color(*_C_DARK_BLUE)
+        pdf.set_text_color(*_C_TEXT_LIGHT)
+        pdf.set_font("Helvetica", "B", 8)
+        pdf.cell(col_date,    6, "Date",          fill=True, border=0)
+        pdf.cell(col_type,    6, "Document Type", fill=True, border=0)
+        pdf.cell(col_score,   6, "Truth Score",   fill=True, border=0, align="C")
+        pdf.cell(col_risk,    6, "Risk",          fill=True, border=0, align="C")
+        pdf.cell(col_verdict, 6, "Verdict",       fill=True, border=0, align="C")
+        pdf.cell(col_doc,     6, "Filename",      fill=True, border=0, ln=True)
+
+        for i, s in enumerate(scans):
+            bg = _C_LIGHT_GRAY if i % 2 == 0 else _C_WHITE
+            pdf.set_fill_color(*bg)
+            pdf.set_text_color(*_C_TEXT_DARK)
+            pdf.set_font("Helvetica", "", 8)
+
+            date_str    = (s.get("generated_at") or "")[:10]
+            doc_type    = (s.get("document_type") or "generic").replace("_", " ").title()
+            score_val   = s.get("truth_score") or 0
+            score_str   = f"{score_val:.1f}" if isinstance(score_val, float) else str(score_val)
+            risk_str    = (s.get("risk_level") or "low").upper()
+            verdict_str = (s.get("verdict") or "").upper()
+            doc_str     = s.get("source_name") or ""
+
+            pdf.cell(col_date,    6, _safe(date_str),    fill=True, border=0)
+            pdf.cell(col_type,    6, _safe(doc_type),    fill=True, border=0)
+            pdf.cell(col_score,   6, _safe(score_str),   fill=True, border=0, align="C")
+            pdf.cell(col_risk,    6, _safe(risk_str),    fill=True, border=0, align="C")
+            pdf.cell(col_verdict, 6, _safe(verdict_str), fill=True, border=0, align="C")
+            pdf.cell(col_doc,     6, _safe(doc_str),     fill=True, border=0, ln=True)
+
+        pdf.ln(3)
+
+    # ── Disclaimer ─────────────────────────────────────────────────────────
+    pdf.ln(4)
+    pdf.set_font("Helvetica", "I", 8)
+    pdf.set_text_color(100, 100, 100)
+    page_w = pdf.w - pdf.l_margin - pdf.r_margin
+    pdf.set_x(pdf.l_margin)
+    pdf.multi_cell(
+        page_w, 5,
+        _safe(
+            "This consolidated report was generated automatically by BaseTruth. "
+            "It covers all verification activity recorded for this entity across "
+            "Identity Verification, Video KYC, and Document Scan screens. "
+            "This report supports — but does not replace — a qualified human review."
+        ),
+    )
+
+    buf = io.BytesIO()
+    pdf.output(buf)
+    return buf.getvalue()

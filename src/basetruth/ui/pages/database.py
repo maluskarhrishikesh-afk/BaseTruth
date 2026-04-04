@@ -25,9 +25,34 @@ _DB_TABLE_LABELS: dict[str, str] = {
 }
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_db_table_counts() -> dict:
+    return db_table_counts()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_db_table_rows(table: str, limit: int = 500) -> tuple:
+    return db_table_rows(table, limit=limit)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_minio_bucket_stats() -> dict:
+    return minio_bucket_stats()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_minio_list_objects(limit: int = 500) -> list:
+    return minio_list_objects(limit=limit)
+
+
 def _page_database() -> None:
     st.markdown(_page_title("�️", "Database Viewer"), unsafe_allow_html=True)
-
+    if st.button("🔄 Refresh", key="db_viewer_refresh"):
+        _cached_db_table_counts.clear()
+        _cached_db_table_rows.clear()
+        _cached_minio_bucket_stats.clear()
+        _cached_minio_list_objects.clear()
+        st.rerun()
     with st.expander("ℹ️ How to use this screen", expanded=False):
         st.markdown(
             """
@@ -54,7 +79,7 @@ This screen gives you direct visibility into what is stored in the system.
                 "`DATABASE_URL` is set correctly."
             )
         else:
-            counts = db_table_counts()
+            counts = _cached_db_table_counts()
             cc = st.columns(len(_DB_TABLE_LABELS))
             for i, (tbl, lbl) in enumerate(_DB_TABLE_LABELS.items()):
                 cc[i].metric(lbl, f"{counts.get(tbl, 0):,}")
@@ -70,7 +95,7 @@ This screen gives you direct visibility into what is stored in the system.
                     key="db_viewer_table",
                 )
 
-            rows, total = db_table_rows(chosen_table, limit=500)
+            rows, total = _cached_db_table_rows(chosen_table, limit=500)
             cap = f"**{_DB_TABLE_LABELS[chosen_table]}** — {total:,} rows total"
             if total > 500:
                 cap += "  ·  showing most-recent 500"
@@ -103,14 +128,14 @@ This screen gives you direct visibility into what is stored in the system.
                     "and that `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` are set."
                 )
             else:
-                stats = minio_bucket_stats()
+                stats = _cached_minio_bucket_stats()
                 mc1, mc2, mc3 = st.columns(3)
                 mc1.metric("Bucket", stats.get("bucket", "—"))
                 mc2.metric("Objects", f"{stats.get('object_count', 0):,}")
                 mc3.metric("Total size", f"{stats.get('total_mb', 0):.1f} MB")
 
                 st.divider()
-                objs = minio_list_objects(limit=500)
+                objs = _cached_minio_list_objects(limit=500)
                 if objs:
                     import pandas as pd  # noqa: PLC0415
 

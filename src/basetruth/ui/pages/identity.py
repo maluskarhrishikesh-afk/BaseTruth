@@ -9,6 +9,7 @@ import streamlit as st
 
 from basetruth.ui.components import (
     _DB_IMPORTS_OK,
+    _db_available_cached,
     _page_title,
     _render_entity_link_widget,
     db_available,
@@ -1122,25 +1123,39 @@ def _page_identity_verification() -> None:
 
                 face_result = compare_faces(aadhaar_file.getvalue(), selfie_bytes)
 
+            # Store result and all inputs in session state for the explicit save step
+            st.session_state["idv_face_result"] = face_result
+            st.session_state["idv_face_doc_bytes"] = aadhaar_file.getvalue()
+            st.session_state["idv_face_doc_name"] = aadhaar_file.name
+            st.session_state["idv_face_selfie_bytes"] = selfie_bytes
+            st.session_state["idv_face_selfie_name"] = selfie_name
+            st.session_state["idv_face_forced_ref"] = forced_ref
+            st.session_state["idv_face_extra_identity"] = extra_identity
+            st.session_state["idv_face_saved"] = False
+            st.session_state.pop("idv_face_saved_ref", None)
+            st.session_state.pop("idv_face_saved_pdf", None)
+
+        # ── Display result whenever session state holds one ───────────────
+        _face_result = st.session_state.get("idv_face_result")
+        if _face_result is not None:
             st.subheader("Verification Result")
 
-            if "error" in face_result:
-                st.error(f"Face matching failed: {face_result['error']}")
+            if "error" in _face_result:
+                st.error(f"Face matching failed: {_face_result['error']}")
             else:
-                score = face_result["display_score"]
-                is_match = face_result["match"]
-                selected_entity_ref = forced_ref
+                score = _face_result["display_score"]
+                is_match = _face_result["match"]
 
                 r1, r2 = st.columns(2)
                 with r1:
                     st.image(
-                        face_result["doc_annotated_rgb"],
+                        _face_result["doc_annotated_rgb"],
                         caption="Face detected on Aadhaar",
                         use_container_width=True,
                     )
                 with r2:
                     st.image(
-                        face_result["selfie_annotated_rgb"],
+                        _face_result["selfie_annotated_rgb"],
                         caption="Face detected in selfie",
                         use_container_width=True,
                     )
@@ -1156,87 +1171,114 @@ def _page_identity_verification() -> None:
                         "The faces DO NOT match. Possible fraud risk."
                     )
                 st.caption(
-                    f"Cosine similarity: {face_result['confidence']:.3f} "
-                    f"(threshold: {face_result['threshold']:.2f})"
+                    f"Cosine similarity: {_face_result['confidence']:.3f} "
+                    f"(threshold: {_face_result['threshold']:.2f})"
                 )
 
-                if _DB_IMPORTS_OK and db_available():
-                    db_payload = {
-                        k: v
-                        for k, v in face_result.items()
-                        if k not in ("doc_annotated_rgb", "selfie_annotated_rgb")
-                    }
-                    for k, v in list(db_payload.items()):
-                        if hasattr(v, "item"):
-                            db_payload[k] = v.item()
+                # ── Save section ──────────────────────────────────────────
+                st.divider()
+                _already_saved = st.session_state.get("idv_face_saved", False)
+                _saved_ref = st.session_state.get("idv_face_saved_ref")
+                _saved_pdf = st.session_state.get("idv_face_saved_pdf")
 
-                    _ref_for_pdf = forced_ref or ""
-                    _name_for_pdf = (
-                        f"{extra_identity.get('first_name', '')} "
-                        f"{extra_identity.get('last_name', '')}".strip()
-                        if extra_identity
-                        else ""
+                if _already_saved:
+                    st.success(
+                        f"✅ Saved to database — Entity: **{_saved_ref or 'unlinked'}**"
                     )
-
-                    try:
-                        from basetruth.reporting.pdf import (  # noqa: PLC0415
-                            render_identity_check_pdf,
-                        )
-
-                        pdf_bytes = render_identity_check_pdf(
-                            check_type="face_match",
-                            result=db_payload,
-                            entity_ref=_ref_for_pdf,
-                            entity_name=_name_for_pdf,
-                            doc_filename=aadhaar_file.name,
-                            selfie_filename=selfie_name,
-                            doc_image_bytes=aadhaar_file.getvalue() if aadhaar_file else None,
-                            selfie_image_bytes=selfie_bytes,
-                        )
-                    except Exception:  # noqa: BLE001
-                        pdf_bytes = None
-
-                    saved = save_identity_check(
-                        check_type="face_match",
-                        result=db_payload,
-                        forced_entity_ref=forced_ref,
-                        extra_identity=extra_identity,
-                        doc_filename=aadhaar_file.name,
-                        selfie_filename=selfie_name,
-                        pdf_bytes=pdf_bytes,
-                    )
-                    if saved:
-                        selected_entity_ref = saved.get("entity_ref") or forced_ref
-                        st.success(
-                            f"Saved to database — Entity: **{saved.get('entity_ref', 'unlinked')}**, "
-                            f"Record ID: {saved['id']}"
-                        )
-                    else:
-                        st.error(
-                            "⚠️ Result could not be saved to the database. "
-                            "The identity check ran successfully but the record was not persisted. "
-                            "Check the Logs screen for details."
-                        )
-                    if pdf_bytes:
+                    if _saved_pdf:
                         st.download_button(
                             "Download Identity Check Report (PDF)",
-                            data=pdf_bytes,
-                            file_name=f"identity_check_{selected_entity_ref or 'unlinked'}.pdf",
+                            data=_saved_pdf,
+                            file_name=f"identity_check_{_saved_ref or 'unlinked'}.pdf",
                             mime="application/pdf",
                             key="idv_pdf_dl",
                         )
                 else:
-                    st.warning(
-                        "Database is offline — result not persisted. "
-                        "Connect PostgreSQL to save results."
-                    )
+                    if _DB_IMPORTS_OK and _db_available_cached():
+                        if st.button(
+                            "💾 Save to Database",
+                            type="secondary",
+                            use_container_width=True,
+                            key="idv_save_btn",
+                        ):
+                            _s_doc_name = st.session_state.get("idv_face_doc_name", "")
+                            _s_selfie_name = st.session_state.get("idv_face_selfie_name", "")
+                            _s_forced_ref = st.session_state.get("idv_face_forced_ref")
+                            _s_extra_identity = st.session_state.get("idv_face_extra_identity")
+                            _s_doc_bytes = st.session_state.get("idv_face_doc_bytes")
+                            _s_selfie_bytes = st.session_state.get("idv_face_selfie_bytes")
 
-                if selected_entity_ref and _DB_IMPORTS_OK and db_available():
+                            db_payload = {
+                                k: v
+                                for k, v in _face_result.items()
+                                if k not in ("doc_annotated_rgb", "selfie_annotated_rgb")
+                            }
+                            for k, v in list(db_payload.items()):
+                                if hasattr(v, "item"):
+                                    db_payload[k] = v.item()
+
+                            _ref_for_pdf = _s_forced_ref or ""
+                            _name_for_pdf = (
+                                f"{_s_extra_identity.get('first_name', '')} "
+                                f"{_s_extra_identity.get('last_name', '')}".strip()
+                                if _s_extra_identity
+                                else ""
+                            )
+
+                            try:
+                                from basetruth.reporting.pdf import (  # noqa: PLC0415
+                                    render_identity_check_pdf,
+                                )
+
+                                pdf_bytes = render_identity_check_pdf(
+                                    check_type="face_match",
+                                    result=db_payload,
+                                    entity_ref=_ref_for_pdf,
+                                    entity_name=_name_for_pdf,
+                                    doc_filename=_s_doc_name,
+                                    selfie_filename=_s_selfie_name,
+                                    doc_image_bytes=_s_doc_bytes,
+                                    selfie_image_bytes=_s_selfie_bytes,
+                                )
+                            except Exception:  # noqa: BLE001
+                                pdf_bytes = None
+
+                            saved = save_identity_check(
+                                check_type="face_match",
+                                result=db_payload,
+                                forced_entity_ref=_s_forced_ref,
+                                extra_identity=_s_extra_identity,
+                                doc_filename=_s_doc_name,
+                                selfie_filename=_s_selfie_name,
+                                pdf_bytes=pdf_bytes,
+                            )
+                            if saved:
+                                st.session_state["idv_face_saved"] = True
+                                st.session_state["idv_face_saved_ref"] = (
+                                    saved.get("entity_ref") or _s_forced_ref
+                                )
+                                st.session_state["idv_face_saved_pdf"] = pdf_bytes
+                                st.rerun()
+                            else:
+                                st.error(
+                                    "⚠️ Result could not be saved to the database. "
+                                    "The identity check ran successfully but the record was not "
+                                    "persisted. Check the Logs screen for details."
+                                )
+                    else:
+                        st.warning(
+                            "Database is offline — connect PostgreSQL to save results."
+                        )
+
+                # ── History ───────────────────────────────────────────────
+                _display_ref = (
+                    st.session_state.get("idv_face_saved_ref")
+                    or st.session_state.get("idv_face_forced_ref")
+                )
+                if _display_ref and _DB_IMPORTS_OK and _db_available_cached():
                     st.divider()
-                    st.subheader(
-                        f"Previous Identity Checks for {selected_entity_ref}"
-                    )
-                    checks = get_entity_identity_checks(selected_entity_ref)
+                    st.subheader(f"Previous Identity Checks for {_display_ref}")
+                    checks = get_entity_identity_checks(_display_ref)
                     face_checks = [
                         c for c in checks if c["check_type"] == "face_match"
                     ]

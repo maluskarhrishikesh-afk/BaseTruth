@@ -1,1 +1,31 @@
-All issues resolved. See git history for details.
+"Database Viewer" screen takes a long time to respond and load.
+
+---------------------------------------------------------------------------------------------
+
+Shall we add a proper "save" button on the screens? Right now it has become a bit confusing whether data 
+got saved or not.
+
+---------------------------------------------------------------------------------------------
+
+Also "Reports screen" should be made better. It should contain a consolidated report of every tenant
+and nothing else.
+
+Example: 
+
+1) If a tenant uses only "Identity Verification" screen, then only those details should be
+included in the report.
+
+2) If the tenant uses "Identity Verification" along with "Video KYC", then details of both should be 
+present in the report. Earlier report should get deleted.
+
+3) If the tenant uses "Identity Verification" along with "Video KYC" and "Bulk Scan", then details of 
+all three should be present in the report. Earlier reports should get deleted.
+
+Basically only the final consolidated pdf report should be present.
+
+All the other documents (Aadhar, PAN, selfie, photos clicked via camera, payslips etc) uploded at 
+various places should also be available for download in zip format for auditing purpose if required.
+
+---------------------------------------------------------------------------------------------
+
+Also run the code from your end to make sure everything is working properly.

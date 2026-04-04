@@ -1034,6 +1034,54 @@ def minio_list_objects(limit: int = 500) -> List[Dict[str, Any]]:
         return []
 
 
+def minio_delete_object(key: str) -> bool:
+    """Delete a single object from the configured MinIO bucket.
+
+    Returns True on success or if the object did not exist.
+    Returns False on unexpected errors.
+    """
+    bucket = _os.environ.get("MINIO_BUCKET", "basetruth-reports")
+    client = _get_minio_s3_client()
+    if client is None:
+        return False
+    try:
+        client.delete_object(Bucket=bucket, Key=key)
+        return True
+    except Exception as exc:
+        log.warning("minio_delete_object(%s) failed: %s", key, exc)
+        return False
+
+
+def minio_list_entity_objects(entity_ref: str) -> List[Dict[str, Any]]:
+    """List all objects stored under the *entity_ref/* prefix in MinIO.
+
+    Returns a list of dicts with keys: ``key``, ``size_bytes``, ``size_kb``,
+    ``last_modified``, ``filename`` (basename only).
+    """
+    bucket = _os.environ.get("MINIO_BUCKET", "basetruth-reports")
+    client = _get_minio_s3_client()
+    if client is None:
+        return []
+    prefix = f"{entity_ref}/"
+    try:
+        paginator = client.get_paginator("list_objects_v2")
+        objects: List[Dict[str, Any]] = []
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                objects.append({
+                    "key": obj["Key"],
+                    "size_bytes": obj.get("Size", 0),
+                    "size_kb": round(obj.get("Size", 0) / 1024, 1),
+                    "last_modified": obj["LastModified"].isoformat() if obj.get("LastModified") else "",
+                    "filename": obj["Key"].split("/")[-1],
+                })
+        objects.sort(key=lambda o: o["last_modified"], reverse=True)
+        return objects
+    except Exception as exc:
+        log.warning("minio_list_entity_objects(%s) failed: %s", entity_ref, exc)
+        return []
+
+
 def minio_truncate_bucket() -> bool:
     """Delete all objects in the configured MinIO bucket.
 

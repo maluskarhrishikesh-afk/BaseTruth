@@ -43,6 +43,8 @@ try:
         minio_available,
         minio_bucket_stats,
         minio_get_object,
+        minio_delete_object,
+        minio_list_entity_objects,
         minio_list_objects,
         minio_truncate_bucket,
         minio_upload,
@@ -103,6 +105,12 @@ except Exception:  # noqa: BLE001
 
     def minio_get_object(key: str) -> Optional[bytes]:  # type: ignore[misc]
         return None
+
+    def minio_delete_object(key: str) -> bool:  # type: ignore[misc]
+        return False
+
+    def minio_list_entity_objects(entity_ref: str) -> list:  # type: ignore[misc]
+        return []
 
     def minio_list_objects(limit: int = 500) -> list:  # type: ignore[misc]
         return []
