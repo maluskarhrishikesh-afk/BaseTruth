@@ -45,6 +45,8 @@ These rules exist because they have caused bugs in the past. **Do not violate th
 
 10. **Design Principles** — Follow coding standards like SOLID design principles uniformly. Ensure separation of concerns, single responsibilities, and well-structured interfaces to keep the application modular.
 
+11. **Temporary Files** — Whenever the "Coding Agent" creates temporary files or scratchpad tests, they MUST be deleted after use to avoid confusion and maintain clean codebases.
+
 ## File Map
 
 | File | Purpose |
