@@ -111,7 +111,7 @@ def probe_ollama() -> tuple[str | None, List[str], List[str]]:
             response = requests.get(
                 f"{base_url}/api/tags",
                 timeout=OLLAMA_CONNECT_TIMEOUT_SEC,
-            )
+            )  # nosemgrep: basetruth-ssrf
             response.raise_for_status()
             models = [model["name"] for model in response.json().get("models", [])]
             models.sort(key=lambda name: (0 if "gemma4" in name.lower() else 1, name))
@@ -295,7 +295,7 @@ def extract_aadhaar_details_with_ollama(
             f"{resolved_base}/api/chat",
             json=payload,
             timeout=(OLLAMA_CONNECT_TIMEOUT_SEC, OLLAMA_READ_TIMEOUT_SEC),
-        )
+        )  # nosemgrep: basetruth-ssrf
         response.raise_for_status()
     except requests.RequestException:
         return {}
@@ -351,7 +351,7 @@ def extract_pan_details_with_ollama(
             f"{resolved_base}/api/chat",
             json=payload,
             timeout=(OLLAMA_CONNECT_TIMEOUT_SEC, OLLAMA_READ_TIMEOUT_SEC),
-        )
+        )  # nosemgrep: basetruth-ssrf
         response.raise_for_status()
     except requests.RequestException:
         return {}

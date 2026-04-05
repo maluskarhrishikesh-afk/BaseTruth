@@ -178,7 +178,7 @@ except Exception:  # noqa: BLE001
 @st.cache_data(ttl=30, show_spinner=False)
 def _db_available_cached() -> bool:
     """Cached wrapper around db_available() — 30-second TTL."""
-    return db_available()
+    return db_available()  # nosemgrep: basetruth-direct-db-available
 
 
 @st.cache_data(ttl=30, show_spinner=False)
@@ -356,7 +356,7 @@ until you change them — you will never need to re-enter the same details.
         extra_identity: Optional[dict] = None
 
         if link_mode == "Search existing person":
-            if _DB_IMPORTS_OK and db_available():
+            if _DB_IMPORTS_OK and _db_available_cached():
                 # Pre-fill search box with the active entity ref if one is set
                 default_search = _active_ref or ""
                 search_q = st.text_input(
@@ -466,7 +466,7 @@ def clear_active_entity() -> None:
 
 def _render_index_metrics() -> None:
     """Render the slim top-of-page stats bar — uses DB when available."""
-    if _DB_IMPORTS_OK and db_available():
+    if _DB_IMPORTS_OK and _db_available_cached():
         stats = db_stats()
         cols = st.columns(4)
         cols[0].metric(

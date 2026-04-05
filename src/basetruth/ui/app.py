@@ -47,7 +47,7 @@ except Exception:  # noqa: BLE001
 @st.cache_data(ttl=30, show_spinner=False)
 def _db_available_cached() -> bool:
     """Cached db_available() — avoids a live SELECT 1 on every sidebar render."""
-    return db_available()
+    return db_available()  # nosemgrep: basetruth-direct-db-available
 
 try:
     from basetruth.logger import log_path as _log_path
@@ -1052,7 +1052,7 @@ Use **Scan** (single file) or **Bulk Scan** (entire loan folder) to add new docu
 """
         )
 
-    if _DB_IMPORTS_OK and db_available():
+    if _DB_IMPORTS_OK and _db_available_cached():
         # ── Live DB stats ────────────────────────────────────────────────
         stats = db_dashboard_stats()
         if not stats:
@@ -1216,7 +1216,7 @@ their documents grouped under one profile in the Records screen.
         extra_identity: dict | None = None
 
         if link_mode == "Search existing person":
-            if _DB_IMPORTS_OK and db_available():
+            if _DB_IMPORTS_OK and _db_available_cached():
                 search_q = st.text_input(
                     "Search by name / PAN / Aadhaar / email / phone / BT-ref",
                     key=f"{key_prefix}_entity_search",
@@ -1407,7 +1407,7 @@ def _page_scan(service: BaseTruthService) -> None:
             # DB save confirmation
             if report.get("_entity_ref"):
                 st.success(f"Saved to database — Entity: **{report['_entity_ref']}**")
-            elif _DB_IMPORTS_OK and db_available():
+            elif _DB_IMPORTS_OK and _db_available_cached():
                 st.warning(
                     "Database is connected but the scan could not be persisted. "
                     "Check the logs for details."
@@ -2085,7 +2085,7 @@ scanned for them with individual download buttons.
 """
         )
 
-    if _DB_IMPORTS_OK and db_available():
+    if _DB_IMPORTS_OK and _db_available_cached():
         # ── DB-driven: one section per entity ─────────────────────────────
         entities = get_all_entities_with_scans()
         if not entities:
@@ -2830,7 +2830,7 @@ This screen gives you direct visibility into what is stored in the system.
 
     # ── PostgreSQL tab ───────────────────────────────────────────────────────
     with pg_tab:
-        if not _DB_IMPORTS_OK or not db_available():
+        if not _DB_IMPORTS_OK or not _db_available_cached():
             st.warning(
                 "PostgreSQL is not available.  Start the `db` Docker service and ensure "
                 "`DATABASE_URL` is set correctly."
@@ -2979,7 +2979,7 @@ Records shows every **applicant (entity)** in the database and all the documents
 """
         )
 
-    if not _DB_IMPORTS_OK or not db_available():
+    if not _DB_IMPORTS_OK or not _db_available_cached():
         st.warning(
             "PostgreSQL is not available. Connect the database to use the Records feature.\n\n"
             "Ensure `DATABASE_URL` is set and the `db` Docker service is healthy."
@@ -3157,7 +3157,7 @@ Records shows every **applicant (entity)** in the database and all the documents
         st.caption("No PDF report available yet for this entity.")
 
     # ---- Identity Checks history -------------------------------------------
-    if _DB_IMPORTS_OK and db_available():
+    if _DB_IMPORTS_OK and _db_available_cached():
         id_checks = get_entity_identity_checks(selected_ref)
         if id_checks:
             st.divider()
@@ -3257,7 +3257,7 @@ Records shows every **applicant (entity)** in the database and all the documents
 
 def _render_index_metrics() -> None:
     """Render the slim top-of-page stats bar — uses DB when available."""
-    if _DB_IMPORTS_OK and db_available():
+    if _DB_IMPORTS_OK and _db_available_cached():
         stats = db_stats()
         cols = st.columns(4)
         cols[0].metric("Entities in DB", stats.get("entities", 0),
@@ -3905,7 +3905,7 @@ def _page_identity_verification() -> None:
     # Also allow linking to an existing entity via search
     forced_ref: str | None = None
     extra_identity: dict | None = None
-    if _DB_IMPORTS_OK and db_available():
+    if _DB_IMPORTS_OK and _db_available_cached():
         with st.expander("🔗 Link to an existing entity record (optional)", expanded=False):
             search_q = st.text_input(
                 "Search by name / PAN / Aadhaar / email / BT-ref",
@@ -3986,7 +3986,7 @@ def _page_identity_verification() -> None:
                 )
 
                 # --- Persist to DB ---
-                if _DB_IMPORTS_OK and db_available():
+                if _DB_IMPORTS_OK and _db_available_cached():
                     db_payload = {
                         k: v for k, v in face_result.items()
                         if k not in ("doc_annotated_rgb", "selfie_annotated_rgb")
@@ -4041,7 +4041,7 @@ def _page_identity_verification() -> None:
                     st.warning("Database is offline — result not persisted. Connect PostgreSQL to save results.")
 
                 # Previous checks for the resolved entity
-                if selected_entity_ref and _DB_IMPORTS_OK and db_available():
+                if selected_entity_ref and _DB_IMPORTS_OK and _db_available_cached():
                     st.divider()
                     st.subheader(f"Previous Identity Checks for {selected_entity_ref}")
                     checks = get_entity_identity_checks(selected_entity_ref)
@@ -4080,7 +4080,7 @@ def _page_video_kyc() -> None:
     # 0) Entity selector
     forced_ref = None
     extra_identity = None
-    if _DB_IMPORTS_OK and db_available():
+    if _DB_IMPORTS_OK and _db_available_cached():
         forced_ref, extra_identity = _render_entity_link_widget("vkyc", mandatory=True)
         st.divider()
 
@@ -4224,7 +4224,7 @@ def _page_video_kyc() -> None:
                 st.caption(f"Cosine similarity: {sim:.4f}")
 
             # -- Persist Video KYC to DB + Generate PDF -------------------------
-            if _DB_IMPORTS_OK and db_available():
+            if _DB_IMPORTS_OK and _db_available_cached():
                 vkyc_result = {
                     "is_match": bool(is_match),
                     "confidence": float(sim),

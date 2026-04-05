@@ -11,7 +11,7 @@ from basetruth.ui.components import (
     _badge,
     _display_truth_score,
     _page_title,
-    db_available,
+    _db_available_cached,
     db_dashboard_stats,
     search_entities,
 )
@@ -34,7 +34,7 @@ Use **Scan** (single file) or **Bulk Scan** (entire loan folder) to add new docu
 """
         )
 
-    if _DB_IMPORTS_OK and db_available():
+    if _DB_IMPORTS_OK and _db_available_cached():
         stats = db_dashboard_stats()
         if not stats:
             st.warning("Could not load dashboard statistics from the database.")

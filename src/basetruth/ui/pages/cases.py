@@ -11,7 +11,7 @@ from basetruth.ui.components import (
     _DISPOSITION_ICONS,
     _badge,
     _page_title,
-    db_available,
+    _db_available_cached,
     list_cases_from_db,
 )
 
@@ -247,7 +247,7 @@ Falling back to local files when the database is offline.
 """
         )
 
-    use_db = _DB_IMPORTS_OK and db_available()
+    use_db = _DB_IMPORTS_OK and _db_available_cached()
     if use_db:
         cases = list(list_cases_from_db())
     else:

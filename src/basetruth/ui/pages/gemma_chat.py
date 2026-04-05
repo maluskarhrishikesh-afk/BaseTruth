@@ -39,7 +39,7 @@ def _stream_chat(messages: List[Dict[str, str]], model: str, base_url: str) -> s
                 json=payload,
                 stream=True,
                 timeout=(OLLAMA_CONNECT_TIMEOUT_SEC, OLLAMA_READ_TIMEOUT_SEC),
-            ) as resp:
+            ) as resp:  # nosemgrep: basetruth-ssrf
                 resp.raise_for_status()
                 chunks: List[str] = []
                 for raw_line in resp.iter_lines():

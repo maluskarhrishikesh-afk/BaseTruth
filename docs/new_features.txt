@@ -1,15 +1,544 @@
+Run semgrep scan --config .semgrep.yml --error
+               
+               
+┌─────────────┐
+│ Scan Status │
+└─────────────┘
+  Scanning 115 files tracked by git with 16 Code rules:
+  Scanning 83 files with 16 python rules.
+                    
+                    
+┌──────────────────┐
+│ 69 Code Findings │
+└──────────────────┘
+                                        
+    src/basetruth/integrations/ollama.py
+    ❯❱ basetruth-ssrf
+          ❰❰ Blocking ❱❱
+          Potential SSRF. Ensure f"{base_url}/api/tags" is heavily validated or allowlisted before making
+          requests.                                                                                      
+                                                                                                         
+          111┆ response = requests.get(
+          112┆     f"{base_url}/api/tags",
+          113┆     timeout=OLLAMA_CONNECT_TIMEOUT_SEC,
+          114┆ )
+            ⋮┆----------------------------------------
+    ❯❱ basetruth-ssrf
+          ❰❰ Blocking ❱❱
+          Potential SSRF. Ensure f"{resolved_base}/api/chat" is heavily validated or allowlisted before making
+          requests.                                                                                           
+                                                                                                              
+          294┆ response = requests.post(
+          295┆     f"{resolved_base}/api/chat",
+          296┆     json=payload,
+          297┆     timeout=(OLLAMA_CONNECT_TIMEOUT_SEC, OLLAMA_READ_TIMEOUT_SEC),
+          298┆ )
+            ⋮┆----------------------------------------
+          350┆ response = requests.post(
+          351┆     f"{resolved_base}/api/chat",
+          352┆     json=payload,
+          353┆     timeout=(OLLAMA_CONNECT_TIMEOUT_SEC, OLLAMA_READ_TIMEOUT_SEC),
+          354┆ )
+                           
+    src/basetruth/ui/app.py
+    ❯❱ basetruth-direct-db-available
+          ❰❰ Blocking ❱❱
+          Calling db_available() directly in a Streamlit render path freezes the UI on every re-render. Use
+          _db_available_cached() (30-second TTL) instead.                                                  
+                                                                                                           
+           50┆ return db_available()
+   
+    ❯❱ basetruth-streamlit-xss
+          ❰❰ Blocking ❱❱
+          Using unsafe_allow_html=True in Streamlit can introduce Cross-Site Scripting (XSS)  if the markdown
+          string contains unsanitized user input. Avoid if possible.                                         
+                                                                                                             
+          954┆ st.markdown(
+          955┆     """
+          956┆     <div class="bt-brand">
+          957┆       <div class="bt-brand-icon">🛡</div>
+          958┆       <div class="bt-brand-name">BaseTruth</div>
+          959┆       <div class="bt-brand-sub">Document Integrity</div>
+          960┆     </div>
+          961┆     """,
+          962┆     unsafe_allow_html=True,
+          963┆ )
+            ⋮┆----------------------------------------
+          980┆ st.markdown(
+          981┆     f'<div style="font-size:11px;color:#475569;text-align:center;">'
+          982┆     f'{_dot} {_label}</div>',
+          983┆     unsafe_allow_html=True,
+          984┆ )
+            ⋮┆----------------------------------------
+          1002┆ st.markdown(_score_card(score, risk_level), unsafe_allow_html=True)
+   
+    ❯❱ basetruth-direct-db-available
+          ❰❰ Blocking ❱❱
+          Calling db_available() directly in a Streamlit render path freezes the UI on every re-render. Use
+          _db_available_cached() (30-second TTL) instead.                                                  
+                                                                                                           
+          1055┆ if _DB_IMPORTS_OK and db_available():
+            ⋮┆----------------------------------------
+          1219┆ if _DB_IMPORTS_OK and db_available():
+            ⋮┆----------------------------------------
+          1410┆ elif _DB_IMPORTS_OK and db_available():
+   
+    ❯❱ basetruth-streamlit-xss
+          ❰❰ Blocking ❱❱
+          Using unsafe_allow_html=True in Streamlit can introduce Cross-Site Scripting (XSS)  if the markdown
+          string contains unsanitized user input. Avoid if possible.                                         
+                                                                                                             
+          1801┆ st.markdown(
+          1802┆     f'<div class="bt-pdf-banner">'
+          1803┆     f'<span style="font-size:1.5rem;">📄</span>'
+          1804┆     f'<div><div style="font-weight:700;font-size:0.95rem;color:var(--text-
+               color,#1e293b);">'                                                         
+          1805┆     f'Case Report PDF generated automatically</div>'
+          1806┆     f'<div style="font-size:0.8rem;color:#94a3b8;margin-top:2px;">'
+          1807┆     f'Saved to: {_pdf_path_saved or "artifacts/case_reports/"}</div></div>'
+          1808┆     f'</div>',
+          1809┆     unsafe_allow_html=True,
+          1810┆ )
+   
+    ❯❱ basetruth-direct-db-available
+          ❰❰ Blocking ❱❱
+          Calling db_available() directly in a Streamlit render path freezes the UI on every re-render. Use
+          _db_available_cached() (30-second TTL) instead.                                                  
+                                                                                                           
+          1851┆ use_db = _DB_IMPORTS_OK and db_available()
+   
+    ❯❱ basetruth-streamlit-xss
+          ❰❰ Blocking ❱❱
+          Using unsafe_allow_html=True in Streamlit can introduce Cross-Site Scripting (XSS)  if the markdown
+          string contains unsanitized user input. Avoid if possible.                                         
+                                                                                                             
+          1972┆ st.markdown(
+          1973┆     f'<div style="font-size:1rem;font-weight:700;color:{verdict_color};margin-
+               bottom:8px;">'                                                                 
+          1974┆     f'{verdict_label}</div>',
+          1975┆     unsafe_allow_html=True,
+          1976┆ )
+            ⋮┆----------------------------------------
+          1979┆ st.markdown(
+          1980┆     f"**Risk:** {_badge(risk)}  &nbsp;&nbsp;  "
+          1981┆     f"**Priority:** {case.get('priority', 'normal').title()}  &nbsp;&nbsp;  "
+          1982┆     f"**Assignee:** {case.get('assignee') or '—'}",
+          1983┆     unsafe_allow_html=True,
+          1984┆ )
+            ⋮┆----------------------------------------
+          1994┆ st.markdown(
+          1995┆     f"&nbsp;&nbsp;{_badge(dlvl)} {src}  —  Score: **{dscore if isinstance(dscore, int)
+               else '—'}**",                                                                          
+          1996┆     unsafe_allow_html=True,
+          1997┆ )
+            ⋮┆----------------------------------------
+          2059┆ st.markdown(
+          2060┆     f'<div style="background:var(--bt-note-bg);border-left:3px solid var(--bt-note-
+               accent);'                                                                           
+          2061┆     f'padding:8px 12px;border-radius:0 8px 8px 0;margin-bottom:8px;">'
+          2062┆     f'<span style="font-size:11px;color:var(--bt-text-muted);">{ts} · {author}</span><br>'
+          2063┆     f'{note.get("text", "")}</div>',
+          2064┆     unsafe_allow_html=True,
+          2065┆ )
+   
+    ❯❱ basetruth-direct-db-available
+          ❰❰ Blocking ❱❱
+          Calling db_available() directly in a Streamlit render path freezes the UI on every re-render. Use
+          _db_available_cached() (30-second TTL) instead.                                                  
+                                                                                                           
+          2088┆ if _DB_IMPORTS_OK and db_available():
+   
+    ❯❱ basetruth-streamlit-xss
+          ❰❰ Blocking ❱❱
+          Using unsafe_allow_html=True in Streamlit can introduce Cross-Site Scripting (XSS)  if the markdown
+          string contains unsanitized user input. Avoid if possible.                                         
+                                                                                                             
+          2486┆ st.markdown(
+          2487┆     """
+          2488┆     <style>
+          2489┆     .log-header { display:flex; align-items:center; gap:12px; margin-bottom:8px; }
+          2490┆     .log-header h1 { margin:0; font-size:1.8rem; font-weight:700; }
+          2491┆     .metric-row { display:flex; gap:14px; margin:16px 0 20px 0; }
+          2492┆     .metric-card {
+          2493┆         flex:1; padding:18px 20px; border-radius:14px;
+          2494┆         display:flex; flex-direction:column; gap:4px;
+          2495┆         box-shadow: 0 2px 12px rgba(0,0,0,.08);
+             [hid 32 additional lines, adjust with --max-lines-per-finding] 
+          2587┆ st.markdown(
+          2588┆     f"""
+          2589┆     <div class="metric-row">
+          2590┆       <div class="metric-card mc-total">
+          2591┆         <span class="mc-value">{_n_total:,}</span>
+          2592┆         <span class="mc-label">Total Entries</span>
+          2593┆       </div>
+          2594┆       <div class="metric-card mc-error">
+          2595┆         <span class="mc-value">{_n_err:,}</span>
+          2596┆         <span class="mc-label">Errors</span>
+             [hid 13 additional lines, adjust with --max-lines-per-finding] 
+          2653┆ st.markdown(f'<div style="margin:8px 0 16px 0;">{_chips_html}</div>',
+               unsafe_allow_html=True)                                               
+            ⋮┆----------------------------------------
+          2744┆ st.markdown(_tail_html, unsafe_allow_html=True)
+   
+    ❯❱ basetruth-direct-db-available
+          ❰❰ Blocking ❱❱
+          Calling db_available() directly in a Streamlit render path freezes the UI on every re-render. Use
+          _db_available_cached() (30-second TTL) instead.                                                  
+                                                                                                           
+          2833┆ if not _DB_IMPORTS_OK or not db_available():
+            ⋮┆----------------------------------------
+          2982┆ if not _DB_IMPORTS_OK or not db_available():
+   
+    ❯❱ basetruth-streamlit-xss
+          ❰❰ Blocking ❱❱
+          Using unsafe_allow_html=True in Streamlit can introduce Cross-Site Scripting (XSS)  if the markdown
+          string contains unsanitized user input. Avoid if possible.                                         
+                                                                                                             
+          3081┆ st.markdown(
+          3082┆     f"""
+          3083┆     <div class="bt-entity-card" style="
+          3084┆       background:var(--secondary-background-color,#ffffff);
+          3085┆       border:1px solid rgba(99,102,241,0.20);
+          3086┆       border-left:4px solid #6366f1;
+          3087┆       box-shadow:0 2px 12px rgba(99,102,241,0.08);">
+          3088┆       <div style="display:flex;align-items:center;gap:14px;margin-bottom:16px;flex-
+               wrap:wrap;">                                                                        
+          3089┆         <div style="width:44px;height:44px;border-radius:12px;
+          3090┆           background:linear-gradient(135deg,#6366f1,#8b5cf6);
+             [hid 52 additional lines, adjust with --max-lines-per-finding] 
+   
+    ❯❱ basetruth-direct-db-available
+          ❰❰ Blocking ❱❱
+          Calling db_available() directly in a Streamlit render path freezes the UI on every re-render. Use
+          _db_available_cached() (30-second TTL) instead.                                                  
+                                                                                                           
+          3160┆ if _DB_IMPORTS_OK and db_available():
+            ⋮┆----------------------------------------
+          3260┆ if _DB_IMPORTS_OK and db_available():
+   
+    ❯❱ basetruth-streamlit-xss
+          ❰❰ Blocking ❱❱
+          Using unsafe_allow_html=True in Streamlit can introduce Cross-Site Scripting (XSS)  if the markdown
+          string contains unsanitized user input. Avoid if possible.                                         
+                                                                                                             
+          3607┆ st.markdown(layer_html, unsafe_allow_html=True)
+            ⋮┆----------------------------------------
+          3618┆ st.markdown(
+          3619┆     f'<div style="margin-top:12px;padding:14px 20px;border-radius:12px;'
+          3620┆     f'background:{risk_color}1a;border:1px solid {risk_color}44;">'
+          3621┆     f'<strong style="font-size:.9rem;color:{risk_color};">Overall PAN Fraud Score: '
+          3622┆     f'<span style="font-size:1.2rem;">{overall}/100</span> — {risk_label}</strong>'
+          3623┆     f"</div>",
+          3624┆     unsafe_allow_html=True,
+          3625┆ )
+   
+    ❯❱ basetruth-direct-db-available
+          ❰❰ Blocking ❱❱
+          Calling db_available() directly in a Streamlit render path freezes the UI on every re-render. Use
+          _db_available_cached() (30-second TTL) instead.                                                  
+                                                                                                           
+          3908┆ if _DB_IMPORTS_OK and db_available():
+            ⋮┆----------------------------------------
+          3989┆ if _DB_IMPORTS_OK and db_available():
+            ⋮┆----------------------------------------
+          4044┆ if selected_entity_ref and _DB_IMPORTS_OK and db_available():
+            ⋮┆----------------------------------------
+          4083┆ if _DB_IMPORTS_OK and db_available():
+            ⋮┆----------------------------------------
+          4227┆ if _DB_IMPORTS_OK and db_available():
+   
+    ❯❱ basetruth-streamlit-xss
+          ❰❰ Blocking ❱❱
+          Using unsafe_allow_html=True in Streamlit can introduce Cross-Site Scripting (XSS)  if the markdown
+          string contains unsanitized user input. Avoid if possible.                                         
+                                                                                                             
+          4286┆ st.markdown(_CSS, unsafe_allow_html=True)
+                                  
+    src/basetruth/ui/components.py
+    ❯❱ basetruth-direct-db-available
+          ❰❰ Blocking ❱❱
+          Calling db_available() directly in a Streamlit render path freezes the UI on every re-render. Use
+          _db_available_cached() (30-second TTL) instead.                                                  
+                                                                                                           
+          181┆ return db_available()
+   
+    ❯❱ basetruth-streamlit-xss
+          ❰❰ Blocking ❱❱
+          Using unsafe_allow_html=True in Streamlit can introduce Cross-Site Scripting (XSS)  if the markdown
+          string contains unsanitized user input. Avoid if possible.                                         
+                                                                                                             
+          259┆ st.markdown(_score_card(score, risk_level), unsafe_allow_html=True)
+   
+    ❯❱ basetruth-direct-db-available
+          ❰❰ Blocking ❱❱
+          Calling db_available() directly in a Streamlit render path freezes the UI on every re-render. Use
+          _db_available_cached() (30-second TTL) instead.                                                  
+                                                                                                           
+          359┆ if _DB_IMPORTS_OK and db_available():
+            ⋮┆----------------------------------------
+          469┆ if _DB_IMPORTS_OK and db_available():
+                                  
+    src/basetruth/ui/pages/bulk.py
+    ❯❱ basetruth-streamlit-xss
+          ❰❰ Blocking ❱❱
+          Using unsafe_allow_html=True in Streamlit can introduce Cross-Site Scripting (XSS)  if the markdown
+          string contains unsanitized user input. Avoid if possible.                                         
+                                                                                                             
+           34┆ st.markdown(_page_title("📦", "Bulk Scan"), unsafe_allow_html=True)
+            ⋮┆----------------------------------------
+          489┆ st.markdown(
+          490┆     f'<div class="bt-pdf-banner">'
+          491┆     f'<span style="font-size:1.5rem;">📄</span>'
+          492┆     f'<div><div style="font-weight:700;font-size:0.95rem;color:var(--text-
+               color,#1e293b);">'                                                        
+          493┆     f"Case Report PDF generated automatically</div>"
+          494┆     f'<div style="font-size:0.8rem;color:#94a3b8;margin-top:2px;">'
+          495┆     f"Saved to: {_pdf_path_saved or 'artifacts/case_reports/'}</div></div>"
+          496┆     f"</div>",
+          497┆     unsafe_allow_html=True,
+          498┆ )
+                                   
+    src/basetruth/ui/pages/cases.py
+    ❯❱ basetruth-streamlit-xss
+          ❰❰ Blocking ❱❱
+          Using unsafe_allow_html=True in Streamlit can introduce Cross-Site Scripting (XSS)  if the markdown
+          string contains unsanitized user input. Avoid if possible.                                         
+                                                                                                             
+           88┆ st.markdown(
+           89┆     f'<div style="font-size:1rem;font-weight:700;color:{verdict_color};'
+           90┆     f'margin-bottom:8px;">{verdict_label}</div>',
+           91┆     unsafe_allow_html=True,
+           92┆ )
+            ⋮┆----------------------------------------
+           94┆ st.markdown(
+           95┆     f"**Risk:** {_badge(risk)}  &nbsp;&nbsp;  "
+           96┆     f"**Priority:** {case.get('priority', 'normal').title()}  &nbsp;&nbsp;  "
+           97┆     f"**Assignee:** {case.get('assignee') or '—'}",
+           98┆     unsafe_allow_html=True,
+           99┆ )
+            ⋮┆----------------------------------------
+          108┆ st.markdown(
+          109┆     f"&nbsp;&nbsp;{_badge(dlvl)} {src}  —  "
+          110┆     f"Score: **{dscore if isinstance(dscore, int) else '—'}**",
+          111┆     unsafe_allow_html=True,
+          112┆ )
+            ⋮┆----------------------------------------
+          221┆ st.markdown(
+          222┆     f'<div style="background:var(--bt-note-bg);border-left:3px solid '
+          223┆     f'var(--bt-note-accent);padding:8px 12px;border-radius:0 8px 8px 0;'
+          224┆     f'margin-bottom:8px;">'
+          225┆     f'<span style="font-size:11px;color:var(--bt-text-muted);">'
+          226┆     f"{ts} · {author}</span><br>"
+          227┆     f'{note.get("text", "")}</div>',
+          228┆     unsafe_allow_html=True,
+          229┆ )
+            ⋮┆----------------------------------------
+          233┆ st.markdown(_page_title("📁", "Cases"), unsafe_allow_html=True)
+   
+    ❯❱ basetruth-direct-db-available
+          ❰❰ Blocking ❱❱
+          Calling db_available() directly in a Streamlit render path freezes the UI on every re-render. Use
+          _db_available_cached() (30-second TTL) instead.                                                  
+                                                                                                           
+          250┆ use_db = _DB_IMPORTS_OK and db_available()
+                                       
+    src/basetruth/ui/pages/dashboard.py
+    ❯❱ basetruth-streamlit-xss
+          ❰❰ Blocking ❱❱
+          Using unsafe_allow_html=True in Streamlit can introduce Cross-Site Scripting (XSS)  if the markdown
+          string contains unsanitized user input. Avoid if possible.                                         
+                                                                                                             
+           21┆ st.markdown(_page_title("🏠", "Dashboard"), unsafe_allow_html=True)
+   
+    ❯❱ basetruth-direct-db-available
+          ❰❰ Blocking ❱❱
+          Calling db_available() directly in a Streamlit render path freezes the UI on every re-render. Use
+          _db_available_cached() (30-second TTL) instead.                                                  
+                                                                                                           
+           37┆ if _DB_IMPORTS_OK and db_available():
+                                      
+    src/basetruth/ui/pages/database.py
+    ❯❱ basetruth-streamlit-xss
+          ❰❰ Blocking ❱❱
+          Using unsafe_allow_html=True in Streamlit can introduce Cross-Site Scripting (XSS)  if the markdown
+          string contains unsanitized user input. Avoid if possible.                                         
+                                                                                                             
+          128┆ st.markdown(_page_title("🗄️", "Database Viewer"), unsafe_allow_html=True)
+                                         
+    src/basetruth/ui/pages/datasources.py
+    ❯❱ basetruth-streamlit-xss
+          ❰❰ Blocking ❱❱
+          Using unsafe_allow_html=True in Streamlit can introduce Cross-Site Scripting (XSS)  if the markdown
+          string contains unsanitized user input. Avoid if possible.                                         
+                                                                                                             
+           71┆ st.markdown(_page_title("🔗", "Datasources"), unsafe_allow_html=True)
+                                        
+    src/basetruth/ui/pages/gemma_chat.py
+    ❯❱ basetruth-ssrf
+          ❰❰ Blocking ❱❱
+          Potential SSRF. Ensure chat_endpoint is heavily validated or allowlisted before making requests.
+                                                                                                          
+           37┆ with requests.post(
+           38┆     chat_endpoint,
+           39┆     json=payload,
+           40┆     stream=True,
+           41┆     timeout=(OLLAMA_CONNECT_TIMEOUT_SEC, OLLAMA_READ_TIMEOUT_SEC),
+           42┆ ) as resp:
+   
+    ❯❱ basetruth-streamlit-xss
+          ❰❰ Blocking ❱❱
+          Using unsafe_allow_html=True in Streamlit can introduce Cross-Site Scripting (XSS)  if the markdown
+          string contains unsanitized user input. Avoid if possible.                                         
+                                                                                                             
+           75┆ st.markdown(_page_title("🤖", "Gemma4 Chat"), unsafe_allow_html=True)
+                                      
+    src/basetruth/ui/pages/identity.py
+    ❯❱ basetruth-streamlit-xss
+          ❰❰ Blocking ❱❱
+          Using unsafe_allow_html=True in Streamlit can introduce Cross-Site Scripting (XSS)  if the markdown
+          string contains unsanitized user input. Avoid if possible.                                         
+                                                                                                             
+          555┆ st.markdown(_page_title("🧑‍💻", "Identity Verification"), unsafe_allow_html=True)
+            ⋮┆----------------------------------------
+          699┆ st.markdown(
+          700┆     """
+          701┆     <div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;
+          702┆                 padding:0.6rem 0.9rem;font-size:0.85rem;margin-bottom:0.75rem;">
+          703┆     📸 <strong>Tips for best results:</strong>
+          704┆     Place the document on a flat surface in good light.
+          705┆     Hold the camera directly above — avoid tilting.
+          706┆     For Aadhaar, ensure the entire QR code is visible and in focus.
+          707┆     For PAN card, make sure all text is sharp and not in shadow.
+          708┆     </div>
+             [hid 3 additional lines, adjust with --max-lines-per-finding] 
+                                              
+    src/basetruth/ui/pages/layered_analysis.py
+    ❯❱ basetruth-streamlit-xss
+          ❰❰ Blocking ❱❱
+          Using unsafe_allow_html=True in Streamlit can introduce Cross-Site Scripting (XSS)  if the markdown
+          string contains unsanitized user input. Avoid if possible.                                         
+                                                                                                             
+          134┆ st.markdown(_verdict_badge((pan.get("pan_format") or {}).get("passed") and "PASS" or
+               "INFO"), unsafe_allow_html=True)                                                    
+            ⋮┆----------------------------------------
+          166┆ st.markdown(_verdict_badge(verification.get("verdict", "UNKNOWN")), unsafe_allow_html=True)
+            ⋮┆----------------------------------------
+          195┆ st.markdown(_verdict_badge(details.get("verdict", "UNKNOWN")), unsafe_allow_html=True)
+            ⋮┆----------------------------------------
+          230┆ st.markdown(_verdict_badge(details.get("risk_level", details.get("verdict", "UNKNOWN"))),
+               unsafe_allow_html=True)                                                                  
+            ⋮┆----------------------------------------
+          263┆ st.markdown(_page_title("🧾", "Layered Analysis"), unsafe_allow_html=True)
+                                  
+    src/basetruth/ui/pages/logs.py
+    ❯❱ basetruth-streamlit-xss
+          ❰❰ Blocking ❱❱
+          Using unsafe_allow_html=True in Streamlit can introduce Cross-Site Scripting (XSS)  if the markdown
+          string contains unsanitized user input. Avoid if possible.                                         
+                                                                                                             
+           15┆ st.markdown(
+           16┆     """
+           17┆     <style>
+           18┆     .log-header { display:flex; align-items:center; gap:12px; margin-bottom:8px; }
+           19┆     .log-header h1 { margin:0; font-size:1.8rem; font-weight:700; }
+           20┆     .metric-row { display:flex; gap:14px; margin:16px 0 20px 0; }
+           21┆     .metric-card {
+           22┆         flex:1; padding:18px 20px; border-radius:14px;
+           23┆         display:flex; flex-direction:column; gap:4px;
+           24┆         box-shadow: 0 2px 12px rgba(0,0,0,.08);
+             [hid 32 additional lines, adjust with --max-lines-per-finding] 
+          121┆ st.markdown(
+          122┆     f"""
+          123┆     <div class="metric-row">
+          124┆       <div class="metric-card mc-total">
+          125┆         <span class="mc-value">{_n_total:,}</span>
+          126┆         <span class="mc-label">Total Entries</span>
+          127┆       </div>
+          128┆       <div class="metric-card mc-error">
+          129┆         <span class="mc-value">{_n_err:,}</span>
+          130┆         <span class="mc-label">Errors</span>
+             [hid 13 additional lines, adjust with --max-lines-per-finding] 
+          199┆ st.markdown(
+          200┆     f'<div style="margin:8px 0 16px 0;">{_chips_html}</div>',
+          201┆     unsafe_allow_html=True,
+          202┆ )
+            ⋮┆----------------------------------------
+          310┆ st.markdown(_tail_html, unsafe_allow_html=True)
+                                     
+    src/basetruth/ui/pages/records.py
+    ❯❱ basetruth-streamlit-xss
+          ❰❰ Blocking ❱❱
+          Using unsafe_allow_html=True in Streamlit can introduce Cross-Site Scripting (XSS)  if the markdown
+          string contains unsanitized user input. Avoid if possible.                                         
+                                                                                                             
+           24┆ st.markdown(_page_title("🗂️", "Records"), unsafe_allow_html=True)
+   
+    ❯❱ basetruth-direct-db-available
+          ❰❰ Blocking ❱❱
+          Calling db_available() directly in a Streamlit render path freezes the UI on every re-render. Use
+          _db_available_cached() (30-second TTL) instead.                                                  
+                                                                                                           
+           42┆ if not _DB_IMPORTS_OK or not db_available():
+   
+    ❯❱ basetruth-streamlit-xss
+          ❰❰ Blocking ❱❱
+          Using unsafe_allow_html=True in Streamlit can introduce Cross-Site Scripting (XSS)  if the markdown
+          string contains unsanitized user input. Avoid if possible.                                         
+                                                                                                             
+          148┆ st.markdown(
+          149┆     f"""
+          150┆     <div class="bt-entity-card" style="
+          151┆       background:var(--secondary-background-color,#ffffff);
+          152┆       border:1px solid rgba(99,102,241,0.20);
+          153┆       border-left:4px solid #6366f1;
+          154┆       box-shadow:0 2px 12px rgba(99,102,241,0.08);">
+          155┆       <div style="display:flex;align-items:center;gap:14px;margin-bottom:16px;flex-
+               wrap:wrap;">                                                                       
+          156┆         <div style="width:44px;height:44px;border-radius:12px;
+          157┆           background:linear-gradient(135deg,#6366f1,#8b5cf6);
+             [hid 50 additional lines, adjust with --max-lines-per-finding] 
+                                     
+    src/basetruth/ui/pages/reports.py
+    ❯❱ basetruth-streamlit-xss
+          ❰❰ Blocking ❱❱
+          Using unsafe_allow_html=True in Streamlit can introduce Cross-Site Scripting (XSS)  if the markdown
+          string contains unsanitized user input. Avoid if possible.                                         
+                                                                                                             
+           42┆ st.markdown(_page_title("📊", "Reports"), unsafe_allow_html=True)
+                                  
+    src/basetruth/ui/pages/scan.py
+    ❯❱ basetruth-streamlit-xss
+          ❰❰ Blocking ❱❱
+          Using unsafe_allow_html=True in Streamlit can introduce Cross-Site Scripting (XSS)  if the markdown
+          string contains unsanitized user input. Avoid if possible.                                         
+                                                                                                             
+           33┆ st.markdown(_page_title("🔍", "Scan Document"), unsafe_allow_html=True)
+                                      
+    src/basetruth/ui/pages/settings.py
+    ❯❱ basetruth-streamlit-xss
+          ❰❰ Blocking ❱❱
+          Using unsafe_allow_html=True in Streamlit can introduce Cross-Site Scripting (XSS)  if the markdown
+          string contains unsanitized user input. Avoid if possible.                                         
+                                                                                                             
+           12┆ st.markdown(_page_title("⚙️", "Settings"), unsafe_allow_html=True)
 
----------------------------------------------------------------------------------------------
-
- In "Identity Verification" screen when I capture Aadhar photo via "Capture with Camera",
- thr QR code does not get scanned.
-
- Can we use gemmma4 in this case? If normal QR code scan fails, then make use of gemma4 to do the job.
-
----------------------------------------------------------------------------------------------
-
-In "Reports" screen, when I click on "Download All Source Documents (ZIP)", the PAN card image was not 
-there. PAN card also did not get saved in MinIO.
+                
+                
+┌──────────────┐
+│ Scan Summary │
+└──────────────┘
+✅ Scan completed successfully.
+ • Findings: 69 (69 blocking)
+ • Rules run: 16
+ • Targets scanned: 83
+ • Parsed lines: ~100.0%
+ • Scan skipped: 
+   ◦ Files larger than  files 1.0 MB: 2
+   ◦ Files matching .semgrepignore patterns: 13
+ • Scan was limited to files tracked by git
+ • For a detailed list of skipped files and lines, run semgrep with the --verbose flag
+Ran 16 rules on 83 files: 69 findings.
+Error: Process completed with exit code 1.
 
 ---------------------------------------------------------------------------------------------
 

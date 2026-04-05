@@ -11,7 +11,7 @@ from basetruth.ui.components import (
     _badge,
     _page_title,
     _render_report_summary,
-    db_available,
+    _db_available_cached,
     get_entity_identity_checks,
     get_entity_latest_pdf,
     get_entity_scans,
@@ -39,7 +39,7 @@ Records shows every **applicant (entity)** in the database and all the documents
 """
         )
 
-    if not _DB_IMPORTS_OK or not db_available():
+    if not _DB_IMPORTS_OK or not _db_available_cached():
         st.warning(
             "PostgreSQL is not available. Connect the database to use the Records feature.\n\n"
             "Ensure `DATABASE_URL` is set and the `db` Docker service is healthy."
