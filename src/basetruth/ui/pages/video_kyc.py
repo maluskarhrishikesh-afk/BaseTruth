@@ -31,9 +31,9 @@ import streamlit as st
 
 from basetruth.ui.components import (
     _DB_IMPORTS_OK,
+    _db_available_cached,
     _page_title,
     _render_entity_link_widget,
-    db_available,
     save_identity_check,
 )
 
@@ -180,7 +180,7 @@ def _tab_start_session() -> None:
 
     # 0. Link entity
     forced_ref, extra_identity = None, None
-    if _DB_IMPORTS_OK and db_available():
+    if _DB_IMPORTS_OK and _db_available_cached():
         forced_ref, extra_identity = _render_entity_link_widget("vkyc_start", mandatory=False)
         st.divider()
 
@@ -212,10 +212,12 @@ def _tab_start_session() -> None:
             st.session_state["vkyc_ref_emb_b64"] = base64.b64encode(
                 emb.astype("float32").tobytes()
             ).decode()
+            st.session_state["vkyc_doc_bytes"] = doc_file.getvalue()
             st.success("Reference face extracted from ID.")
         else:
             st.error("No face found in the uploaded document.")
             st.session_state.pop("vkyc_ref_emb_b64", None)
+            st.session_state.pop("vkyc_doc_bytes", None)
 
     # 2. Session parameters
     st.divider()
@@ -271,6 +273,8 @@ def _tab_start_session() -> None:
             st.session_state["vkyc_doc_filename"]    = doc_file.name if doc_file else ""
             st.session_state["vkyc_forced_ref"]      = forced_ref
             st.session_state["vkyc_extra_identity"]  = extra_identity
+            st.session_state["vkyc_saved_remote"]    = False
+            st.session_state.pop("vkyc_saved_remote_ref", None)
             st.rerun()
 
     # 4. Monitor active session
@@ -332,18 +336,57 @@ def _tab_start_session() -> None:
             st.error(f"Verification Failed -- Score: {disp_score:.1f}%")
             st.caption(result.get("message", ""))
 
-        if _DB_IMPORTS_OK and db_available():
-            _kyc_persist(
-                result, sid, status_resp,
-                st.session_state.get("vkyc_doc_filename", ""),
-                st.session_state.get("vkyc_forced_ref"),
-                st.session_state.get("vkyc_extra_identity"),
-                cosine_sim,
+        vkyc_result, entity_ref, vkyc_pdf = _build_kyc_save_artifacts(
+            result,
+            sid,
+            status_resp,
+            st.session_state.get("vkyc_doc_filename", ""),
+            st.session_state.get("vkyc_forced_ref"),
+            st.session_state.get("vkyc_extra_identity"),
+            cosine_sim,
+        )
+
+        if _DB_IMPORTS_OK and _db_available_cached():
+            if st.session_state.get("vkyc_saved_remote"):
+                st.success(
+                    f"Saved to database — Entity: **{st.session_state.get('vkyc_saved_remote_ref') or 'unlinked'}**"
+                )
+            elif st.button("💾 Save to Database", key="vkyc_remote_save_btn", use_container_width=True):
+                with st.spinner("Saving Video KYC result to database..."):
+                    saved = save_identity_check(
+                        check_type="video_kyc",
+                        result=vkyc_result,
+                        forced_entity_ref=st.session_state.get("vkyc_forced_ref"),
+                        extra_identity=st.session_state.get("vkyc_extra_identity"),
+                        doc_filename=st.session_state.get("vkyc_doc_filename", ""),
+                        pdf_bytes=vkyc_pdf,
+                        doc_bytes=st.session_state.get("vkyc_doc_bytes"),
+                    )
+                    if saved:
+                        st.session_state["vkyc_saved_remote"] = True
+                        st.session_state["vkyc_saved_remote_ref"] = saved.get("entity_ref")
+                        st.rerun()
+                    else:
+                        st.error(
+                            "Video KYC completed but could not be saved to the database. "
+                            "Check the Logs screen for details."
+                        )
+        else:
+            st.info("Database is offline — result not persisted.")
+
+        if vkyc_pdf and st.session_state.get("vkyc_saved_remote"):
+            st.download_button(
+                "Download KYC Report (PDF)",
+                data=vkyc_pdf,
+                file_name=f"video_kyc_{entity_ref or 'report'}.pdf",
+                mime="application/pdf",
+                key="vkyc_pdf_dl",
             )
 
         if st.button("Start New Session", use_container_width=True):
             for k in ["vkyc_active_sid", "vkyc_session_url", "vkyc_session_created",
-                      "vkyc_ref_emb_b64", "vkyc_doc_filename"]:
+                      "vkyc_ref_emb_b64", "vkyc_doc_filename", "vkyc_doc_bytes",
+                      "vkyc_saved_remote", "vkyc_saved_remote_ref"]:
                 st.session_state.pop(k, None)
             st.rerun()
 
@@ -353,12 +396,13 @@ def _tab_start_session() -> None:
         st.error(msg)
         if st.button("Start New Session", use_container_width=True):
             for k in ["vkyc_active_sid", "vkyc_session_url", "vkyc_session_created",
-                      "vkyc_ref_emb_b64", "vkyc_doc_filename"]:
+                      "vkyc_ref_emb_b64", "vkyc_doc_filename", "vkyc_doc_bytes",
+                      "vkyc_saved_remote", "vkyc_saved_remote_ref"]:
                 st.session_state.pop(k, None)
             st.rerun()
 
 
-def _kyc_persist(
+def _build_kyc_save_artifacts(
     result: Dict,
     session_id: str,
     status_resp: Dict,
@@ -366,8 +410,8 @@ def _kyc_persist(
     forced_ref: Optional[str],
     extra_identity: Optional[Dict],
     cosine_sim: float,
-) -> None:
-    """Save KYC result to DB and render the PDF report."""
+) -> tuple[Dict[str, Any], str, Optional[bytes]]:
+    """Build the Video KYC persistence payload and optional PDF report."""
     disp_score = float(result.get("display_score", result.get("match_score", 0) * 100))
     is_match   = bool(result.get("passed", False))
 
@@ -407,27 +451,7 @@ def _kyc_persist(
     except Exception:  # noqa: BLE001
         pass
 
-    saved = save_identity_check(
-        check_type="video_kyc",
-        result=vkyc_result,
-        forced_entity_ref=forced_ref,
-        extra_identity=extra_identity,
-        doc_filename=doc_filename,
-        pdf_bytes=vkyc_pdf,
-    )
-    if saved:
-        st.info(
-            f"KYC result saved -- ID: {saved['id']}, "
-            f"Entity: {saved.get('entity_ref', 'unlinked')}"
-        )
-    if vkyc_pdf:
-        st.download_button(
-            "Download KYC Report (PDF)",
-            data=vkyc_pdf,
-            file_name=f"video_kyc_{entity_ref or 'report'}.pdf",
-            mime="application/pdf",
-            key="vkyc_pdf_dl",
-        )
+    return vkyc_result, entity_ref, vkyc_pdf
 
 
 # ===========================================================================
@@ -590,7 +614,7 @@ def _tab_conduct() -> None:
         )
 
     forced_ref, extra_identity = None, None
-    if _DB_IMPORTS_OK and db_available():
+    if _DB_IMPORTS_OK and _db_available_cached():
         forced_ref, extra_identity = _render_entity_link_widget("vkyc_conduct", mandatory=True)
         st.divider()
 
@@ -630,18 +654,24 @@ def _tab_conduct() -> None:
         st.warning("Upload a Reference ID Document above first.")
         return
 
-    st.info("For liveness detection, slightly turn your head before capturing.", icon="info")
+    st.info("For liveness detection, slightly turn your head before capturing.", icon="ℹ️")
     camera_photo = st.camera_input("Capture live photo", key="vkyc_camera")
 
     if camera_photo is not None:
-        if _DB_IMPORTS_OK and db_available() and not forced_ref and not extra_identity:
+        camera_bytes = camera_photo.getvalue()
+        if st.session_state.get("vkyc_conduct_camera_bytes") != camera_bytes:
+            st.session_state["vkyc_conduct_camera_bytes"] = camera_bytes
+            st.session_state["vkyc_conduct_saved"] = False
+            st.session_state.pop("vkyc_conduct_saved_ref", None)
+
+        if _DB_IMPORTS_OK and _db_available_cached() and not forced_ref and not extra_identity:
             st.warning("Please link an entity (mandatory).")
             st.stop()
 
         import cv2  # noqa: PLC0415
         import numpy as np  # noqa: PLC0415
 
-        nparr    = np.frombuffer(camera_photo.getvalue(), np.uint8)
+        nparr    = np.frombuffer(camera_bytes, np.uint8)
         live_img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if live_img is None:
             st.error("Failed to decode the captured image.")
@@ -716,7 +746,7 @@ def _tab_conduct() -> None:
                 st.error("KYC Verdict: FAIL")
             st.caption(f"Cosine similarity: {sim:.4f}")
 
-        if _DB_IMPORTS_OK and db_available():
+        if _DB_IMPORTS_OK and _db_available_cached():
             vkyc_result: Dict[str, Any] = {
                 "is_match":          bool(is_match),
                 "confidence":        float(sim),
@@ -747,28 +777,45 @@ def _tab_conduct() -> None:
             except Exception:  # noqa: BLE001
                 pass
 
-            vkyc_saved = save_identity_check(
-                check_type="video_kyc",
-                result=vkyc_result,
-                forced_entity_ref=forced_ref,
-                extra_identity=extra_identity,
-                doc_filename=doc_file.name if doc_file else "",
-                pdf_bytes=vkyc_pdf,
-            )
-            if vkyc_saved:
-                st.info(
-                    f"Video KYC result saved "
-                    f"(ID: {vkyc_saved['id']}, "
-                    f"Entity: {vkyc_saved.get('entity_ref', 'unlinked')})"
+            if st.session_state.get("vkyc_conduct_saved"):
+                st.success(
+                    f"Saved to database — Entity: **{st.session_state.get('vkyc_conduct_saved_ref') or 'unlinked'}**"
                 )
-            if vkyc_pdf:
+            elif st.button("💾 Save to Database", key="vkyc_conduct_save_btn", use_container_width=True):
+                with st.spinner("Saving Video KYC result to database..."):
+                    vkyc_saved = save_identity_check(
+                        check_type="video_kyc",
+                        result=vkyc_result,
+                        forced_entity_ref=forced_ref,
+                        extra_identity=extra_identity,
+                        doc_filename=doc_file.name if doc_file else "",
+                        selfie_filename="video_kyc_capture.jpg",
+                        pdf_bytes=vkyc_pdf,
+                        doc_bytes=doc_file.getvalue() if doc_file else None,
+                        selfie_bytes=camera_bytes,
+                    )
+                    if vkyc_saved:
+                        st.session_state["vkyc_conduct_saved"] = True
+                        st.session_state["vkyc_conduct_saved_ref"] = vkyc_saved.get("entity_ref")
+                        st.rerun()
+                    else:
+                        st.error(
+                            "Video KYC result could not be saved to the database. "
+                            "Check the Logs screen for details."
+                        )
+
+            if vkyc_pdf and st.session_state.get("vkyc_conduct_saved"):
                 st.download_button(
                     "Download Video KYC Report (PDF)",
                     data=vkyc_pdf,
-                    file_name=f"video_kyc_{st.session_state.get('vkyc_entity_ref', 'report')}.pdf",
+                    file_name=(
+                        f"video_kyc_{st.session_state.get('vkyc_conduct_saved_ref') or forced_ref or 'report'}.pdf"
+                    ),
                     mime="application/pdf",
                     key="vkyc_pdf_dl_conduct",
                 )
+        else:
+            st.info("Database is offline — result not persisted.")
 
 
 # ===========================================================================

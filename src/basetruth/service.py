@@ -118,17 +118,21 @@ class BaseTruthService:
 
         # Sync to PostgreSQL (non-fatal — file remains the source of truth when DB is down)
         try:
+            from basetruth.db import init_db
             from basetruth.store import update_case_in_db
-            update_case_in_db(
-                case_key,
-                status=record.status,
-                disposition=record.disposition,
-                priority=record.priority,
-                assignee=record.assignee,
-                labels=list(record.labels),
-                note_text=note_text,
-                note_author=note_author or "analyst",
-            )
+            if init_db():
+                update_case_in_db(
+                    case_key,
+                    status=record.status,
+                    disposition=record.disposition,
+                    priority=record.priority,
+                    assignee=record.assignee,
+                    labels=list(record.labels),
+                    note_text=note_text,
+                    note_author=note_author or "analyst",
+                )
+            else:
+                log.debug("update_case: DB unavailable — skipping DB sync")
         except Exception:  # noqa: BLE001
             log.debug("update_case: DB sync skipped (DB unavailable)", exc_info=True)
 
@@ -167,6 +171,7 @@ class BaseTruthService:
         input_path: str | Path,
         forced_entity_ref: Optional[str] = None,
         extra_identity: Optional[Dict[str, str]] = None,
+        persist_to_db: bool = True,
     ) -> Dict[str, Any]:
         path = Path(input_path)
         if not path.exists():
@@ -416,53 +421,59 @@ class BaseTruthService:
         verification_json_path.write_text(json.dumps(report_dict, indent=2, ensure_ascii=False), encoding="utf-8")
 
         # Persist to PostgreSQL (non-fatal — file artefacts are always written first)
-        try:
-            from basetruth.db import init_db
-            from basetruth.store import save_scan_to_db, minio_upload
-            log.info(
-                "scan_document: persisting to PostgreSQL",
-                extra={
-                    "document": path.name,
-                    "forced_entity_ref": forced_entity_ref or "(auto)",
-                    "extra_identity_fields": list((extra_identity or {}).keys()),
-                },
-            )
-            init_db()
-            db_result = save_scan_to_db(
-                report_dict,
-                pdf_bytes,
-                forced_entity_ref=forced_entity_ref,
-                extra_identity=extra_identity,
-            )
-            if db_result:
+        if persist_to_db:
+            try:
+                from basetruth.db import init_db
+                from basetruth.store import save_scan_to_db, minio_upload
                 log.info(
-                    "scan_document: DB persist OK",
-                    extra={"scan_id": db_result.get("scan_id"), "entity_ref": db_result.get("entity_ref")},
+                    "scan_document: persisting to PostgreSQL",
+                    extra={
+                        "document": path.name,
+                        "forced_entity_ref": forced_entity_ref or "(auto)",
+                        "extra_identity_fields": list((extra_identity or {}).keys()),
+                    },
                 )
-                # Store entity_ref in report dict for caller use (e.g. bulk scan entity reuse)
-                report_dict["_entity_ref"] = db_result.get("entity_ref")
-                # Upload original source document to MinIO alongside the PDF report
-                _entity_ref = db_result.get("entity_ref")
-                if _entity_ref and source_path.exists():
-                    try:
-                        _src_mime = (
-                            "application/pdf" if source_path.suffix.lower() == ".pdf"
-                            else "application/octet-stream"
+                if init_db():
+                    db_result = save_scan_to_db(
+                        report_dict,
+                        pdf_bytes,
+                        forced_entity_ref=forced_entity_ref,
+                        extra_identity=extra_identity,
+                    )
+                    if db_result:
+                        log.info(
+                            "scan_document: DB persist OK",
+                            extra={"scan_id": db_result.get("scan_id"), "entity_ref": db_result.get("entity_ref")},
                         )
-                        minio_upload(
-                            f"{_entity_ref}/{source_path.name}",
-                            source_path.read_bytes(),
-                            _src_mime,
+                        report_dict["_entity_ref"] = db_result.get("entity_ref")
+                        _entity_ref = db_result.get("entity_ref")
+                        if _entity_ref and source_path.exists():
+                            try:
+                                _src_mime = (
+                                    "application/pdf" if source_path.suffix.lower() == ".pdf"
+                                    else "application/octet-stream"
+                                )
+                                minio_upload(
+                                    f"{_entity_ref}/{source_path.name}",
+                                    source_path.read_bytes(),
+                                    _src_mime,
+                                )
+                            except Exception:  # noqa: BLE001
+                                log.warning("scan_document: MinIO source-doc upload failed", exc_info=True)
+                    else:
+                        log.warning(
+                            "scan_document: DB persist returned None — database may be offline",
+                            extra={"document": path.name},
                         )
-                    except Exception:  # noqa: BLE001
-                        log.warning("scan_document: MinIO source-doc upload failed", exc_info=True)
-            else:
-                log.warning(
-                    "scan_document: DB persist returned None — database may be offline",
-                    extra={"document": path.name},
-                )
-        except Exception:  # noqa: BLE001
-            log.error("scan_document: DB persist FAILED", exc_info=True, extra={"document": path.name})
+                else:
+                    log.info(
+                        "scan_document: DB unavailable — skipping DB persist",
+                        extra={"document": path.name},
+                    )
+            except Exception:  # noqa: BLE001
+                log.error("scan_document: DB persist FAILED", exc_info=True, extra={"document": path.name})
+        else:
+            log.info("scan_document: DB persist skipped by caller", extra={"document": path.name})
 
         # Auto-manage case lifecycle based on risk level (non-fatal)
         try:

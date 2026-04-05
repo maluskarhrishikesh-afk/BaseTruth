@@ -43,6 +43,8 @@ services:
     image: basetruth:latest
     ports:
       - "${UI_PORT:-8501}:8501"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./artifacts:/app/artifacts
       - ./your_data:/app/your_data
@@ -65,6 +67,7 @@ services:
       MINIO_BUCKET: basetruth-reports
       BT_LOG_LEVEL: INFO
       BT_LOG_DIR: /app/logs
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
       # Internal URL used by Streamlit (inside Docker) to reach the API container.
       # Must use the Docker service name, NOT localhost (each container has its own network namespace).
       BT_API_INTERNAL_URL: http://basetruth-api:8000
@@ -72,6 +75,8 @@ services:
       BT_API_EXTERNAL_URL: http://localhost:8000
     depends_on:
       db:
+        condition: service_healthy
+      minio:
         condition: service_healthy
     entrypoint:
       - python
@@ -119,6 +124,8 @@ services:
       BT_LOG_DIR: /app/logs
     depends_on:
       db:
+        condition: service_healthy
+      minio:
         condition: service_healthy
     entrypoint: ["python", "-m", "uvicorn", "basetruth.api:app",
                  "--host", "0.0.0.0", "--port", "8000", "--reload",

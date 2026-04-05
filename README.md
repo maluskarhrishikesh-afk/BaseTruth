@@ -28,6 +28,9 @@ pip install -e ".[ui,api,pdf]"
 # Run tests
 python -m pytest
 
+# Run Semgrep security and code-quality checks
+semgrep scan --config .semgrep.yml src tests
+
 # Scan one document
 python -m basetruth.cli scan --input C:\path\to\document.pdf
 
@@ -137,3 +140,11 @@ Cases are grouped automatically from verification reports and now support persis
 ## Roadmap
 
 See `docs/ROADMAP.md` for the phased build plan.
+
+## Developer Checks
+
+BaseTruth includes a local Semgrep configuration at `.semgrep.yml` for high-signal Python security and code-quality checks.
+
+```powershell
+semgrep scan --config .semgrep.yml src tests
+```

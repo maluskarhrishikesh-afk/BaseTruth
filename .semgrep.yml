@@ -1,0 +1,225 @@
+rules:
+  # ── Security: Prevent running arbitrary string as code ───────────────────
+  # Eval allows executing strings directly as python code. Attackers can
+  # inject malicious scripts here.
+  - id: basetruth-no-eval
+    message: Avoid eval; use explicit parsing or dispatch instead.
+    severity: ERROR
+    languages: [python]
+    pattern: eval(...)
+
+  # ── Security: Prevent executing arbitrary blocks of code ─────────────────
+  # Exec allows executing dynamically generated Python code blocks.
+  # This can easily be abused by attackers if they control the input.
+  - id: basetruth-no-exec
+    message: Avoid exec; use explicit imports or function dispatch instead.
+    severity: ERROR
+    languages: [python]
+    pattern: exec(...)
+
+  # ── Security: Prevent untrusted deserialization (Pickle) ─────────────────
+  # Loading pickled data can run arbitrary malicious code automatically.
+  # Use JSON for untrusted data instead of Pickle.
+  - id: basetruth-no-pickle-loads
+    message: Avoid pickle.loads on untrusted data.
+    severity: ERROR
+    languages: [python]
+    pattern-either:
+      - pattern: pickle.loads(...)
+      - pattern: dill.loads(...)
+
+  # ── Security: Prevent Shell Injection ────────────────────────────────────
+  # `shell=True` runs commands through the system shell. If user input 
+  # is passed here, an attacker can append their own commands.
+  - id: basetruth-no-shell-true
+    message: Avoid subprocess shell=True unless there is a reviewed justification.
+    severity: WARNING
+    languages: [python]
+    patterns:
+      - pattern-either:
+          - pattern: subprocess.run(..., shell=True, ...)
+          - pattern: subprocess.Popen(..., shell=True, ...)
+          - pattern: subprocess.call(..., shell=True, ...)
+
+  # ── Reliability: Always set a timeout for web requests ───────────────────
+  # Network requests without timeouts can hang forever, leading to server
+  # crashes or denial of service because of exhausted resources.
+  - id: basetruth-requests-timeout
+    message: requests calls should set a timeout.
+    severity: WARNING
+    languages: [python]
+    patterns:
+      - pattern-either:
+          - pattern: requests.get($URL, ...)
+          - pattern: requests.post($URL, ...)
+          - pattern: requests.put($URL, ...)
+          - pattern: requests.patch($URL, ...)
+          - pattern: requests.delete($URL, ...)
+      - pattern-not: requests.get($URL, ..., timeout=$TIMEOUT, ...)
+      - pattern-not: requests.post($URL, ..., timeout=$TIMEOUT, ...)
+      - pattern-not: requests.put($URL, ..., timeout=$TIMEOUT, ...)
+      - pattern-not: requests.patch($URL, ..., timeout=$TIMEOUT, ...)
+      - pattern-not: requests.delete($URL, ..., timeout=$TIMEOUT, ...)
+
+  # ── Security: Prevent SQL injection via f-string interpolation ───────────
+  # Putting variables directly inside SQL queries allows attackers to change
+  # the database query structure (SQL Injection). Always use bound parameters.
+  - id: basetruth-raw-sql-fstring
+    patterns:
+      - pattern: text(f"... {$TABLE} ...")
+    message: |
+      Raw f-string interpolation in SQL text() — risk of SQL injection.
+      Only table names allowlisted in _DB_VIEWER_TABLES are safe. Never
+      interpolate user-supplied values; use bound parameters instead.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: security
+      cwe: "CWE-89: SQL Injection"
+
+  # ── Bug Prevention: Streamlit icon shortcode bug ─────────────────────────
+  # Streamlit does not support standard emoji shortcodes (like ":info:") here.
+  # This rule ensures the application doesn't crash during rendering.
+  - id: basetruth-st-icon-shortcode
+    pattern-either:
+      - pattern: st.info(..., icon=":$ICON:")
+      - pattern: st.warning(..., icon=":$ICON:")
+      - pattern: st.error(..., icon=":$ICON:")
+      - pattern: st.success(..., icon=":$ICON:")
+    message: |
+      Emoji shortcode strings like ":info:" raise StreamlitAPIException.
+      Use a real Unicode emoji string, e.g. icon="ℹ️".
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: bug
+
+  # ── Performance: Prevent direct db_available() calls in render path ────────
+  # Checking Database availability connects to the DB every time a button is 
+  # clicked, causing lag. Use the built-in cached version to speed up UI.
+  - id: basetruth-direct-db-available
+    pattern: db_available()
+    message: |
+      Calling db_available() directly in a Streamlit render path freezes the UI
+      on every re-render. Use _db_available_cached() (30-second TTL) instead.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: performance
+
+  # ── Best Practice: Avoid swallowing all errors silently ────────────────────
+  # Catching 'Except' without a specific error class will hide critical system 
+  # errors. It makes debugging extremely difficult when the app breaks.
+  - id: basetruth-bare-except-pass
+    pattern: |
+      try:
+        ...
+      except:
+        pass
+    message: |
+      Bare "except: pass" silently discards all errors including
+      KeyboardInterrupt and SystemExit. Catch specific exception types
+      and at minimum log the error.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: best-practice
+
+  # ── Security: Block hardcoded credentials ──────────────────────────────────
+  # Passwords/tokens hardcoded in the codebase can easily be compromised.
+  # Always rely on Environment Variables or Secret Vaults.
+  - id: basetruth-hardcoded-secret
+    pattern-either:
+      - pattern: password = "..."
+      - pattern: secret = "..."
+      - pattern: api_key = "..."
+    message: Do not hardcode secrets or passwords in source code.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+
+  # ── Security: Block insecure hashing ───────────────────────────────────────
+  # MD5 and SHA1 are computationally broken and should not be used for security.
+  # SHA-256 or bcrypt should be used instead.
+  - id: basetruth-insecure-hash
+    pattern-either:
+      - pattern: hashlib.md5(...)
+      - pattern: hashlib.sha1(...)
+    message: MD5 and SHA1 are cryptographically weak. Use SHA256 or better.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: security
+      cwe: "CWE-327: Use of a Broken or Risky Cryptographic Algorithm"
+
+  # ── OWASP A01: Broken Access Control (Path Traversal) ──────────────────────
+  # Attackers can manipulate file paths to access files outside the intended
+  # directory (e.g. ../../../etc/passwd). Always sanitize paths.
+  - id: basetruth-path-traversal
+    pattern-either:
+      - pattern: open(os.path.join(..., $X), ...)
+      - pattern: open($USER_INPUT + ...)
+    message: Potential Path Traversal. Ensure user input is sanitized before use in file paths.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      cwe: "CWE-22: Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')"
+
+  # ── OWASP A03: Injection (Cross-Site Scripting via Streamlit) ──────────────
+  # Using unsafe_allow_html=True with unescaped variables allows attackers 
+  # to execute malicious Javascript in other users' browsers.
+  - id: basetruth-streamlit-xss
+    pattern: st.markdown(..., unsafe_allow_html=True)
+    message: |
+      Using unsafe_allow_html=True in Streamlit can introduce Cross-Site Scripting (XSS) 
+      if the markdown string contains unsanitized user input. Avoid if possible.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: security
+      cwe: "CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')"
+
+  # ── OWASP A05: Security Misconfiguration (XXE) ─────────────────────────────
+  # Standard python XML parsers are vulnerable to XML External Entity attacks.
+  # Use defusedxml instead of xml.etree or lxml.
+  - id: basetruth-xxe
+    pattern-either:
+      - pattern: xml.etree.ElementTree.parse(...)
+      - pattern: lxml.etree.parse(...)
+    message: Standard XML parsers are vulnerable to XXE. Use defusedxml instead.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      cwe: "CWE-611: Improper Restriction of XML External Entity Reference"
+
+  # ── OWASP A05: Security Misconfiguration (FastAPI wildcards) ───────────────
+  # Permitting all origins in FastAPI CORS exposes the API.
+  - id: basetruth-fastapi-cors-wildcard
+    pattern: CORSMiddleware(..., allow_origins=["*"], ...)
+    message: Do not use wildcard `allow_origins=["*"]` in production code. Explicitly define allowed origins.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: security
+      cwe: "CWE-346: Origin Validation Error"
+
+  # ── OWASP A10: Server-Side Request Forgery (SSRF) ──────────────────────────
+  # Making requests directly to URLs controlled by user input allows
+  # attackers to pivot through your server to attack internal networks.
+  - id: basetruth-ssrf
+    patterns:
+      - pattern-either:
+          - pattern: requests.get($URL, ...)
+          - pattern: requests.post($URL, ...)
+      - pattern-not: requests.get("...", ...)
+      - pattern-not: requests.post("...", ...)
+    message: Potential SSRF. Ensure $URL is heavily validated or allowlisted before making requests.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: security
+      cwe: "CWE-918: Server-Side Request Forgery (SSRF)"

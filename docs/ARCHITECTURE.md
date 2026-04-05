@@ -52,6 +52,7 @@ flowchart TD
 - supports datasource registration, sync, and scan operations
 - supports report review without requiring analysts to browse the filesystem manually
 - supports case-centric review by grouping related verification reports
+- separates clean operator workflows from auditor-facing explainability by using a dedicated Layered Analysis screen
 
 ### 1B. Connector Layer
 
@@ -160,6 +161,9 @@ A standalone offline deep-learning engine dedicated to verifying the identity of
 - emits Markdown for humans and audit trails
 - emits PDF audit reports (FPDF2) for loan officers and non-technical reviewers
 - PDF reports are stored as binary blobs in the `scans.pdf_report` PostgreSQL column
+- the Reports screen generates one consolidated PDF per entity by combining saved Identity Verification checks, Video KYC checks, and document scans
+- the Layered Analysis screen generates a detailed explainable-AI PDF per entity using stored extraction payloads, deterministic checks, similarity metrics, and fraud signals
+- the Reports screen also provides ZIP bundles of uploaded source documents for audit; generated report PDFs are excluded from the ZIP
 - auditors can retrieve any historical PDF via `GET /api/v1/scans/{id}/report.pdf`
 
 ### 8. Persistence Layer (PostgreSQL)
@@ -168,10 +172,17 @@ A standalone offline deep-learning engine dedicated to verifying the identity of
 |---|---|
 | `entities` | One row per verified person/organisation; searchable by name, PAN, Aadhaar, email, phone |
 | `scans` | One row per document scan; stores `report_json` (JSONB) + `pdf_report` (LargeBinary) |
+| `layered_analysis_entries` | One upserted row per `(entity, screen, section)` explainability snapshot; powers the Layered Analysis screen and final report |
 | `cases` | Case-management workflow record linked to an entity |
 | `case_notes` | Timestamped analyst notes on a case |
 
 The application degrades gracefully to file-only mode when `DATABASE_URL` is not set.
+
+`entities` also stores the Layered Analysis final-report state:
+- `layered_report_generated` — boolean gate that prevents duplicate report generation for unchanged evidence
+- `layered_report_generated_at` — timestamp of the latest generated final report
+- `layered_analysis_updated_at` — timestamp of the latest upserted layered-analysis evidence
+- `layered_report_minio_key` — object-storage key for the current final report
 
 ### 9. REST API Layer (`src/basetruth/api.py`)
 
@@ -215,6 +226,13 @@ Both are applied so the nav items are hidden regardless of Streamlit version.
 
 Each sidebar entry maps a display label → session-state page key.  The label emoji and title text must always match the corresponding `_page_title(emoji, "Title Text")` call in the page file.  See [FUNCTIONALITY.md](FUNCTIONALITY.md) for the full mapping and rules.
 
+### Explainability split
+
+- Primary workflow pages such as Identity Verification are intentionally kept concise for operators.
+- Explainability-heavy evidence such as extracted fields, deterministic cross-check outcomes, model metrics, and raw saved payloads are surfaced on `pages/layered_analysis.py`.
+- The Layered Analysis page reads from `layered_analysis_entries`, not directly from `scans` or `identity_checks`.
+- Save flows upsert section-level evidence into `layered_analysis_entries` and reset the entity-level final-report flag whenever fresh evidence arrives.
+
 ### Performance: cached availability checks
 
 `db_available()` runs a live `SELECT 1` and `minio_available()` calls `list_buckets()`.  Calling either in the Streamlit render path freezes the UI for up to 5 seconds per click when the services are offline.
@@ -227,7 +245,7 @@ The Identity Verification page (`pages/identity.py`) accepts documents in two mo
 
 | Tab | How it works |
 |---|---|
-| **📁 Upload Documents** | Three drag-and-drop uploaders — Aadhaar Card, PAN Card, Selfie. Aadhaar QR is decoded and PAN OCR runs immediately on upload, results shown inline in the same column. |
+| **📁 Upload Documents** | Three drag-and-drop uploaders — Aadhaar Card, PAN Card, Selfie. Aadhaar QR is decoded and Gemma4-assisted PAN extraction runs immediately on upload, with OCR fallback when needed; results are shown inline in the same column. |
 | **📷 Capture with Camera** | Per-document "Open Camera" buttons. Camera only opens on click. The native shutter button takes the photo. Photos are stored in session state and persist across re-renders. A tips banner guides the user to get a sharp, well-lit capture. |
 
 Camera captures are wrapped in a `_DocumentCapture` class that matches the `UploadedFile` API (`.size`, `.name`, `.getvalue()`) so all downstream processing is source-agnostic.

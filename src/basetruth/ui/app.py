@@ -940,10 +940,12 @@ _PAGES: Dict[str, str] = {
     "📁  Cases": "cases",
     "🗂️  Records": "records",
     "📊  Reports": "reports",
+    "🧾  Layered Analysis": "layered_analysis",
     "🔗  Datasources": "datasources",
     "📋  Log Analyzer": "logs",
     "🗄️  Database Viewer": "database",
     "⚙️  Settings": "settings",
+    "🤖  Gemma4 Chat": "gemma_chat",
 }
 
 
@@ -3495,10 +3497,8 @@ def _render_pan_layers(
     pan_data: Dict[str, Any],
     pan_validation: Dict[str, Any],
     pan_img_bytes: bytes | None,
-    selfie_bytes: bytes | None,
-    aadhaar_name: str,
 ) -> None:
-    """Render the 5-layer PAN fraud analysis dashboard."""
+    """Render the PAN fraud analysis dashboard (Layers 1, 2 & 4)."""
     st.markdown("#### 🛡️ PAN Fraud Detection — Layered Analysis")
     st.caption(
         "Each layer applies a different verification technique. "
@@ -3549,31 +3549,6 @@ def _render_pan_layers(
         ),
     })
 
-    # Layer 3 — OCR extraction
-    ocr_pan = pan_data.get("pan_number", "")
-    ocr_name = pan_data.get("name", "")
-    if ocr_pan or ocr_name:
-        ocr_detail = ""
-        if ocr_pan:
-            ocr_detail += f"PAN extracted: **`{ocr_pan}`**  \n"
-        if ocr_name:
-            ocr_detail += f"Name on card: **{ocr_name}**"
-        layers.append({
-            "icon": "✅",
-            "title": "Layer 3 — OCR Text Extraction",
-            "status": "EXTRACTED",
-            "status_color": "#16a34a",
-            "detail": ocr_detail.strip(),
-        })
-    else:
-        layers.append({
-            "icon": "⚠️",
-            "title": "Layer 3 — OCR Text Extraction",
-            "status": "NOT FOUND",
-            "status_color": "#d97706",
-            "detail": "No PAN number or name could be extracted via OCR. Try a clearer scan.",
-        })
-
     # Layer 4 — Tampering (ELA)
     tampering_score_val = None
     if pan_img_bytes:
@@ -3610,24 +3585,6 @@ def _render_pan_layers(
             "status": "N/A",
             "status_color": "#94a3b8",
             "detail": "Upload a PAN card image to run tampering detection.",
-        })
-
-    # Layer 5 — Face match (runs when user clicks Verify)
-    if selfie_bytes:
-        layers.append({
-            "icon": "🔄",
-            "title": "Layer 5 — Face Match (ArcFace)",
-            "status": "PENDING",
-            "status_color": "#7c3aed",
-            "detail": "Selfie uploaded. Face match runs in **Step 4 — Run Identity Verification** below.",
-        })
-    else:
-        layers.append({
-            "icon": "⚪",
-            "title": "Layer 5 — Face Match (ArcFace)",
-            "status": "N/A",
-            "status_color": "#94a3b8",
-            "detail": "Upload a selfie or use the camera below to enable face matching.",
         })
 
     for layer in layers:
@@ -3874,15 +3831,13 @@ def _page_identity_verification() -> None:
                 if not pv.get("valid"):
                     st.warning(f"**PAN Format: INVALID** — {pv.get('error', '')}")
 
-        # Layered PAN fraud analysis (5 layers)
+        # Layered PAN fraud analysis (Layers 1, 2 & 4)
         if pan_file:
             st.divider()
             _render_pan_layers(
                 pan_data,
                 pan_validation,
                 pan_file.getvalue(),
-                selfie_bytes,
-                aadhaar_qr.get("name", "") if aadhaar_qr.get("qr_type") == "xml" else "",
             )
 
     # ── Step 4: Applicant details form (auto-filled from documents) ────────
@@ -4355,12 +4310,14 @@ def main() -> None:
     from basetruth.ui.pages.cases import _page_cases as _m_cases  # noqa: PLC0415
     from basetruth.ui.pages.records import _page_records as _m_records  # noqa: PLC0415
     from basetruth.ui.pages.reports import _page_reports as _m_reports  # noqa: PLC0415
+    from basetruth.ui.pages.layered_analysis import _page_layered_analysis as _m_layered_analysis  # noqa: PLC0415
     from basetruth.ui.pages.datasources import _page_datasources as _m_datasources  # noqa: PLC0415
     from basetruth.ui.pages.logs import _page_logs as _m_logs  # noqa: PLC0415
     from basetruth.ui.pages.database import _page_database as _m_database  # noqa: PLC0415
     from basetruth.ui.pages.settings import _page_settings as _m_settings  # noqa: PLC0415
     from basetruth.ui.pages.identity import _page_identity_verification as _m_identity  # noqa: PLC0415
     from basetruth.ui.pages.video_kyc import _page_video_kyc as _m_video_kyc  # noqa: PLC0415
+    from basetruth.ui.pages.gemma_chat import _page_gemma_chat as _m_gemma_chat  # noqa: PLC0415
 
     if page == "dashboard":
         _m_dashboard(service)
@@ -4374,6 +4331,8 @@ def main() -> None:
         _m_records()
     elif page == "reports":
         _m_reports(service)
+    elif page == "layered_analysis":
+        _m_layered_analysis(service)
     elif page == "datasources":
         _m_datasources(service)
     elif page == "logs":
@@ -4386,6 +4345,8 @@ def main() -> None:
         _m_identity()
     elif page == "video_kyc":
         _m_video_kyc()
+    elif page == "gemma_chat":
+        _m_gemma_chat()
     else:
         st.warning(f"Unknown page: {page}")
 

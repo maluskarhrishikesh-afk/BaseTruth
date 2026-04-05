@@ -1,0 +1,29 @@
+name: Semgrep Security Scan
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  schedule:
+    - cron: '0 0 * * *' # Run daily at midnight
+
+jobs:
+  semgrep:
+    name: Scan Code
+    runs-on: ubuntu-latest
+    
+    # Skip running on forks unless specifically required
+    if: (github.actor != 'dependabot[bot]')
+
+    container:
+      image: returntocorp/semgrep
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Run Semgrep
+        # This will use the .semgrep.yml file in the root of your repository
+        run: semgrep scan --config .semgrep.yml --error
+

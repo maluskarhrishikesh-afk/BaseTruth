@@ -13,6 +13,7 @@ The pipeline runs locally without making any external API calls, ensuring high p
 | **InsightFace (RetinaFace + ArcFace)** | Face Detection + Identity Recognition (optional) | Deep learning models that detect faces and produce 512-dimensional identity embeddings. Required for face-match scoring. Installs cleanly on Linux (Docker) or Windows with Python ≤ 3.12. |
 | **ONNX Runtime** | Inference Engine | Executes InsightFace models locally on the CPU using the `buffalo_l` model pack. Required only when InsightFace is available. |
 | **pytesseract** | OCR | Extracts text from PAN card images to read the PAN number and cardholder name for cross-document verification. |
+| **Gemma4 via Ollama** | Vision extraction | Extracts PAN number, full name, father's name, and DOB from PAN images; used as the primary PAN extraction path. |
 
 ## Workflow
 
@@ -27,16 +28,27 @@ The primary identity verification flow mandates **three document inputs**:
    - If an old-format (pre-2018) QR is found, the XML payload is parsed to extract: full name, DOB/year of birth, gender, district, state.
    - If a new secure QR (2018+) is found, the system notes it is present but cannot reveal the encrypted payload offline.
 2. **PAN Card Upload** — The operator uploads a photo of the applicant's PAN card.
-   - pytesseract OCR extracts the PAN number and cardholder name.
+   - Gemma4 (via Ollama) extracts the PAN number, cardholder full name, father's name, and date of birth from the card image.
+   - pytesseract OCR remains as a fallback when Ollama or Gemma4 is unavailable, or when a field needs recovery from a weak model response.
    - The PAN number is validated against the standard format (`ABCDE1234F`).
    - The 4th character is decoded to identify the entity type (Individual / Company / HUF etc.).
-   - The 5th character (surname initial) is cross-checked against the Aadhaar QR name.
+   - The extracted PAN full name is compared to the Aadhaar QR name using exact first-name and last-name matching with middle-name tolerance.
 3. **Selfie or Camera Capture** — The operator uploads a selfie or triggers the browser camera.
    - If no selfie file is uploaded, `st.camera_input()` opens automatically.
-4. **Name Cross-Check** — The full name from the Aadhaar QR is compared (normalised, word-level overlap ≥ 50%) against the name extracted from the PAN card OCR.
+4. **Deterministic Cross-Checks**
+   - **First Name & Last Name Match** — Aadhaar QR name vs. PAN full name.
+   - **DOB Match** — Aadhaar DOB or year of birth vs. PAN DOB.
+   - **PAN Format & Entity Type** — Regex validation plus entity-type decoding from the 4th PAN character.
 5. **Face Match** — ArcFace cosine similarity between the face on the Aadhaar card and the selfie (threshold > 0.40).
-6. **Auto-fill Entity Form** — Extracted name, PAN number, and masked Aadhaar UID are pre-populated in the "Applicant Details" form. The operator only needs to enter phone and email manually.
-7. **Persistence** — Results are stored in the `identity_checks` database table, linked to the entity. A PDF report is generated.
+6. **Auto-fill Entity Form** — Extracted PAN name is used as a fallback when Aadhaar QR name is unavailable. PAN number and masked Aadhaar UID are pre-populated in the "Applicant Details" form, while father's name and DOB remain visible for operator review. The operator only needs to enter phone and email manually.
+7. **Persistence** — Results are stored in the `identity_checks` database table, linked to the entity. In parallel, the save flow upserts section-level evidence into `layered_analysis_entries` for:
+   - `Identity Verification` / `Aadhaar`
+   - `Identity Verification` / `PAN Card`
+   - `Identity Verification` / `Photo Upload`
+   - `Identity Verification` / `Run Verification`
+   - Aadhaar and selfie uploads also store shared upload-authenticity evidence so auditors can review format/structural validation and image-tampering checks consistently across uploads.
+8. **Explainability Review** — Detailed audit evidence is shown on the dedicated Layered Analysis screen rather than inline on the main Identity Verification page.
+9. **Final Report Locking** — If a final layered-analysis report has already been generated for the current evidence set, the Layered Analysis screen disables regeneration. Saving fresh identity evidence for the same entity automatically resets that flag.
 
 ### 2. Video KYC (WebSocket Liveness Challenge)
 
@@ -75,9 +87,9 @@ Customer's browser ──WS /kyc/ws/{session_id}──► FastAPI server
    - The server runs **MediaPipe FaceLandmarker** (or InsightFace if available) to locate the face in each frame and extracts 5 key landmarks (eyes, nose, mouth corners).
    - A random set of 2–4 **active-liveness challenges** are assigned (configurable):
 
-     | Challenge | What the server looks for |
+   | Challenge | What the server looks for |
      |---|---|
-     | `blink` | EAR (Eye Aspect Ratio) dips below 0.15 (eyes close), then recovers above 0.18 (eyes open); fallback: InsightFace detection confidence dip |
+   | `blink` | EAR (Eye Aspect Ratio) dips below 0.15 (eyes close), then recovers above 0.18 (eyes open) |
      | `turn_left` | Nose `x` position (relative to face width) moves right past 0.62 |
      | `turn_right` | Nose `x` position moves left below 0.38 |
      | `nod` | Pitch (nose height relative to eye midpoint) range exceeds 0.28 across recent frames |
@@ -97,8 +109,8 @@ Customer's browser ──WS /kyc/ws/{session_id}──► FastAPI server
 
 | Environment | Face Detector | Liveness | Face Match |
 |---|---|---|---|
-| Docker (Linux) | InsightFace (RetinaFace) | EAR + det_score fallback | ArcFace cosine similarity |
-| Windows Python ≤ 3.12 | InsightFace (RetinaFace) | EAR + det_score fallback | ArcFace cosine similarity |
+| Docker (Linux) | InsightFace (RetinaFace) | EAR from MediaPipe landmarks | ArcFace cosine similarity |
+| Windows Python ≤ 3.12 | InsightFace (RetinaFace) | EAR from MediaPipe landmarks | ArcFace cosine similarity |
 | Windows Python 3.13+ | **MediaPipe FaceLandmarker** | EAR via blendshapes | Skipped (liveness-only) |
 
 On Python 3.13+, `insightface` cannot be installed (native extension build fails). The server automatically falls back to MediaPipe — all liveness challenges work fully, and the face-match step is skipped with a clear message instead of failing silently.
@@ -107,9 +119,9 @@ On Python 3.13+, `insightface` cannot be installed (native extension build fails
 
 | Check | Input | Method | Fail Condition |
 |---|---|---|---|
-| Name match | Aadhaar QR ↔ PAN OCR | Word-level Jaccard similarity | Similarity < 50% |
+| First/last name match | Aadhaar QR ↔ PAN extraction | Exact first-name and last-name comparison | Either first or last name differs |
+| DOB match | Aadhaar QR ↔ PAN extraction | Exact DOB match, with year fallback when Aadhaar only provides YOB | Full DOB or year mismatch |
 | PAN format | PAN number | Regex `[A-Z]{5}[0-9]{4}[A-Z]` | Non-matching pattern |
-| PAN surname initial | PAN[4] ↔ Aadhaar surname | Character comparison | Mismatch |
 | PAN entity type | PAN[3] | Lookup table | Unexpected entity type |
 | Face match | Aadhaar face ↔ Selfie | ArcFace cosine similarity | Score < 0.40 (< 40% confidence) |
 
@@ -129,6 +141,8 @@ All identity verification results are now persisted in the `identity_checks` Pos
 | `pdf_report` | Generated PDF audit report |
 
 Results are viewable in the **Records** page under each entity's detail panel, alongside document scan history.
+The same verification event also updates `layered_analysis_entries`, which is the dedicated source used by the **Layered Analysis** screen to show extracted fields, deterministic checks, model metrics, and raw evidence for audit review.
+Layered Analysis now also carries upload-authenticity evidence for Aadhaar, selfie, Video KYC captures, and saved scan entries so auditors can see the strongest available authenticity check per uploaded asset.
 
 ## PDF Reports
 

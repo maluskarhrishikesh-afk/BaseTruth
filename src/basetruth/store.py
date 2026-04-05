@@ -7,13 +7,28 @@ the application continues to work in file-only mode.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import func, or_, text
 from sqlalchemy.orm import Session
 
-from basetruth.db import Case, CaseNote, Entity, IdentityCheck, Scan, DocumentInformation, db_session
+from basetruth.analysis.upload_authenticity import (
+    analyse_upload_authenticity,
+    build_format_check,
+    build_scan_authenticity_payload,
+)
+from basetruth.db import (
+    Case,
+    CaseNote,
+    DocumentInformation,
+    Entity,
+    IdentityCheck,
+    LayeredAnalysisEntry,
+    Scan,
+    db_session,
+)
 from basetruth.logger import get_logger
 
 log = get_logger(__name__)
@@ -207,6 +222,18 @@ def _entity_to_dict(entity: Entity, session: Session) -> Dict[str, Any]:
         "phone": entity.phone or "",
         "pan_number": entity.pan_number or "",
         "aadhar_number": entity.aadhar_number or "",
+        "layered_report_generated": bool(entity.layered_report_generated),
+        "layered_report_generated_at": (
+            entity.layered_report_generated_at.isoformat()
+            if entity.layered_report_generated_at
+            else ""
+        ),
+        "layered_analysis_updated_at": (
+            entity.layered_analysis_updated_at.isoformat()
+            if entity.layered_analysis_updated_at
+            else ""
+        ),
+        "layered_report_minio_key": entity.layered_report_minio_key or "",
         "scan_count": scan_count,
         "latest_risk": latest_scan.risk_level if latest_scan else "",
         "latest_score": latest_scan.truth_score if latest_scan else None,
@@ -214,6 +241,201 @@ def _entity_to_dict(entity: Entity, session: Session) -> Dict[str, Any]:
             entity.created_at.isoformat() if entity.created_at else ""
         ),
     }
+
+
+def _json_ready(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(k): _json_ready(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_ready(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_ready(item) for item in value]
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            return str(value)
+    return value
+
+
+def _mark_layered_analysis_dirty(entity: Entity) -> None:
+    entity.layered_analysis_updated_at = datetime.now(timezone.utc)
+    entity.layered_report_generated = False
+    entity.layered_report_generated_at = None
+    entity.layered_report_minio_key = ""
+
+
+def _upsert_layered_analysis_entry(
+    session: Session,
+    *,
+    entity: Entity,
+    screen_name: str,
+    section_name: str,
+    details: Dict[str, Any],
+) -> None:
+    existing = (
+        session.query(LayeredAnalysisEntry)
+        .filter(
+            LayeredAnalysisEntry.entity_id == entity.id,
+            LayeredAnalysisEntry.screen_name == screen_name,
+            LayeredAnalysisEntry.section_name == section_name,
+        )
+        .first()
+    )
+    payload = _json_ready(details)
+    if existing:
+        existing.details_captured_json = payload
+        existing.updated_at = datetime.now(timezone.utc)
+    else:
+        session.add(
+            LayeredAnalysisEntry(
+                entity_id=entity.id,
+                screen_name=screen_name,
+                section_name=section_name,
+                details_captured_json=payload,
+            )
+        )
+    _mark_layered_analysis_dirty(entity)
+
+
+def _persist_scan_layered_analysis(
+    session: Session,
+    *,
+    entity: Entity,
+    scan: Scan,
+    report: Dict[str, Any],
+    screen_name: str,
+) -> None:
+    structured_summary = report.get("structured_summary") or {}
+    _upsert_layered_analysis_entry(
+        session,
+        entity=entity,
+        screen_name=screen_name,
+        section_name=scan.source_name or f"scan-{scan.id}",
+        details={
+            "scan_id": scan.id,
+            "document_type": scan.document_type,
+            "source_name": scan.source_name,
+            "source_sha256": scan.source_sha256,
+            "truth_score": scan.truth_score,
+            "risk_level": scan.risk_level,
+            "verdict": scan.verdict,
+            "parse_method": scan.parse_method,
+            "structured_summary": structured_summary,
+            "authenticity_checks": build_scan_authenticity_payload(report),
+            "tamper_assessment": report.get("tamper_assessment") or {},
+            "signals": report.get("signals") or [],
+            "artifacts": report.get("artifacts") or {},
+            "generated_at": scan.generated_at.isoformat() if scan.generated_at else "",
+        },
+    )
+
+
+def _persist_identity_layered_analysis(
+    session: Session,
+    *,
+    entity: Entity,
+    row: IdentityCheck,
+    check_type: str,
+    result: Dict[str, Any],
+    doc_filename: str,
+    selfie_filename: str,
+    status: str,
+    verdict: str,
+) -> None:
+    layered_analysis = result.get("layered_analysis") or {}
+    upload_authenticity = layered_analysis.get("upload_authenticity") or {}
+    if check_type == "face_match":
+        cross_checks = result.get("cross_checks") or {}
+        _upsert_layered_analysis_entry(
+            session,
+            entity=entity,
+            screen_name="Identity Verification",
+            section_name="Aadhaar",
+            details={
+                "check_id": row.id,
+                "doc_filename": doc_filename,
+                "aadhaar_qr": result.get("aadhaar_qr") or {},
+                "authenticity_checks": upload_authenticity.get("aadhaar") or {},
+                "captured_at": row.created_at.isoformat() if row.created_at else "",
+            },
+        )
+        _upsert_layered_analysis_entry(
+            session,
+            entity=entity,
+            screen_name="Identity Verification",
+            section_name="PAN Card",
+            details={
+                "check_id": row.id,
+                "doc_filename": doc_filename,
+                "pan_extraction": result.get("pan_extraction") or {},
+                "pan_format": cross_checks.get("pan_format") or {},
+                "pan_layers": ((result.get("layered_analysis") or {}).get("pan_layers") or {}),
+                "captured_at": row.created_at.isoformat() if row.created_at else "",
+            },
+        )
+        _upsert_layered_analysis_entry(
+            session,
+            entity=entity,
+            screen_name="Identity Verification",
+            section_name="Photo Upload",
+            details={
+                "check_id": row.id,
+                "document_filename": doc_filename,
+                "selfie_filename": selfie_filename,
+                "document_uploaded": bool(doc_filename),
+                "selfie_uploaded": bool(selfie_filename),
+                "authenticity_checks": upload_authenticity.get("photo") or {},
+                "captured_at": row.created_at.isoformat() if row.created_at else "",
+            },
+        )
+        _upsert_layered_analysis_entry(
+            session,
+            entity=entity,
+            screen_name="Identity Verification",
+            section_name="Run Verification",
+            details={
+                "check_id": row.id,
+                "status": status,
+                "verdict": verdict,
+                "display_score": row.display_score,
+                "cosine_similarity": row.cosine_similarity,
+                "threshold": row.threshold,
+                "is_match": row.is_match,
+                "cross_checks": cross_checks,
+                "result": {
+                    key: value
+                    for key, value in result.items()
+                    if key not in {"aadhaar_qr", "pan_extraction", "layered_analysis"}
+                },
+                "captured_at": row.created_at.isoformat() if row.created_at else "",
+            },
+        )
+        return
+
+    section_name = "In-Person Session" if selfie_filename else "Remote Session"
+    _upsert_layered_analysis_entry(
+        session,
+        entity=entity,
+        screen_name="Video KYC",
+        section_name=section_name,
+        details={
+            "check_id": row.id,
+            "status": status,
+            "verdict": verdict,
+            "doc_filename": doc_filename,
+            "selfie_filename": selfie_filename,
+            "reference_document_authenticity": upload_authenticity.get("reference_document") or {},
+            "live_capture_authenticity": upload_authenticity.get("live_capture") or {},
+            "display_score": row.display_score,
+            "cosine_similarity": row.cosine_similarity,
+            "threshold": row.threshold,
+            "liveness_passed": row.liveness_passed,
+            "liveness_state": row.liveness_state,
+            "result": result,
+            "captured_at": row.created_at.isoformat() if row.created_at else "",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +448,7 @@ def save_scan_to_db(
     pdf_bytes: Optional[bytes] = None,
     forced_entity_ref: Optional[str] = None,
     extra_identity: Optional[Dict[str, str]] = None,
+    layered_screen_name: str = "Scan Document",
 ) -> Optional[Dict[str, Any]]:
     """Persist a completed verification report (+ optional PDF) to the database.
 
@@ -308,7 +531,7 @@ def save_scan_to_db(
                     if v:
                         setattr(entity, k, v)
                         _updated_fields.append(k)
-                entity.updated_at = func.now()  # type: ignore[assignment]
+                entity.updated_at = datetime.now(timezone.utc)  # type: ignore[assignment]
                 log.info(
                     "save_scan_to_db: entity enriched with operator fields",
                     extra={"entity_ref": entity.entity_ref, "updated_fields": _updated_fields},
@@ -326,22 +549,60 @@ def save_scan_to_db(
                     except OSError:
                         pass
 
-            scan = Scan(
-                entity_id=entity.id if entity else None,
-                source_name=report.get("source", {}).get("name", ""),
-                source_sha256=report.get("source", {}).get("sha256", ""),
-                document_type=ss.get("document", {}).get("type", "generic"),
-                truth_score=tamper.get("truth_score"),
-                risk_level=tamper.get("risk_level", "low"),
-                verdict=tamper.get("verdict", ""),
-                parse_method=ss.get("parse_method", ""),
-                report_json=report,
-                pdf_report=pdf_bytes,
-            )
-            session.add(scan)
+            scan = None
+            if entity is not None:
+                scan = (
+                    session.query(Scan)
+                    .filter(
+                        Scan.entity_id == entity.id,
+                        Scan.source_name == report.get("source", {}).get("name", ""),
+                        Scan.document_type == ss.get("document", {}).get("type", "generic"),
+                    )
+                    .order_by(Scan.generated_at.desc())
+                    .first()
+                )
+
+            if scan is None:
+                scan = Scan(
+                    entity_id=entity.id if entity else None,
+                    source_name=report.get("source", {}).get("name", ""),
+                    source_sha256=report.get("source", {}).get("sha256", ""),
+                    document_type=ss.get("document", {}).get("type", "generic"),
+                    truth_score=tamper.get("truth_score"),
+                    risk_level=tamper.get("risk_level", "low"),
+                    verdict=tamper.get("verdict", ""),
+                    parse_method=ss.get("parse_method", ""),
+                    report_json=report,
+                    pdf_report=pdf_bytes,
+                )
+                session.add(scan)
+            else:
+                scan.entity_id = entity.id if entity else None
+                scan.source_sha256 = report.get("source", {}).get("sha256", "")
+                scan.truth_score = tamper.get("truth_score")
+                scan.risk_level = tamper.get("risk_level", "low")
+                scan.verdict = tamper.get("verdict", "")
+                scan.parse_method = ss.get("parse_method", "")
+                scan.report_json = report
+                scan.pdf_report = pdf_bytes
+                scan.generated_at = datetime.now(timezone.utc)
+
+            if entity is not None:
+                stale_scans = (
+                    session.query(Scan)
+                    .filter(
+                        Scan.entity_id == entity.id,
+                        Scan.source_name == scan.source_name,
+                        Scan.document_type == scan.document_type,
+                        Scan.id != scan.id,
+                    )
+                    .all()
+                )
+                for stale_scan in stale_scans:
+                    session.delete(stale_scan)
             session.flush()
             log.info(
-                "save_scan_to_db: scan row created",
+                "save_scan_to_db: scan row upserted",
                 extra={"scan_id": scan.id, "document_type": scan.document_type, "risk_level": scan.risk_level},
             )
 
@@ -357,13 +618,23 @@ def save_scan_to_db(
                 _key_fields = ss.get("key_fields") or {}
                 _doc_type = ss.get("document", {}).get("type", "generic")
                 try:
-                    doc_info = DocumentInformation(
-                        entity_id=entity.id,
-                        scan_id=scan.id,
-                        document_type=_doc_type,
-                        extracted_data=_key_fields if _key_fields else {},
+                    doc_info = (
+                        session.query(DocumentInformation)
+                        .filter(DocumentInformation.scan_id == scan.id)
+                        .first()
                     )
-                    session.add(doc_info)
+                    if doc_info is None:
+                        doc_info = DocumentInformation(
+                            entity_id=entity.id,
+                            scan_id=scan.id,
+                            document_type=_doc_type,
+                            extracted_data=_key_fields if _key_fields else {},
+                        )
+                        session.add(doc_info)
+                    else:
+                        doc_info.entity_id = entity.id
+                        doc_info.document_type = _doc_type
+                        doc_info.extracted_data = _key_fields if _key_fields else {}
                     session.flush()
                     log.info(
                         "save_scan_to_db: DocumentInformation created",
@@ -378,6 +649,20 @@ def save_scan_to_db(
                     log.error(
                         "save_scan_to_db: DocumentInformation creation FAILED",
                         extra={"error": str(di_exc), "entity_id": entity.id, "scan_id": scan.id},
+                        exc_info=True,
+                    )
+                try:
+                    _persist_scan_layered_analysis(
+                        session,
+                        entity=entity,
+                        scan=scan,
+                        report=report,
+                        screen_name=layered_screen_name,
+                    )
+                except Exception as la_exc:
+                    log.error(
+                        "save_scan_to_db: layered analysis upsert FAILED",
+                        extra={"error": str(la_exc), "entity_id": entity.id, "scan_id": scan.id},
                         exc_info=True,
                     )
             else:
@@ -490,6 +775,11 @@ def get_entity_scans(entity_ref: str) -> List[Dict[str, Any]]:
                 .order_by(Scan.generated_at.desc())
                 .all()
             )
+            latest_scans: Dict[tuple[str, str], Scan] = {}
+            for scan in scans:
+                key = (scan.source_name or "", scan.document_type or "generic")
+                if key not in latest_scans:
+                    latest_scans[key] = scan
             return [
                 {
                     "id": s.id,
@@ -505,7 +795,7 @@ def get_entity_scans(entity_ref: str) -> List[Dict[str, Any]]:
                     "has_pdf": s.pdf_report is not None and len(s.pdf_report) > 0,
                     "report_json": s.report_json or {},
                 }
-                for s in scans
+                for s in latest_scans.values()
             ]
     except Exception as exc:
         log.warning("get_entity_scans failed: %s", exc)
@@ -580,7 +870,7 @@ def update_entity(entity_ref: str, fields: Dict[str, str]) -> Optional[Dict[str,
             for k, v in fields.items():
                 if k in allowed:
                     setattr(entity, k, _clean(v))
-            entity.updated_at = func.now()  # type: ignore[assignment]
+                entity.updated_at = datetime.now(timezone.utc)  # type: ignore[assignment]
             return _entity_to_dict(entity, session)
     except Exception as exc:
         log.warning("update_entity failed: %s", exc)
@@ -712,6 +1002,10 @@ def save_identity_check(
     doc_filename: str = "",
     selfie_filename: str = "",
     pdf_bytes: Optional[bytes] = None,
+    doc_bytes: Optional[bytes] = None,
+    selfie_bytes: Optional[bytes] = None,
+    pan_filename: str = "",
+    pan_bytes: Optional[bytes] = None,
 ) -> Optional[Dict[str, Any]]:
     """Persist a face-match or Video KYC result to the DB.
 
@@ -765,24 +1059,107 @@ def save_identity_check(
                     status = "fail"
                     verdict = "FAIL"
 
-            row = IdentityCheck(
-                entity_id=entity_id,
-                check_type=check_type,
-                status=status,
-                cosine_similarity=result.get("confidence") or result.get("cosine_similarity"),
-                display_score=result.get("display_score"),
-                threshold=result.get("threshold", 0.40),
-                is_match=is_match,
-                liveness_state=result.get("liveness_state"),
-                liveness_passed=result.get("liveness_passed"),
-                verdict=verdict,
-                doc_filename=doc_filename,
-                selfie_filename=selfie_filename,
-                report_json=result,
-                pdf_report=pdf_bytes,
-            )
-            session.add(row)
+            row = None
+            if entity_id is not None:
+                row = (
+                    session.query(IdentityCheck)
+                    .filter(
+                        IdentityCheck.entity_id == entity_id,
+                        IdentityCheck.check_type == check_type,
+                    )
+                    .order_by(IdentityCheck.created_at.desc())
+                    .first()
+                )
+
+            if row is None:
+                row = IdentityCheck(
+                    entity_id=entity_id,
+                    check_type=check_type,
+                    status=status,
+                    cosine_similarity=result.get("confidence") or result.get("cosine_similarity"),
+                    display_score=result.get("display_score"),
+                    threshold=result.get("threshold", 0.40),
+                    is_match=is_match,
+                    liveness_state=result.get("liveness_state"),
+                    liveness_passed=result.get("liveness_passed"),
+                    verdict=verdict,
+                    doc_filename=doc_filename,
+                    selfie_filename=selfie_filename,
+                    report_json=result,
+                    pdf_report=pdf_bytes,
+                )
+                session.add(row)
+            else:
+                row.entity_id = entity_id
+                row.status = status
+                row.cosine_similarity = result.get("confidence") or result.get("cosine_similarity")
+                row.display_score = result.get("display_score")
+                row.threshold = result.get("threshold", 0.40)
+                row.is_match = is_match
+                row.liveness_state = result.get("liveness_state")
+                row.liveness_passed = result.get("liveness_passed")
+                row.verdict = verdict
+                row.doc_filename = doc_filename
+                row.selfie_filename = selfie_filename
+                row.report_json = result
+                row.pdf_report = pdf_bytes
+                row.created_at = datetime.now(timezone.utc)
+
+            if entity_id is not None:
+                stale_rows = (
+                    session.query(IdentityCheck)
+                    .filter(
+                        IdentityCheck.entity_id == entity_id,
+                        IdentityCheck.check_type == check_type,
+                        IdentityCheck.id != row.id,
+                    )
+                    .all()
+                )
+                for stale_row in stale_rows:
+                    session.delete(stale_row)
             session.flush()
+
+            if check_type == "video_kyc":
+                layered_analysis = result.setdefault("layered_analysis", {})
+                upload_authenticity = layered_analysis.setdefault("upload_authenticity", {})
+                if doc_filename and doc_bytes and "reference_document" not in upload_authenticity:
+                    upload_authenticity["reference_document"] = analyse_upload_authenticity(
+                        doc_bytes,
+                        doc_filename,
+                        format_check=build_format_check(
+                            "Reference ID document was uploaded successfully for Video KYC verification.",
+                            True,
+                        ),
+                    )
+                if selfie_filename and selfie_bytes and "live_capture" not in upload_authenticity:
+                    upload_authenticity["live_capture"] = analyse_upload_authenticity(
+                        selfie_bytes,
+                        selfie_filename,
+                        format_check=build_format_check(
+                            "Live capture image was stored successfully for Video KYC verification.",
+                            True,
+                        ),
+                    )
+
+            if entity is not None:
+                try:
+                    _persist_identity_layered_analysis(
+                        session,
+                        entity=entity,
+                        row=row,
+                        check_type=check_type,
+                        result=result,
+                        doc_filename=doc_filename,
+                        selfie_filename=selfie_filename,
+                        status=status,
+                        verdict=verdict,
+                    )
+                except Exception as la_exc:
+                    log.error(
+                        "save_identity_check: layered analysis upsert FAILED",
+                        extra={"error": str(la_exc), "entity_id": entity.id, "check_id": row.id},
+                        exc_info=True,
+                    )
 
             saved = {
                 "id": row.id,
@@ -794,15 +1171,117 @@ def save_identity_check(
 
             # Upload PDF to MinIO
             if pdf_bytes and entity_ref:
-                ts = row.created_at.strftime("%Y%m%d_%H%M%S") if row.created_at else "unknown"
-                minio_key = f"{entity_ref}/{ts}_{check_type}_report.pdf"
+                try:
+                    legacy_objects = minio_list_entity_objects(entity_ref)
+                    for obj in legacy_objects:
+                        key = obj.get("key", "")
+                        filename = Path(key).name
+                        if filename == f"{check_type}_report.pdf" or filename.endswith(f"_{check_type}_report.pdf"):
+                            minio_delete_object(key)
+                except Exception:
+                    log.warning("save_identity_check: legacy report cleanup failed", exc_info=True)
+                minio_key = f"{entity_ref}/{check_type}_report.pdf"
                 minio_upload(minio_key, pdf_bytes, "application/pdf")
+
+            if entity_ref and doc_bytes and doc_filename:
+                try:
+                    minio_upload(
+                        f"{entity_ref}/{Path(doc_filename).name}",
+                        doc_bytes,
+                        "application/octet-stream",
+                    )
+                except Exception:
+                    log.warning("save_identity_check: source document upload failed", exc_info=True)
+
+            if entity_ref and selfie_bytes and selfie_filename:
+                try:
+                    minio_upload(
+                        f"{entity_ref}/{Path(selfie_filename).name}",
+                        selfie_bytes,
+                        "application/octet-stream",
+                    )
+                except Exception:
+                    log.warning("save_identity_check: selfie upload failed", exc_info=True)
+
+            if entity_ref and pan_bytes and pan_filename:
+                try:
+                    minio_upload(
+                        f"{entity_ref}/{Path(pan_filename).name}",
+                        pan_bytes,
+                        "application/octet-stream",
+                    )
+                except Exception:
+                    log.warning("save_identity_check: pan document upload failed", exc_info=True)
 
             log.info("save_identity_check: saved %s check id=%s for entity=%s", check_type, row.id, entity_ref)
             return saved
     except Exception as exc:
         log.error("save_identity_check failed: %s", exc, exc_info=True)
         return None
+
+
+def get_entity_layered_analysis(entity_ref: str) -> Dict[str, Any]:
+    """Return latest layered-analysis entries and report-generation state for an entity."""
+    try:
+        with db_session() as session:
+            entity = session.query(Entity).filter(Entity.entity_ref == entity_ref).first()
+            if not entity:
+                return {"entries": [], "screens": {}, "report_state": {}}
+
+            entries = (
+                session.query(LayeredAnalysisEntry)
+                .filter(LayeredAnalysisEntry.entity_id == entity.id)
+                .order_by(LayeredAnalysisEntry.screen_name.asc(), LayeredAnalysisEntry.section_name.asc())
+                .all()
+            )
+            entry_dicts = [
+                {
+                    "id": entry.id,
+                    "screen_name": entry.screen_name,
+                    "section_name": entry.section_name,
+                    "details_captured_json": entry.details_captured_json or {},
+                    "created_at": entry.created_at.isoformat() if entry.created_at else "",
+                    "updated_at": entry.updated_at.isoformat() if entry.updated_at else "",
+                }
+                for entry in entries
+            ]
+            screens: Dict[str, List[Dict[str, Any]]] = {}
+            for item in entry_dicts:
+                screens.setdefault(item["screen_name"], []).append(item)
+
+            report_generated = bool(entity.layered_report_generated)
+            report_state = {
+                "generated": report_generated,
+                "generated_at": entity.layered_report_generated_at.isoformat() if entity.layered_report_generated_at else "",
+                "updated_at": entity.layered_analysis_updated_at.isoformat() if entity.layered_analysis_updated_at else "",
+                "minio_key": entity.layered_report_minio_key or "",
+                "can_generate": not report_generated,
+                "has_entries": bool(entry_dicts),
+            }
+            return {
+                "entries": entry_dicts,
+                "screens": screens,
+                "report_state": report_state,
+            }
+    except Exception as exc:
+        log.warning("get_entity_layered_analysis failed: %s", exc)
+        return {"entries": [], "screens": {}, "report_state": {}}
+
+
+def mark_layered_report_generated(entity_ref: str, minio_key: str) -> bool:
+    """Mark the entity's layered-analysis report as generated and current."""
+    try:
+        with db_session() as session:
+            entity = session.query(Entity).filter(Entity.entity_ref == entity_ref).first()
+            if not entity:
+                return False
+            entity.layered_report_generated = True
+            entity.layered_report_generated_at = datetime.now(timezone.utc)
+            entity.layered_report_minio_key = minio_key
+            return True
+    except Exception as exc:
+        log.warning("mark_layered_report_generated failed: %s", exc)
+        return False
 
 
 def get_entity_identity_checks(entity_ref: str) -> List[Dict[str, Any]]:
@@ -822,6 +1301,10 @@ def get_entity_identity_checks(entity_ref: str) -> List[Dict[str, Any]]:
                 .order_by(IdentityCheck.created_at.desc())
                 .all()
             )
+            latest_by_type: Dict[str, IdentityCheck] = {}
+            for check in checks:
+                if check.check_type not in latest_by_type:
+                    latest_by_type[check.check_type] = check
             return [
                 {
                     "id": c.id,
@@ -835,22 +1318,23 @@ def get_entity_identity_checks(entity_ref: str) -> List[Dict[str, Any]]:
                     "verdict": c.verdict,
                     "doc_filename": c.doc_filename or "",
                     "selfie_filename": c.selfie_filename or "",
+                    "report_json": c.report_json or {},
                     "has_pdf": c.pdf_report is not None and len(c.pdf_report) > 0,
                     "created_at": c.created_at.isoformat() if c.created_at else "",
                 }
-                for c in checks
+                for c in latest_by_type.values()
             ]
     except Exception as exc:
         log.warning("get_entity_identity_checks failed: %s", exc)
         return []
 
 
-_DB_VIEWER_TABLES = {"entities", "scans", "document_information", "cases", "case_notes", "identity_checks"}
+_DB_VIEWER_TABLES = {"entities", "scans", "document_information", "cases", "case_notes", "identity_checks", "layered_analysis_entries"}
 
 
 def db_table_counts() -> Dict[str, int]:
     """Return row counts for all application tables."""
-    _ALL_TABLES = ("entities", "scans", "document_information", "cases", "case_notes", "identity_checks")
+    _ALL_TABLES = ("entities", "scans", "document_information", "cases", "case_notes", "identity_checks", "layered_analysis_entries")
     counts: Dict[str, int] = {}
     try:
         with db_session() as session:
@@ -874,34 +1358,36 @@ def db_table_rows(table: str, limit: int = 500) -> tuple[List[Dict[str, Any]], i
         with db_session() as session:
             total: int = session.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar() or 0  # noqa: S608
             if table == "scans":
-                # Exclude pdf_report (large binary) and report_json (huge) from display
+                # Exclude pdf_report (large binary blob) but include all other columns
                 rows_raw = session.execute(
                     text(
                         "SELECT id, entity_id, source_name, source_sha256, document_type, "
-                        "truth_score, risk_level, verdict, parse_method, generated_at "
+                        "truth_score, risk_level, verdict, parse_method, report_json, generated_at "
                         "FROM scans ORDER BY generated_at DESC LIMIT :lim"
                     ),
                     {"lim": limit},
                 ).mappings().all()
             elif table == "document_information":
-                # Show all columns — extracted_data is JSONB but useful to see
                 rows_raw = session.execute(
                     text(
-                        "SELECT id, entity_id, scan_id, document_type, "
-                        "extracted_data, created_at "
+                        "SELECT * "
                         "FROM document_information ORDER BY id DESC LIMIT :lim"
                     ),
                     {"lim": limit},
                 ).mappings().all()
             elif table == "identity_checks":
-                # Exclude pdf_report (large binary) and report_json (huge) from display
                 rows_raw = session.execute(
                     text(
-                        "SELECT id, entity_id, check_type, status, "
-                        "cosine_similarity, display_score, is_match, "
-                        "liveness_passed, verdict, doc_filename, "
-                        "selfie_filename, created_at "
+                        "SELECT * "
                         "FROM identity_checks ORDER BY created_at DESC LIMIT :lim"
+                    ),
+                    {"lim": limit},
+                ).mappings().all()
+            elif table == "layered_analysis_entries":
+                rows_raw = session.execute(
+                    text(
+                        "SELECT * "
+                        "FROM layered_analysis_entries ORDER BY updated_at DESC LIMIT :lim"
                     ),
                     {"lim": limit},
                 ).mappings().all()
@@ -925,11 +1411,11 @@ def reset_db() -> bool:
         with db_session() as session:
             session.execute(
                 text(
-                    "TRUNCATE TABLE case_notes, cases, document_information, identity_checks, scans, entities "
+                    "TRUNCATE TABLE layered_analysis_entries, case_notes, cases, document_information, identity_checks, scans, entities "
                     "RESTART IDENTITY CASCADE"
                 )
             )
-        log.warning("reset_db: all tables (incl. document_information) truncated by user request")
+        log.warning("reset_db: all tables (incl. layered_analysis_entries) truncated by user request")
         return True
     except Exception as exc:
         log.error("reset_db failed: %s", exc)
@@ -954,6 +1440,8 @@ def _get_minio_s3_client():
         # Ensure the scheme is present
         if not endpoint.startswith("http"):
             endpoint = f"http://{endpoint}"
+        if not Path("/.dockerenv").exists() and endpoint.startswith("http://minio:"):
+            endpoint = endpoint.replace("http://minio:", "http://localhost:", 1)
         client = boto3.client(
             "s3",
             endpoint_url=endpoint,
@@ -1397,6 +1885,11 @@ def get_all_entities_with_scans(limit: int = 200) -> List[Dict[str, Any]]:
                     .order_by(Scan.generated_at.desc())
                     .all()
                 )
+                latest_scans: Dict[tuple[str, str], Scan] = {}
+                for scan in scans:
+                    key = (scan.source_name or "", scan.document_type or "generic")
+                    if key not in latest_scans:
+                        latest_scans[key] = scan
                 result.append({
                     "entity_ref": e.entity_ref,
                     "name": f"{e.first_name or ''} {e.last_name or ''}".strip() or e.entity_ref,
@@ -1404,6 +1897,10 @@ def get_all_entities_with_scans(limit: int = 200) -> List[Dict[str, Any]]:
                     "last_name": e.last_name or "",
                     "pan_number": e.pan_number or "",
                     "email": e.email or "",
+                    "layered_report_generated": bool(e.layered_report_generated),
+                    "layered_report_generated_at": e.layered_report_generated_at.isoformat() if e.layered_report_generated_at else "",
+                    "layered_analysis_updated_at": e.layered_analysis_updated_at.isoformat() if e.layered_analysis_updated_at else "",
+                    "layered_report_minio_key": e.layered_report_minio_key or "",
                     "scans": [
                         {
                             "id": s.id,
@@ -1415,7 +1912,7 @@ def get_all_entities_with_scans(limit: int = 200) -> List[Dict[str, Any]]:
                             "generated_at": s.generated_at.isoformat() if s.generated_at else "",
                             "has_pdf": bool(s.pdf_report),
                         }
-                        for s in scans
+                        for s in latest_scans.values()
                     ],
                 })
             return result

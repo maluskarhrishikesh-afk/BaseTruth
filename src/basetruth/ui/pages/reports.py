@@ -1,9 +1,8 @@
-﻿"""Reports page â€” one consolidated PDF per entity, ZIP of all source documents."""
+"""Reports page — one consolidated PDF per entity, plus source-document ZIP export."""
 from __future__ import annotations
 
 import io
 import zipfile
-from typing import Any, Dict
 
 import streamlit as st
 
@@ -13,6 +12,7 @@ from basetruth.ui.components import (
     _db_available_cached,
     _page_title,
     get_all_entities_with_scans,
+    get_entity_layered_analysis,
     get_entity_identity_checks,
     get_entity_scans,
     minio_delete_object,
@@ -22,206 +22,195 @@ from basetruth.ui.components import (
 )
 
 _CONSOLIDATED_PDF_KEY = "{entity_ref}/consolidated_report.pdf"
+_LAYERED_PDF_FALLBACK_KEY = "{entity_ref}/layered_analysis_report.pdf"
+
+
+def _is_audit_source_object(key: str) -> bool:
+    normalized = key.replace("\\", "/")
+    filename = normalized.rsplit("/", 1)[-1].lower()
+    if filename == "consolidated_report.pdf":
+        return False
+    if filename.endswith("_report.pdf"):
+        return False
+    if "/case_reports/" in normalized:
+        return False
+    return True
 
 
 def _page_reports(service: BaseTruthService) -> None:
-    st.markdown(_page_title("ðŸ“Š", "Reports"), unsafe_allow_html=True)
+    _ = service
+    st.markdown(_page_title("📊", "Reports"), unsafe_allow_html=True)
 
-    with st.expander("â„¹ï¸ How to use this screen", expanded=False):
+    with st.expander("ℹ️ How to use this screen", expanded=False):
         st.markdown(
             """
-**One consolidated report per applicant** â€” covering all their verification activity.
+This screen keeps one final report per applicant and nothing else.
 
-- **Generate / Refresh Consolidated Report** â€” builds a single PDF covering Identity
-  Verification, Video KYC, and Document Scans.  Each new generation replaces the
-  previous version so only the latest report is kept.
-- **Download All Documents (ZIP)** â€” bundles every source document uploaded for that
-  applicant (Aadhaar, PAN, selfies, payslips, bank statements, etc.) into a single
-  ZIP file for audit purposes.
+- `Generate / Refresh Consolidated Report` builds a single PDF covering every saved activity for that applicant.
+- If a newer activity is added later, generating again replaces the older consolidated PDF.
+- `Download All Source Documents (ZIP)` bundles the applicant's uploaded evidence files for audit.
 """
         )
 
     if not _DB_IMPORTS_OK or not _db_available_cached():
-        st.info(
-            "ðŸ“´ Database is offline. Connect PostgreSQL to view entity reports."
-        )
+        st.info("📴 Database is offline. Connect PostgreSQL to view consolidated reports.")
         return
 
     entities = get_all_entities_with_scans()
     if not entities:
         st.info(
-            "No data yet. Use **Scan**, **Bulk Scan**, or **Identity Verification** "
-            "to add records."
+            "No data yet. Use Identity Verification, Video KYC, Scan Document, or Bulk Scan first."
         )
         return
 
-    # â”€â”€ Search / filter â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     search = st.text_input(
-        "ðŸ” Filter applicants",
-        placeholder="Name, PAN, email, or BT-referenceâ€¦",
-        key="rpt_search",
+        "🔍 Filter applicants",
+        placeholder="Name, PAN, email, or BT-reference...",
+        key="reports_search",
     ).strip().lower()
 
     filtered = [
-        e for e in entities
+        entity
+        for entity in entities
         if not search
-        or search in (e.get("name") or "").lower()
-        or search in (e.get("pan_number") or "").lower()
-        or search in (e.get("email") or "").lower()
-        or search in (e.get("entity_ref") or "").lower()
+        or search in (entity.get("name") or "").lower()
+        or search in (entity.get("pan_number") or "").lower()
+        or search in (entity.get("email") or "").lower()
+        or search in (entity.get("entity_ref") or "").lower()
     ]
 
     st.caption(f"{len(filtered)} applicant(s) shown")
     st.divider()
 
-    # â”€â”€ Per-entity cards â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    for ent in filtered:
-        ref        = ent["entity_ref"]
-        name       = ent["name"] or ref
-        pan        = ent.get("pan_number") or ""
-        email      = ent.get("email") or ""
-        ent_scans  = ent.get("scans") or []
+    for entity in filtered:
+        entity_ref = entity["entity_ref"]
+        entity_name = entity.get("name") or entity_ref
+        pan_number = entity.get("pan_number") or ""
+        email = entity.get("email") or ""
+        linked_scans = entity.get("scans") or []
+        identity_checks = get_entity_identity_checks(entity_ref)
+        face_checks = [check for check in identity_checks if check.get("check_type") == "face_match"]
+        kyc_checks = [check for check in identity_checks if check.get("check_type") == "video_kyc"]
 
-        # Fetch identity checks for this entity
-        idv_checks = get_entity_identity_checks(ref) if _DB_IMPORTS_OK and _db_available_cached() else []
-        face_checks = [c for c in idv_checks if c.get("check_type") == "face_match"]
-        kyc_checks  = [c for c in idv_checks if c.get("check_type") == "video_kyc"]
-
-        sub = "  Â·  ".join(filter(None, [pan, email]))
+        subtitle = "  ·  ".join(filter(None, [pan_number, email]))
         summary_parts = []
         if face_checks:
             summary_parts.append(f"{len(face_checks)} face match")
         if kyc_checks:
             summary_parts.append(f"{len(kyc_checks)} Video KYC")
-        if ent_scans:
-            summary_parts.append(f"{len(ent_scans)} scan(s)")
-        summary_str = ", ".join(summary_parts) or "no activity yet"
+        if linked_scans:
+            summary_parts.append(f"{len(linked_scans)} scan(s)")
+        summary = ", ".join(summary_parts) or "no saved activity"
 
-        expander_label = (
-            f"ðŸ‘¤ **{name}** â€” {ref}"
-            + (f"  Â·  {sub}" if sub else "")
-            + f"  Â·  *{summary_str}*"
-        )
+        label = f"👤 **{entity_name}** — {entity_ref}"
+        if subtitle:
+            label += f"  ·  {subtitle}"
+        label += f"  ·  *{summary}*"
 
-        with st.expander(expander_label, expanded=False):
-            if not face_checks and not kyc_checks and not ent_scans:
-                st.info("No verification activity recorded for this entity.")
+        with st.expander(label, expanded=False):
+            if not face_checks and not kyc_checks and not linked_scans:
+                st.info("No verification activity recorded for this applicant.")
                 continue
 
-            # â”€â”€ Summary table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-            col_a, col_b, col_c = st.columns(3)
-            col_a.metric("Face Match Checks", len(face_checks))
-            col_b.metric("Video KYC Sessions", len(kyc_checks))
-            col_c.metric("Document Scans", len(ent_scans))
-
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Face Match Checks", len(face_checks))
+            col2.metric("Video KYC Sessions", len(kyc_checks))
+            col3.metric("Document Scans", len(linked_scans))
             st.divider()
 
-            btn_col1, btn_col2 = st.columns(2)
+            action_col1, action_col2 = st.columns(2)
 
-            # â”€â”€ Generate / Refresh consolidated PDF â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-            with btn_col1:
+            with action_col1:
                 if st.button(
-                    "ðŸ“„ Generate / Refresh Consolidated Report",
-                    key=f"gen_report_{ref}",
+                    "📄 Generate / Refresh Consolidated Report",
+                    key=f"reports_generate_{entity_ref}",
                     use_container_width=True,
                 ):
-                    with st.spinner("Building consolidated PDFâ€¦"):
+                    with st.spinner("Building consolidated PDF..."):
                         try:
-                            from basetruth.reporting.pdf import (  # noqa: PLC0415
-                                render_consolidated_entity_pdf,
-                            )
-
-                            # Fetch full scan list for the entity
-                            full_scans = get_entity_scans(ref) or ent_scans
+                            from basetruth.reporting.pdf import render_consolidated_entity_pdf  # noqa: PLC0415
 
                             pdf_bytes = render_consolidated_entity_pdf(
-                                entity=ent,
-                                scans=full_scans,
-                                identity_checks=idv_checks,
+                                entity=entity,
+                                scans=get_entity_scans(entity_ref) or linked_scans,
+                                identity_checks=identity_checks,
                             )
-
-                            pdf_key = _CONSOLIDATED_PDF_KEY.format(entity_ref=ref)
-                            # Delete previous version
+                            pdf_key = _CONSOLIDATED_PDF_KEY.format(entity_ref=entity_ref)
                             minio_delete_object(pdf_key)
-                            # Upload new version
                             upload_ok = minio_upload(pdf_key, pdf_bytes, "application/pdf")
-
-                            st.session_state[f"consolidated_pdf_{ref}"] = pdf_bytes
+                            st.session_state[f"reports_pdf_{entity_ref}"] = pdf_bytes
                             if upload_ok:
-                                st.success("âœ… Consolidated report generated and saved.")
+                                st.success("✅ Consolidated report generated and saved.")
                             else:
                                 st.warning(
-                                    "Report generated but could not be uploaded to MinIO. "
-                                    "Use the download button below."
+                                    "Report generated, but MinIO upload failed. Use the download button below."
                                 )
                         except Exception as exc:  # noqa: BLE001
                             st.error(f"Failed to generate report: {exc}")
 
-            # â”€â”€ Download consolidated PDF â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-            _pdf = st.session_state.get(f"consolidated_pdf_{ref}")
-            if not _pdf:
-                # Try to fetch existing one from MinIO
-                _pdf_key = _CONSOLIDATED_PDF_KEY.format(entity_ref=ref)
-                try:
-                    _pdf = minio_get_object(_pdf_key)
-                    if _pdf:
-                        st.session_state[f"consolidated_pdf_{ref}"] = _pdf
-                except Exception:  # noqa: BLE001
-                    pass
-
-            if _pdf:
-                with btn_col1:
+                pdf_bytes = st.session_state.get(f"reports_pdf_{entity_ref}")
+                if not pdf_bytes:
+                    pdf_bytes = minio_get_object(_CONSOLIDATED_PDF_KEY.format(entity_ref=entity_ref))
+                    if pdf_bytes:
+                        st.session_state[f"reports_pdf_{entity_ref}"] = pdf_bytes
+                if pdf_bytes:
                     st.download_button(
-                        "â¬‡ Download Consolidated Report (PDF)",
-                        data=_pdf,
-                        file_name=f"consolidated_report_{ref}.pdf",
+                        "⬇ Download Consolidated Report (PDF)",
+                        data=pdf_bytes,
+                        file_name=f"consolidated_report_{entity_ref}.pdf",
                         mime="application/pdf",
-                        key=f"dl_consolidated_{ref}",
+                        key=f"reports_download_pdf_{entity_ref}",
                         use_container_width=True,
                     )
 
-            # â”€â”€ Download All Documents (ZIP) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-            with btn_col2:
+                layered_state = get_entity_layered_analysis(entity_ref).get("report_state") or {}
+                layered_key = layered_state.get("minio_key") or _LAYERED_PDF_FALLBACK_KEY.format(entity_ref=entity_ref)
+                layered_pdf = minio_get_object(layered_key) if layered_key else None
+                if layered_pdf:
+                    st.download_button(
+                        "⬇ Download Final Layered Report (PDF)",
+                        data=layered_pdf,
+                        file_name=f"layered_analysis_{entity_ref}.pdf",
+                        mime="application/pdf",
+                        key=f"reports_download_layered_pdf_{entity_ref}",
+                        use_container_width=True,
+                    )
+
+            with action_col2:
                 if st.button(
-                    "ðŸ“¦ Download All Documents (ZIP)",
-                    key=f"zip_docs_{ref}",
+                    "📦 Download All Source Documents (ZIP)",
+                    key=f"reports_zip_build_{entity_ref}",
                     use_container_width=True,
                 ):
-                    with st.spinner("Collecting documents from storageâ€¦"):
+                    with st.spinner("Collecting source documents..."):
                         try:
-                            objects = minio_list_entity_objects(ref)
+                            objects = [
+                                obj
+                                for obj in minio_list_entity_objects(entity_ref)
+                                if _is_audit_source_object(obj["key"])
+                            ]
                             if not objects:
-                                st.warning(
-                                    "No source documents found in storage for this entity."
-                                )
+                                st.warning("No uploaded source documents were found for this applicant.")
                             else:
-                                zip_buf = io.BytesIO()
-                                with zipfile.ZipFile(
-                                    zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED
-                                ) as zf:
+                                zip_buffer = io.BytesIO()
+                                with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
                                     for obj in objects:
                                         obj_key = obj["key"]
-                                        obj_data = minio_get_object(obj_key)
-                                        if obj_data:
-                                            # Preserve relative path inside ZIP
-                                            arc_name = obj_key[len(ref) + 1:]  # strip entity_ref/
-                                            zf.writestr(arc_name, obj_data)
-
-                                zip_bytes = zip_buf.getvalue()
-                                st.session_state[f"zip_docs_{ref}"] = zip_bytes
-                                st.success(f"âœ… ZIP ready â€” {len(objects)} file(s)")
+                                        obj_bytes = minio_get_object(obj_key)
+                                        if obj_bytes:
+                                            archive.writestr(obj_key[len(entity_ref) + 1 :], obj_bytes)
+                                st.session_state[f"reports_zip_{entity_ref}"] = zip_buffer.getvalue()
+                                st.success(f"✅ ZIP ready — {len(objects)} file(s)")
                         except Exception as exc:  # noqa: BLE001
                             st.error(f"Failed to build ZIP: {exc}")
 
-            _zip = st.session_state.get(f"zip_docs_{ref}")
-            if _zip:
-                with btn_col2:
+                zip_bytes = st.session_state.get(f"reports_zip_{entity_ref}")
+                if zip_bytes:
                     st.download_button(
-                        "â¬‡ Download ZIP",
-                        data=_zip,
-                        file_name=f"documents_{ref}.zip",
+                        "⬇ Download ZIP",
+                        data=zip_bytes,
+                        file_name=f"documents_{entity_ref}.zip",
                         mime="application/zip",
-                        key=f"dl_zip_{ref}",
+                        key=f"reports_download_zip_{entity_ref}",
                         use_container_width=True,
                     )
-

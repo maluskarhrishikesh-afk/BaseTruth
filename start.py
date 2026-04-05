@@ -34,6 +34,8 @@ API_DOCS_URL    = f"http://localhost:{API_PORT}/api/docs"
 IMAGE_NAME      = "basetruth:latest"
 UI_SERVICE      = "basetruth-ui"
 API_SERVICE     = "basetruth-api"
+DB_SERVICE      = "db"
+MINIO_SERVICE   = "minio"
 DAEMON_WAIT_SEC = 60   # how long to wait for Docker daemon after install
 UI_WAIT_SEC     = 90   # how long to wait for Streamlit to become healthy
 API_WAIT_SEC    = 60   # how long to wait for the API to become healthy
@@ -212,9 +214,12 @@ def _start_services(root: Path) -> None:
     in docker-compose.yml this guarantees the running process always sees the
     latest Python source files without requiring a full image rebuild.
     """
-    _step(f"Starting {UI_SERVICE} and {API_SERVICE} with latest code ...")
+    _step(f"Starting {DB_SERVICE}, {MINIO_SERVICE}, {UI_SERVICE}, and {API_SERVICE} with latest code ...")
     result = subprocess.run(
-        ["docker", "compose", "up", "-d", "--force-recreate", UI_SERVICE, API_SERVICE],
+        [
+            "docker", "compose", "up", "-d", "--force-recreate",
+            DB_SERVICE, MINIO_SERVICE, UI_SERVICE, API_SERVICE,
+        ],
         cwd=str(root),
     )
     if result.returncode != 0:

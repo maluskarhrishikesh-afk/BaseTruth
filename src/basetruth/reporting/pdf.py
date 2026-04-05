@@ -21,6 +21,7 @@ Usage
 from __future__ import annotations
 
 import io
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -220,6 +221,22 @@ def _safe(text: str) -> str:
     )
 
 
+def _wrap_pdf_text(value: Any, chunk_size: int = 24) -> str:
+    """Insert soft breaks into long machine-generated tokens before PDF layout."""
+    text = _safe(str(value))
+    if not text:
+        return ""
+
+    def _split_token(match: re.Match[str]) -> str:
+        token = match.group(0)
+        return " ".join(
+            token[index:index + chunk_size]
+            for index in range(0, len(token), chunk_size)
+        )
+
+    return re.sub(r"[^\s]{25,}", _split_token, text)
+
+
 def _rule_label_and_desc(rule_name: str, signal: dict) -> Tuple[str, str]:
     """Return (short_label, plain_english_description) for a signal."""
     entry = _RULE_PLAIN.get(rule_name)
@@ -287,18 +304,29 @@ class _ReportPDF(FPDF):
         self.ln(3)
         self.set_font("Helvetica", "B", 10)
         self.set_text_color(*_C_DARK_BLUE)
-        self.cell(0, 7, _safe(text).upper(), ln=True)
+        self.multi_cell(
+            self.w - self.l_margin - self.r_margin,
+            7,
+            _wrap_pdf_text(text).upper(),
+            wrapmode="CHAR",
+        )
         self.set_draw_color(*_C_DARK_BLUE)
         self.set_line_width(0.5)
         self.line(self.get_x(), self.get_y(), 195, self.get_y())
         self.ln(2)
 
     def info_row(self, label: str, value: str) -> None:
+        usable_w = self.w - self.l_margin - self.r_margin
+        label_w = 45
+        value_w = max(20, usable_w - label_w)
+        y_start = self.get_y()
+        self.set_x(self.l_margin)
         self.set_font("Helvetica", "B", 9)
         self.set_text_color(*_C_TEXT_DARK)
-        self.cell(45, 6, _safe(label), ln=False)
+        self.cell(label_w, 6, _safe(label), ln=False)
+        self.set_xy(self.l_margin + label_w, y_start)
         self.set_font("Helvetica", "", 9)
-        self.cell(0, 6, _safe(str(value)), ln=True)
+        self.multi_cell(value_w, 6, _wrap_pdf_text(value), wrapmode="CHAR")
 
     def verdict_box(self, title: str, body: str, colour: tuple) -> None:
         """Large coloured box showing the overall verdict."""
@@ -310,11 +338,11 @@ class _ReportPDF(FPDF):
         page_w = self.w - self.l_margin - self.r_margin  # usable width
         # Title line
         self.set_font("Helvetica", "B", 14)
-        self.multi_cell(page_w, 10, _safe(title), align="C", fill=True)
+        self.multi_cell(page_w, 10, _wrap_pdf_text(title), align="C", fill=True, wrapmode="CHAR")
         # Body line
         self.set_x(self.l_margin)
         self.set_font("Helvetica", "", 9)
-        self.multi_cell(page_w, 6, _safe(body), align="C", fill=True)
+        self.multi_cell(page_w, 6, _wrap_pdf_text(body), align="C", fill=True, wrapmode="CHAR")
         self.set_text_color(*_C_TEXT_DARK)
         self.ln(4)
 
@@ -1550,6 +1578,260 @@ def render_consolidated_entity_pdf(
             "Identity Verification, Video KYC, and Document Scan screens. "
             "This report supports — but does not replace — a qualified human review."
         ),
+    )
+
+    buf = io.BytesIO()
+    pdf.output(buf)
+    return buf.getvalue()
+
+
+def render_layered_analysis_pdf(
+    entity: Dict[str, Any],
+    layered_analysis: Dict[str, Any],
+) -> bytes:
+    """Generate a detailed explainable-AI PDF for regulators and auditors."""
+    entity_ref = entity.get("entity_ref", "")
+    entity_name = entity.get("name", "") or entity_ref
+    screens = layered_analysis.get("screens") or {}
+    entries = layered_analysis.get("entries") or []
+    report_state = layered_analysis.get("report_state") or {}
+
+    def _section_details(screen_name: str, section_name: str) -> Dict[str, Any]:
+        for entry in screens.get(screen_name, []):
+            if entry.get("section_name") == section_name:
+                return entry.get("details_captured_json") or {}
+        return {}
+
+    def _render_authenticity_checks_pdf(title: str, payload: Dict[str, Any]) -> None:
+        checks = payload.get("checks") or []
+        if not checks:
+            return
+        pdf.set_x(pdf.l_margin)
+        pdf.set_font("Helvetica", "B", 9)
+        pdf.multi_cell(
+            0,
+            6,
+            _wrap_pdf_text(title),
+            wrapmode="CHAR",
+        )
+        pdf.set_font("Helvetica", "", 8)
+        for check in checks:
+            pdf.set_x(pdf.l_margin)
+            pdf.multi_cell(
+                0,
+                5,
+                _wrap_pdf_text(
+                    f"{check.get('title', 'Check')} - {check.get('status', 'INFO')} - {check.get('message', '')}"
+                ),
+                wrapmode="CHAR",
+            )
+
+    pdf = _ReportPDF(orientation="P", unit="mm", format="A4")
+    pdf.set_margins(left=10, top=5, right=10)
+    pdf.set_auto_page_break(auto=True, margin=18)
+    pdf.add_page()
+    pdf.set_text_color(*_C_TEXT_DARK)
+
+    pdf.set_fill_color(*_C_DARK_BLUE)
+    pdf.rect(0, 0, 210, 18, "F")
+    pdf.set_y(3)
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.set_text_color(*_C_TEXT_LIGHT)
+    pdf.cell(0, 12, _safe("BaseTruth - Layered Analysis Report"), align="C")
+    pdf.ln(18)
+    pdf.set_text_color(*_C_TEXT_DARK)
+
+    pdf.section_title("Entity Information")
+    pdf.info_row("Entity Reference:", entity_ref)
+    pdf.info_row("Name:", entity_name)
+    if entity.get("pan_number"):
+        pdf.info_row("PAN:", entity.get("pan_number"))
+    if entity.get("email"):
+        pdf.info_row("Email:", entity.get("email"))
+    pdf.info_row("Generated:", datetime.now(timezone.utc).strftime("%d %b %Y %H:%M UTC"))
+    pdf.info_row(
+        "Scope:",
+        _safe(
+            f"{len(entries)} layered-analysis section record(s) stored for this entity."
+        ),
+    )
+    if report_state.get("updated_at"):
+        pdf.info_row("Latest evidence update:", report_state.get("updated_at"))
+
+    pdf.ln(3)
+    pdf.verdict_box(
+        "EXPLAINABLE AI AUDIT TRACE - HUMAN REVIEW REQUIRED",
+        (
+            "This report records extracted fields, deterministic rule checks, model scores, "
+            "and fraud signals so an auditor can review how BaseTruth reached each decision. "
+            "The final approval decision must be made by a human reviewer."
+        ),
+        _C_DARK_BLUE,
+    )
+
+    if screens.get("Identity Verification"):
+        pdf.section_title("A. Identity Verification")
+        aadhaar = _section_details("Identity Verification", "Aadhaar")
+        pan = _section_details("Identity Verification", "PAN Card")
+        photo = _section_details("Identity Verification", "Photo Upload")
+        verification = _section_details("Identity Verification", "Run Verification")
+        aadhaar_qr = aadhaar.get("aadhaar_qr") or {}
+        pan_extraction = pan.get("pan_extraction") or {}
+        cross_checks = verification.get("cross_checks") or {}
+        pan_layers = [
+            layer
+            for layer in ((pan.get("pan_layers") or {}).get("layers") or [])
+            if str(layer.get("title", "")).startswith(("Layer 1", "Layer 2", "Layer 4"))
+        ]
+
+        pdf.info_row("Verdict:", verification.get("verdict", ""))
+        pdf.info_row("Document:", photo.get("document_filename", ""))
+        pdf.info_row("Selfie:", photo.get("selfie_filename", ""))
+        pdf.info_row("Display score:", f"{verification.get('display_score', 0) or 0:.1f}%")
+        pdf.info_row("Cosine similarity:", f"{verification.get('cosine_similarity', 0) or 0:.4f}")
+        pdf.info_row("Aadhaar name:", aadhaar_qr.get("name", ""))
+        pdf.info_row("Aadhaar DOB/YOB:", aadhaar_qr.get("dob") or aadhaar_qr.get("yob", ""))
+        pdf.info_row("Aadhaar gender:", aadhaar_qr.get("gender", ""))
+        pdf.info_row(
+            "Aadhaar district:",
+            ", ".join(filter(None, [aadhaar_qr.get("dist"), aadhaar_qr.get("state")]))
+        )
+        pdf.info_row("PAN number:", pan_extraction.get("pan_number", ""))
+        pdf.info_row("PAN full name:", pan_extraction.get("full_name", ""))
+        pdf.info_row("PAN father name:", pan_extraction.get("father_name", ""))
+        pdf.info_row("PAN DOB:", pan_extraction.get("date_of_birth", ""))
+        pdf.info_row("PAN extraction source:", pan_extraction.get("extraction_source", ""))
+        _render_authenticity_checks_pdf("Aadhaar upload authenticity", aadhaar.get("authenticity_checks") or {})
+        _render_authenticity_checks_pdf("Selfie upload authenticity", photo.get("authenticity_checks") or {})
+
+        for check_name, payload in (
+            ("First/last name match", cross_checks.get("first_last_name_match") or {}),
+            ("DOB match", cross_checks.get("dob_match") or {}),
+            ("PAN format", cross_checks.get("pan_format") or {}),
+            ("Photo match", cross_checks.get("photo_match") or {}),
+        ):
+            passed = payload.get("passed")
+            status = "PASS" if passed is True else "FAIL" if passed is False else "INFO"
+            pdf.info_row(f"{check_name}:", f"{status} - {payload.get('message', '')}")
+
+        if pan_layers:
+            pdf.set_x(pdf.l_margin)
+            pdf.set_font("Helvetica", "B", 9)
+            pdf.multi_cell(
+                0,
+                6,
+                _wrap_pdf_text("PAN layered analysis"),
+                wrapmode="CHAR",
+            )
+            pdf.set_font("Helvetica", "", 8)
+            for layer in pan_layers:
+                pdf.set_x(pdf.l_margin)
+                pdf.multi_cell(
+                    0,
+                    5,
+                    _wrap_pdf_text(
+                        f"{layer.get('title', 'Layer')} - {layer.get('status', 'UNKNOWN')} - {layer.get('detail', '')}"
+                    ),
+                    wrapmode="CHAR",
+                )
+        pdf.ln(3)
+
+    if screens.get("Video KYC"):
+        pdf.section_title("B. Video KYC")
+        for idx, entry in enumerate(screens.get("Video KYC", []), start=1):
+            details = entry.get("details_captured_json") or {}
+            pdf.set_x(pdf.l_margin)
+            pdf.set_font("Helvetica", "B", 10)
+            pdf.multi_cell(
+                0,
+                7,
+                _wrap_pdf_text(f"Video KYC #{idx} - {entry.get('section_name', 'Session')}"),
+                wrapmode="CHAR",
+            )
+            pdf.set_font("Helvetica", "", 9)
+            pdf.info_row("Verdict:", details.get("verdict", ""))
+            pdf.info_row("Reference document:", details.get("doc_filename", ""))
+            pdf.info_row("Live capture:", details.get("selfie_filename", ""))
+            pdf.info_row("Display score:", f"{details.get('display_score', 0) or 0:.1f}%")
+            pdf.info_row("Cosine similarity:", f"{details.get('cosine_similarity', 0) or 0:.4f}")
+            pdf.info_row("Liveness passed:", details.get("liveness_passed", ""))
+            pdf.info_row("Liveness state:", details.get("liveness_state", ""))
+            _render_authenticity_checks_pdf(
+                "Reference document authenticity",
+                details.get("reference_document_authenticity") or {},
+            )
+            _render_authenticity_checks_pdf(
+                "Live capture authenticity",
+                details.get("live_capture_authenticity") or {},
+            )
+            pdf.ln(3)
+
+    scan_entries = list(screens.get("Scan Document", [])) + list(screens.get("Bulk Scan", []))
+    if scan_entries:
+        pdf.section_title("C. Document Scans")
+        for idx, entry in enumerate(scan_entries, start=1):
+            details = entry.get("details_captured_json") or {}
+            structured_summary = details.get("structured_summary") or {}
+            key_fields = structured_summary.get("key_fields") or structured_summary.get("named_fields") or {}
+            signals = details.get("signals") or []
+            authenticity = details.get("authenticity_checks") or {}
+
+            pdf.set_x(pdf.l_margin)
+            pdf.set_font("Helvetica", "B", 10)
+            pdf.multi_cell(
+                0,
+                7,
+                _wrap_pdf_text(f"Document Scan #{idx} - {details.get('document_type', 'generic')}"),
+                wrapmode="CHAR",
+            )
+            pdf.set_font("Helvetica", "", 9)
+            pdf.info_row("Screen:", entry.get("screen_name", ""))
+            pdf.info_row("Source file:", details.get("source_name", ""))
+            pdf.info_row("Truth score:", details.get("truth_score", ""))
+            pdf.info_row("Risk level:", details.get("risk_level", ""))
+            pdf.info_row("Verdict:", details.get("verdict", ""))
+            pdf.info_row("Parse method:", details.get("parse_method", ""))
+
+            _render_authenticity_checks_pdf("Upload authenticity checks", authenticity)
+
+            if key_fields:
+                for label, value in list(key_fields.items())[:8]:
+                    pdf.info_row(str(label).replace("_", " ").title() + ":", value)
+            if signals:
+                pdf.set_x(pdf.l_margin)
+                pdf.set_font("Helvetica", "B", 9)
+                pdf.multi_cell(
+                    0,
+                    6,
+                    _wrap_pdf_text("Top forensic signals"),
+                    wrapmode="CHAR",
+                )
+                pdf.set_font("Helvetica", "", 8)
+                for signal in signals[:8]:
+                    pdf.set_x(pdf.l_margin)
+                    pdf.multi_cell(
+                        0,
+                        5,
+                        _wrap_pdf_text(
+                            f"{signal.get('type', 'signal')}: {signal.get('message') or signal.get('reason') or signal.get('description') or 'No detail available.'}"
+                        ),
+                        wrapmode="CHAR",
+                    )
+            pdf.ln(3)
+
+    pdf.ln(4)
+    pdf.set_font("Helvetica", "I", 8)
+    pdf.set_text_color(100, 100, 100)
+    pdf.set_x(pdf.l_margin)
+    pdf.multi_cell(
+        0,
+        5,
+        _wrap_pdf_text(
+            "This layered-analysis report is intended for regulator, auditor, and second-line-review use. "
+            "It summarizes stored extraction outputs, deterministic rule checks, model metrics, and fraud signals. "
+            "Human review remains mandatory for final approval decisions."
+        ),
+        wrapmode="CHAR",
     )
 
     buf = io.BytesIO()

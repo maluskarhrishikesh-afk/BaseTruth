@@ -34,6 +34,7 @@ from sqlalchemy import (
     LargeBinary,
     String,
     Text,
+    UniqueConstraint,
     create_engine,
     text,
 )
@@ -124,6 +125,10 @@ class Entity(Base):
     phone = Column(String(50), default="")
     pan_number = Column(String(20), default="")
     aadhar_number = Column(String(20), default="")
+    layered_report_generated = Column(Boolean, nullable=False, server_default=text("false"))
+    layered_report_generated_at = Column(DateTime(timezone=True), nullable=True)
+    layered_analysis_updated_at = Column(DateTime(timezone=True), nullable=True)
+    layered_report_minio_key = Column(String(500), default="")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -133,6 +138,11 @@ class Entity(Base):
     cases = relationship("Case", back_populates="entity")
     extracted_info = relationship("DocumentInformation", back_populates="entity", cascade="all, delete-orphan")
     identity_checks = relationship("IdentityCheck", back_populates="entity", cascade="all, delete-orphan")
+    layered_analysis_entries = relationship(
+        "LayeredAnalysisEntry",
+        back_populates="entity",
+        cascade="all, delete-orphan",
+    )
 
 
 class Scan(Base):
@@ -260,6 +270,32 @@ class IdentityCheck(Base):
     entity = relationship("Entity", back_populates="identity_checks")
 
 
+class LayeredAnalysisEntry(Base):
+    """Latest explainability payload for a given entity/screen/section."""
+
+    __tablename__ = "layered_analysis_entries"
+    __table_args__ = (
+        UniqueConstraint(
+            "entity_id",
+            "screen_name",
+            "section_name",
+            name="uq_layered_analysis_entries_entity_screen_section",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    entity_id = Column(Integer, ForeignKey("entities.id", ondelete="CASCADE"), nullable=False)
+    screen_name = Column(String(100), nullable=False)
+    section_name = Column(String(255), nullable=False)
+    details_captured_json = Column(JSONB, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    entity = relationship("Entity", back_populates="layered_analysis_entries")
+
+
 # ---------------------------------------------------------------------------
 # Schema initialisation
 # ---------------------------------------------------------------------------
@@ -276,6 +312,51 @@ def init_db() -> bool:
         return False
     try:
         Base.metadata.create_all(engine)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "ALTER TABLE entities "
+                    "ADD COLUMN IF NOT EXISTS layered_report_generated BOOLEAN DEFAULT FALSE"
+                )
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE entities "
+                    "ADD COLUMN IF NOT EXISTS layered_report_generated_at TIMESTAMPTZ"
+                )
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE entities "
+                    "ADD COLUMN IF NOT EXISTS layered_analysis_updated_at TIMESTAMPTZ"
+                )
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE entities "
+                    "ADD COLUMN IF NOT EXISTS layered_report_minio_key VARCHAR(500) DEFAULT ''"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE TABLE IF NOT EXISTS layered_analysis_entries ("
+                    "id SERIAL PRIMARY KEY, "
+                    "entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE, "
+                    "screen_name VARCHAR(100) NOT NULL, "
+                    "section_name VARCHAR(255) NOT NULL, "
+                    "details_captured_json JSONB NOT NULL, "
+                    "created_at TIMESTAMPTZ DEFAULT NOW(), "
+                    "updated_at TIMESTAMPTZ DEFAULT NOW()"
+                    ")"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS "
+                    "ux_layered_analysis_entries_entity_screen_section "
+                    "ON layered_analysis_entries (entity_id, screen_name, section_name)"
+                )
+            )
         log.info("DB schema ready")
         return True
     except Exception as exc:

@@ -2,11 +2,11 @@
 
 
 a = Analysis(
-    ['start.py'],
+    ['C:\\Hrishikesh\\BaseTruth\\start.py'],
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=['webbrowser', 'platform', 'socket'],
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

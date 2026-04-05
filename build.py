@@ -99,7 +99,7 @@ def main() -> int:
 
         if pyinstaller_available:
             _step("Compiling .exe launchers with PyInstaller ...")
-            for script in ["start.py", "stop.py", "build.py"]:
+            for script in ["start.py", "stop.py"]:
                 script_path = root / script
                 if not script_path.exists():
                     print(f"  [skip] {script} not found.")
@@ -122,6 +122,8 @@ def main() -> int:
                     print(f"  [WARNING] Failed to compile {script}.", file=sys.stderr)
                 else:
                     print(f"  [ok] {script.replace('.py', '.exe')} compiled.")
+            if getattr(sys, "frozen", False):
+                print("  [info] Running from build.exe — self-rebuild skipped.")
         else:
             print(
                 "\n[info] PyInstaller not installed — skipping .exe compilation.\n"

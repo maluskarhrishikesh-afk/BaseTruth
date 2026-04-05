@@ -7,12 +7,13 @@ from typing import Any, Dict
 
 import streamlit as st
 
+from basetruth.analysis.identity_checks import compare_dob_values, compare_first_last_names
+from basetruth.analysis.upload_authenticity import analyse_upload_authenticity, build_format_check
+from basetruth.integrations.ollama import extract_pan_details_with_ollama, extract_aadhaar_details_with_ollama
 from basetruth.ui.components import (
     _DB_IMPORTS_OK,
     _db_available_cached,
     _page_title,
-    _render_entity_link_widget,
-    db_available,
     get_entity_identity_checks,
     save_identity_check,
     search_entities,
@@ -158,11 +159,11 @@ def _parse_aadhaar_qr(img_bytes: bytes) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# PAN card OCR — FIXED: capped upscale (no 3× on large images)
+# PAN card OCR fallback — FIXED: capped upscale (no 3× on large images)
 # ---------------------------------------------------------------------------
 
 
-def _extract_pan_info(img_bytes: bytes) -> Dict[str, Any]:
+def _extract_pan_info_ocr(img_bytes: bytes) -> Dict[str, Any]:
     """OCR a PAN card image and extract PAN number + name.
 
     Preprocessing caps the image at 1 200 px wide (still upscales small images
@@ -211,7 +212,7 @@ def _extract_pan_info(img_bytes: bytes) -> Dict[str, Any]:
             text extraction. Adaptive threshold and denoising are added to
             handle uneven lighting and camera noise.
             """
-            h_orig, w_orig = img_bgr.shape[:2]
+            _, w_orig = img_bgr.shape[:2]
             max_w = 2400  # raised from 1200 — camera images need more detail
             scale = min(max_w / max(w_orig, 1), 2.5)  # raised from 1.5×
             resized = cv2.resize(
@@ -273,9 +274,69 @@ def _extract_pan_info(img_bytes: bytes) -> Dict[str, Any]:
             if m:
                 result["pan_number"] = m.group()
 
+        if result.get("name") and not result.get("full_name"):
+            result["full_name"] = result["name"]
+        if result:
+            result["engine"] = "ocr"
         return result
     except Exception:  # noqa: BLE001
         return {}
+
+
+def _extract_pan_info(img_bytes: bytes) -> Dict[str, Any]:
+    """Extract PAN fields using Gemma4 first, then OCR fallback when needed."""
+    gemma_data = extract_pan_details_with_ollama(img_bytes)
+    ocr_data = _extract_pan_info_ocr(img_bytes)
+
+    merged: Dict[str, Any] = {}
+    field_sources: Dict[str, str] = {}
+
+    def _pick_value(field: str) -> str:
+        gemma_value = str(gemma_data.get(field) or "").strip()
+        ocr_value = str(ocr_data.get(field) or "").strip()
+        if gemma_value:
+            field_sources[field] = "gemma4"
+            return gemma_value
+        if ocr_value:
+            field_sources[field] = "ocr"
+            return ocr_value
+        return ""
+
+    pan_number = _pick_value("pan_number").upper().replace(" ", "")
+    if pan_number:
+        match = _re.search(r"[A-Z]{5}[0-9]{4}[A-Z]", pan_number)
+        if match:
+            merged["pan_number"] = match.group(0)
+
+    full_name = _pick_value("full_name") or _pick_value("name")
+    if full_name:
+        merged["full_name"] = full_name
+        merged["name"] = full_name
+
+    father_name = _pick_value("father_name")
+    if father_name:
+        merged["father_name"] = father_name
+
+    date_of_birth = _pick_value("date_of_birth")
+    if date_of_birth:
+        merged["date_of_birth"] = date_of_birth
+
+    if merged:
+        sources = []
+        if any(source == "gemma4" for source in field_sources.values()):
+            sources.append("gemma4")
+        if any(source == "ocr" for source in field_sources.values()):
+            sources.append("ocr")
+        merged["field_sources"] = field_sources
+        merged["extraction_source"] = " + ".join(sources)
+        merged["engine"] = "gemma4_ollama" if sources and sources[0] == "gemma4" else "ocr"
+
+    if gemma_data.get("model"):
+        merged["gemma_model"] = gemma_data["model"]
+    if gemma_data.get("raw_response"):
+        merged["gemma_raw_response"] = gemma_data["raw_response"]
+
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -350,45 +411,16 @@ def _validate_pan(pan: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Name similarity
+# Layered PAN Fraud Analysis payload
 # ---------------------------------------------------------------------------
 
 
-def _names_match(name1: str, name2: str) -> tuple:
-    """Return (is_match, similarity_float) for two name strings."""
-    n1 = name1.lower().strip()
-    n2 = name2.lower().strip()
-    if not n1 or not n2:
-        return False, 0.0
-    if n1 == n2:
-        return True, 1.0
-    words1 = set(n1.split())
-    words2 = set(n2.split())
-    intersection = words1 & words2
-    union = words1 | words2
-    sim = len(intersection) / len(union) if union else 0.0
-    return sim >= 0.5, sim
-
-
-# ---------------------------------------------------------------------------
-# Layered PAN Fraud Analysis UI
-# ---------------------------------------------------------------------------
-
-
-def _render_pan_layers(
+def _build_pan_layer_analysis(
     pan_data: Dict[str, Any],
     pan_validation: Dict[str, Any],
     pan_img_bytes: bytes | None,
-    selfie_bytes: bytes | None,
-    aadhaar_name: str,
-) -> None:
-    """Render the 5-layer PAN fraud dashboard."""
-    st.markdown("#### 🛡️ PAN Fraud Detection — Layered Analysis")
-    st.caption(
-        "Each layer applies a different verification technique. "
-        "Only paid government APIs (Layer 2) are skipped."
-    )
-
+) -> Dict[str, Any]:
+    """Build the PAN analysis payload for explainability storage."""
     layers = []
 
     # Layer 1 — Format
@@ -414,7 +446,7 @@ def _render_pan_layers(
                 "status": "FAIL",
                 "status_color": "#dc2626",
                 "detail": (
-                    f"OCR read `{pan_data['pan_number']}` — "
+                    f"Read `{pan_data['pan_number']}` — "
                     f"{pan_validation.get('error', 'invalid format')}."
                 ),
             }
@@ -443,38 +475,6 @@ def _render_pan_layers(
             ),
         }
     )
-
-    # Layer 3 — OCR extraction
-    ocr_pan = pan_data.get("pan_number", "")
-    ocr_name = pan_data.get("name", "")
-    if ocr_pan or ocr_name:
-        ocr_detail = ""
-        if ocr_pan:
-            ocr_detail += f"PAN extracted: **`{ocr_pan}`**  \n"
-        if ocr_name:
-            ocr_detail += f"Name on card: **{ocr_name}**"
-        layers.append(
-            {
-                "icon": "✅",
-                "title": "Layer 3 — OCR Text Extraction",
-                "status": "EXTRACTED",
-                "status_color": "#16a34a",
-                "detail": ocr_detail.strip(),
-            }
-        )
-    else:
-        layers.append(
-            {
-                "icon": "⚠️",
-                "title": "Layer 3 — OCR Text Extraction",
-                "status": "NOT FOUND",
-                "status_color": "#d97706",
-                "detail": (
-                    "No PAN number or name could be extracted via OCR.  \n"
-                    "Try a clearer, higher-contrast scan."
-                ),
-            }
-        )
 
     # Layer 4 — Tampering (ELA)
     tampering_score_val = None
@@ -522,49 +522,6 @@ def _render_pan_layers(
             }
         )
 
-    # Layer 5 — Face match (deferred to Step 4)
-    if selfie_bytes:
-        layers.append(
-            {
-                "icon": "🔄",
-                "title": "Layer 5 — Face Match (ArcFace)",
-                "status": "PENDING",
-                "status_color": "#7c3aed",
-                "detail": "Selfie uploaded. Face match runs in **Step 4 — Run Identity Verification** below.",
-            }
-        )
-    else:
-        layers.append(
-            {
-                "icon": "⚪",
-                "title": "Layer 5 — Face Match (ArcFace)",
-                "status": "N/A",
-                "status_color": "#94a3b8",
-                "detail": "Upload a selfie or use the camera below to enable face matching.",
-            }
-        )
-
-    # Render layers
-    for layer in layers:
-        layer_html = (
-            f'<div style="display:flex;align-items:flex-start;gap:12px;'
-            f'padding:14px 16px;border-radius:12px;margin-bottom:8px;'
-            f'background:var(--secondary-background-color,#f8fafc);'
-            f'border:1px solid rgba(0,0,0,0.06);border-left:4px solid {layer["status_color"]};">'
-            f'<span style="font-size:1.1rem;flex-shrink:0;margin-top:1px;">{layer["icon"]}</span>'
-            f'<div style="flex:1;">'
-            f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;">'
-            f'<strong style="font-size:.9rem;">{layer["title"]}</strong>'
-            f'<span style="font-size:.75rem;font-weight:700;padding:2px 9px;border-radius:6px;'
-            f'background:{layer["status_color"]}1a;color:{layer["status_color"]};">'
-            f'{layer["status"]}</span>'
-            f"</div>"
-            f'<div style="font-size:.82rem;color:var(--text-color,#475569);">{layer["detail"]}</div>'
-            f"</div></div>"
-        )
-        st.markdown(layer_html, unsafe_allow_html=True)
-
-    # Overall fraud score
     scores = [s for s in [tampering_score_val] if s is not None]
     if pan_validation.get("valid"):
         scores.append(100)
@@ -575,17 +532,18 @@ def _render_pan_layers(
         risk_label = (
             "LOW RISK" if overall >= 75 else "MEDIUM RISK" if overall >= 50 else "HIGH RISK"
         )
-        risk_color = (
-            "#16a34a" if overall >= 75 else "#d97706" if overall >= 50 else "#dc2626"
-        )
-        st.markdown(
-            f'<div style="margin-top:12px;padding:14px 20px;border-radius:12px;'
-            f'background:{risk_color}1a;border:1px solid {risk_color}44;">'
-            f'<strong style="font-size:.9rem;color:{risk_color};">Overall PAN Fraud Score: '
-            f'<span style="font-size:1.2rem;">{overall}/100</span> — {risk_label}</strong>'
-            f"</div>",
-            unsafe_allow_html=True,
-        )
+        risk_color = "#16a34a" if overall >= 75 else "#d97706" if overall >= 50 else "#dc2626"
+    else:
+        overall = None
+        risk_label = "UNKNOWN"
+        risk_color = "#94a3b8"
+
+    return {
+        "layers": layers,
+        "overall_score": overall,
+        "risk_label": risk_label,
+        "risk_color": risk_color,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -653,19 +611,28 @@ def _page_identity_verification() -> None:
                 _a_key = f"_idv_qr_{_up_aadhaar.size}"
                 if _a_key not in st.session_state:
                     with st.spinner("Scanning Aadhaar QR code..."):
-                        st.session_state[_a_key] = _parse_aadhaar_qr(_up_aadhaar.getvalue())
+                        parsed_qr = _parse_aadhaar_qr(_up_aadhaar.getvalue())
+                        if parsed_qr.get("qr_found") is False or not parsed_qr:
+                            gemma_fallback = extract_aadhaar_details_with_ollama(_up_aadhaar.getvalue())
+                            if gemma_fallback:
+                                parsed_qr = gemma_fallback
+                        st.session_state[_a_key] = parsed_qr
                 _aq = st.session_state[_a_key]
                 st.image(_up_aadhaar.getvalue(), caption="Aadhaar card", use_container_width=True)
                 if _aq.get("qr_found") is False:
                     st.warning("No QR code detected. Ensure the QR code is visible.")
-                elif _aq.get("qr_type") == "xml":
-                    st.success("QR decoded successfully")
+                elif _aq.get("qr_type") in ("xml", "gemma4"):
+                    if _aq.get("qr_type") == "gemma4":
+                        st.success("Aadhaar details extracted via Gamma4 fallback")
+                    else:
+                        st.success("QR decoded successfully")
                     st.markdown(
                         f"**Name:** {_aq.get('name', '—')}  \n"
                         f"**DOB/YOB:** {_aq.get('dob') or _aq.get('yob', '—')}  \n"
                         f"**Gender:** {_aq.get('gender', '—')}  \n"
                         f"**District:** {_aq.get('dist', '—')}, {_aq.get('state', '—')}"
                     )
+                    st.caption("Aadhaar looks good")
                 elif _aq.get("qr_type") == "secure":
                     st.info(_aq.get("note", "Secure QR detected."))
                 elif not _aq:
@@ -690,19 +657,23 @@ def _page_identity_verification() -> None:
                 _pd = st.session_state[_p_key]
                 st.image(_up_pan.getvalue(), caption="PAN card", use_container_width=True)
                 _extracted_pan = _pd.get("pan_number", "")
+                if _extracted_pan or _pd.get("full_name") or _pd.get("date_of_birth"):
+                    st.success("PAN decoded successfully")
                 if _extracted_pan:
                     _pv = _validate_pan(_extracted_pan)
                     if _pv["valid"]:
-                        st.success(
-                            f"PAN: **{_extracted_pan}**  \n"
-                            f"Entity type: {_pv['entity_type']}"
+                        st.markdown(
+                            f"**PAN:** {_extracted_pan}  \n"
+                            f"**Entity type:** {_pv['entity_type']}"
                         )
                     else:
                         st.warning(f"PAN read: `{_extracted_pan}` — {_pv.get('error', '')}")
                 else:
-                    st.info("PAN number not detected via OCR. Enter it manually below.")
-                if _pd.get("name"):
-                    st.caption(f"Name on PAN: **{_pd['name']}**")
+                    st.info("PAN number not detected. Enter it manually below if Gemma4 and OCR could not read it.")
+                if _pd.get("full_name") or _pd.get("name"):
+                    st.markdown(f"**Full name on PAN:** {_pd.get('full_name') or _pd.get('name')}")
+                if _pd.get("date_of_birth"):
+                    st.markdown(f"**Date of birth:** {_pd['date_of_birth']}")
 
         with col_s:
             st.markdown("**🤳 Selfie Photo**")
@@ -869,7 +840,13 @@ def _page_identity_verification() -> None:
         _a_key = f"_idv_qr_{aadhaar_file.size}"
         if _a_key not in st.session_state:
             with st.spinner("Scanning Aadhaar QR code..."):
-                st.session_state[_a_key] = _parse_aadhaar_qr(aadhaar_file.getvalue())
+                parsed_qr = _parse_aadhaar_qr(aadhaar_file.getvalue())
+                if parsed_qr.get("qr_found") is False or not parsed_qr:
+                    gemma_fallback = extract_aadhaar_details_with_ollama(aadhaar_file.getvalue())
+                    if gemma_fallback:
+                        parsed_qr = gemma_fallback
+                st.session_state[_a_key] = parsed_qr
+
         aadhaar_qr = st.session_state[_a_key]
 
     # For camera-captured PAN, run OCR and show validation below tabs
@@ -887,23 +864,38 @@ def _page_identity_verification() -> None:
     _is_cam_aadhaar = isinstance(aadhaar_file, _DocumentCapture) and aadhaar_file is not None
     _is_cam_pan = isinstance(pan_file, _DocumentCapture) and pan_file is not None
     if _is_cam_aadhaar and aadhaar_qr:
-        if aadhaar_qr.get("qr_type") == "xml":
-            st.success(
-                f"✅ **Aadhaar QR decoded** — Name: {aadhaar_qr.get('name', '—')}, "
-                f"DOB: {aadhaar_qr.get('dob') or aadhaar_qr.get('yob', '—')}"
+        if aadhaar_qr.get("qr_type") in ("xml", "gemma4"):
+            if aadhaar_qr.get("qr_type") == "gemma4":
+                st.success("Aadhaar details extracted via Gamma4 fallback")
+            else:
+                st.success("QR decoded successfully")
+            st.markdown(
+                f"**Name:** {aadhaar_qr.get('name', '—')}  \n"
+                f"**DOB/YOB:** {aadhaar_qr.get('dob') or aadhaar_qr.get('yob', '—')}  \n"
+                f"**Gender:** {aadhaar_qr.get('gender', '—')}  \n"
+                f"**District:** {aadhaar_qr.get('dist', '—')}, {aadhaar_qr.get('state', '—')}"
             )
+            st.caption("Aadhaar looks good")
         elif aadhaar_qr.get("qr_type") == "secure":
             st.info(aadhaar_qr.get("note", "Secure Aadhaar QR detected."))
         elif aadhaar_qr.get("qr_found") is False:
             st.warning("No Aadhaar QR code detected in the captured photo.")
-    if _is_cam_pan and pan_data.get("pan_number"):
-        if pan_validation.get("valid"):
-            st.success(
-                f"✅ **PAN extracted** — {pan_data['pan_number']} "
-                f"({pan_validation.get('entity_type', '')})"
-            )
-        else:
-            st.warning(f"PAN read: `{pan_data['pan_number']}` — {pan_validation.get('error', '')}")
+    if _is_cam_pan:
+        if pan_data.get("pan_number"):
+            if pan_validation.get("valid"):
+                st.success("PAN decoded successfully")
+                st.markdown(
+                    f"**PAN:** {pan_data['pan_number']}  \n"
+                    f"**Entity type:** {pan_validation.get('entity_type', '')}"
+                )
+            else:
+                st.warning(f"PAN read: `{pan_data['pan_number']}` — {pan_validation.get('error', '')}")
+        if pan_data.get("full_name") or pan_data.get("name"):
+            st.markdown(f"**Full name on PAN:** {pan_data.get('full_name') or pan_data.get('name')}")
+        if pan_data.get("date_of_birth"):
+            st.markdown(f"**Date of birth:** {pan_data['date_of_birth']}")
+        elif any(pan_data.get(field) for field in ("full_name", "father_name", "date_of_birth")):
+            st.info("PAN details were partially extracted. Review the fields below and enter PAN manually if needed.")
 
     # ── Step 2 — Document Cross-Checks and PAN Layers ─────────────────────
     if aadhaar_file or pan_file:
@@ -912,63 +904,46 @@ def _page_identity_verification() -> None:
         chk_cols = st.columns(2)
 
         aadhaar_name = (
-            aadhaar_qr.get("name", "") if aadhaar_qr.get("qr_type") == "xml" else ""
+            aadhaar_qr.get("name", "") if aadhaar_qr.get("qr_type") in ("xml", "gemma4") else ""
         )
-        pan_name = pan_data.get("name", "")
+        pan_name = pan_data.get("full_name") or pan_data.get("name", "")
+        aadhaar_dob = aadhaar_qr.get("dob") or aadhaar_qr.get("yob", "")
+        pan_dob = pan_data.get("date_of_birth", "")
+        _name_check = compare_first_last_names(aadhaar_name, pan_name)
+        _dob_check = compare_dob_values(aadhaar_dob, pan_dob)
 
         with chk_cols[0]:
-            if aadhaar_name and pan_name:
-                matched, sim = _names_match(aadhaar_name, pan_name)
-                if matched:
-                    st.success(
-                        f"**Name Match: PASS** ({sim * 100:.0f}%)  \n"
-                        f"Aadhaar QR: *{aadhaar_name}*  \n"
-                        f"PAN card: *{pan_name}*"
-                    )
-                else:
-                    st.error(
-                        f"**Name Mismatch: FAIL** ({sim * 100:.0f}% overlap)  \n"
-                        f"Aadhaar QR: *{aadhaar_name}*  \n"
-                        f"PAN card: *{pan_name}*  \n"
-                        "Names on Aadhaar and PAN card do not match."
-                    )
-            elif aadhaar_name:
-                st.info(
-                    f"Name from Aadhaar QR: **{aadhaar_name}**  \n"
-                    "(Upload PAN card to cross-check name)"
+            if _name_check.get("passed") is True:
+                st.success(
+                    "**First Name & Last Name Match: PASS**  \n"
+                    f"Aadhaar: *{_name_check['aadhaar_first_name']} {_name_check['aadhaar_last_name']}*  \n"
+                    f"PAN: *{_name_check['pan_first_name']} {_name_check['pan_last_name']}*"
                 )
-            elif pan_name:
-                st.info(
-                    f"Name from PAN card: **{pan_name}**  \n"
-                    "(Aadhaar QR needed to cross-check name)"
+            elif _name_check.get("passed") is False:
+                st.error(
+                    "**First Name & Last Name Match: FAIL**  \n"
+                    f"{_name_check['message']}"
                 )
+            elif aadhaar_name or pan_name:
+                st.info(_name_check.get("message", "Name comparison unavailable."))
             else:
                 st.caption(
-                    "Upload both Aadhaar and PAN cards to check name consistency."
+                    "Upload both Aadhaar and PAN cards to compare first and last names."
                 )
 
         with chk_cols[1]:
-            if pan_validation.get("valid") and aadhaar_name:
-                surname_initial = pan_validation.get("surname_initial", "")
-                aadhaar_surname_initial = (
-                    aadhaar_name.strip().split()[-1][0].upper()
-                    if aadhaar_name.strip().split()
-                    else ""
+            if _dob_check.get("passed") is True:
+                st.success(
+                    "**DOB Match: PASS**  \n"
+                    f"{_dob_check['message']}"
                 )
-                if surname_initial and aadhaar_surname_initial:
-                    if surname_initial == aadhaar_surname_initial:
-                        st.success(
-                            f"**PAN Surname Check: PASS**  \n"
-                            f"PAN 5th char '{surname_initial}' matches Aadhaar "
-                            f"surname initial '{aadhaar_surname_initial}'"
-                        )
-                    else:
-                        st.warning(
-                            f"**PAN Surname Check: MISMATCH**  \n"
-                            f"PAN 5th char '{surname_initial}' vs Aadhaar "
-                            f"surname initial '{aadhaar_surname_initial}'  \n"
-                            "This may indicate the PAN belongs to a different person."
-                        )
+            elif _dob_check.get("passed") is False:
+                st.error(
+                    "**DOB Match: FAIL**  \n"
+                    f"{_dob_check['message']}"
+                )
+            elif aadhaar_dob or pan_dob:
+                st.info(_dob_check.get("message", "DOB comparison unavailable."))
             elif pan_validation.get("valid"):
                 st.info(
                     f"**PAN Format: VALID**  \nEntity type: {pan_validation['entity_type']}"
@@ -978,16 +953,46 @@ def _page_identity_verification() -> None:
                 if not pv.get("valid"):
                     st.warning(f"**PAN Format: INVALID** — {pv.get('error', '')}")
 
-        # Layered PAN fraud analysis
-        if pan_file:
-            st.divider()
-            _render_pan_layers(
-                pan_data,
-                pan_validation,
-                pan_file.getvalue(),
-                selfie_bytes,
-                aadhaar_name,
+    _stored_name_check = compare_first_last_names(
+        aadhaar_qr.get("name", "") if aadhaar_qr.get("qr_type") in ("xml", "gemma4") else "",
+        pan_data.get("full_name") or pan_data.get("name", ""),
+    )
+    _stored_dob_check = compare_dob_values(
+        aadhaar_qr.get("dob") or aadhaar_qr.get("yob", ""),
+        pan_data.get("date_of_birth", ""),
+    )
+    _stored_pan_layers = _build_pan_layer_analysis(
+        pan_data,
+        pan_validation,
+        pan_file.getvalue() if pan_file else None,
+    )
+
+    def _aadhaar_format_check_payload() -> Dict[str, Any]:
+        if aadhaar_qr.get("qr_type") in ("xml", "gemma4"):
+            return build_format_check(
+                "Aadhaar details decoded successfully and exposed applicant identity fields.",
+                True,
             )
+        if aadhaar_qr.get("qr_type") == "secure":
+            return build_format_check(
+                "A secure Aadhaar QR was detected. Offline validation can confirm its presence but cannot decrypt the payload.",
+                None,
+            )
+        if aadhaar_qr.get("qr_found") is False:
+            return build_format_check(
+                "No Aadhaar QR code was detected in the uploaded image.",
+                False,
+            )
+        return build_format_check(
+            "Aadhaar format validation could not run because no usable QR payload was found.",
+            None,
+        )
+
+    def _selfie_format_check_payload() -> Dict[str, Any]:
+        return build_format_check(
+            "Selfie image was uploaded successfully and decoded for face verification.",
+            True if selfie_bytes else None,
+        )
 
     # ── Step 3: Applicant Details form (auto-filled from documents) ────────
     st.divider()
@@ -999,13 +1004,23 @@ def _page_identity_verification() -> None:
     )
 
     _qr_name = (
-        aadhaar_qr.get("name", "") if aadhaar_qr.get("qr_type") == "xml" else ""
+        aadhaar_qr.get("name", "") if aadhaar_qr.get("qr_type") in ("xml", "gemma4") else ""
     )
-    _qr_name_parts = _qr_name.strip().split(maxsplit=1)
-    _default_fn = _qr_name_parts[0] if _qr_name_parts else ""
-    _default_ln = _qr_name_parts[1] if len(_qr_name_parts) > 1 else ""
+    _pan_name_for_form = (pan_data.get("full_name") or pan_data.get("name") or "").strip()
+    _preferred_name = _qr_name or _pan_name_for_form
+    _name_parts = _preferred_name.split(maxsplit=1)
+    _default_fn = _name_parts[0] if _name_parts else ""
+    _default_ln = _name_parts[1] if len(_name_parts) > 1 else ""
     _default_pan = pan_data.get("pan_number", "")
     _default_aadh = aadhaar_qr.get("uid", "")
+
+    if pan_data.get("father_name") or pan_data.get("date_of_birth"):
+        meta_bits = []
+        if pan_data.get("father_name"):
+            meta_bits.append(f"Father's name: **{pan_data['father_name']}**")
+        if pan_data.get("date_of_birth"):
+            meta_bits.append(f"DOB: **{pan_data['date_of_birth']}**")
+        st.caption("  |  ".join(meta_bits))
 
     _auto_key = (
         f"_idv_auto_{getattr(aadhaar_file, 'size', 0)}_"
@@ -1056,7 +1071,7 @@ def _page_identity_verification() -> None:
 
     forced_ref: str | None = None
     extra_identity: dict | None = None
-    if _DB_IMPORTS_OK and db_available():
+    if _DB_IMPORTS_OK and _db_available_cached():
         with st.expander(
             "🔗 Link to an existing entity record (optional)", expanded=False
         ):
@@ -1121,6 +1136,8 @@ def _page_identity_verification() -> None:
             with st.spinner("Running face detection and ArcFace matching..."):
                 from basetruth.vision.face import compare_faces  # noqa: PLC0415
 
+                assert aadhaar_file is not None
+                assert selfie_bytes is not None
                 face_result = compare_faces(aadhaar_file.getvalue(), selfie_bytes)
 
             # Store result and all inputs in session state for the explicit save step
@@ -1131,6 +1148,54 @@ def _page_identity_verification() -> None:
             st.session_state["idv_face_selfie_name"] = selfie_name
             st.session_state["idv_face_forced_ref"] = forced_ref
             st.session_state["idv_face_extra_identity"] = extra_identity
+            st.session_state["idv_face_pan_bytes"] = pan_file.getvalue() if pan_file else None
+            st.session_state["idv_face_pan_name"] = getattr(pan_file, "name", "pan_card.jpg") if pan_file else ""
+            st.session_state["idv_face_pan_data"] = {
+                key: pan_data.get(key)
+                for key in (
+                    "pan_number",
+                    "full_name",
+                    "father_name",
+                    "date_of_birth",
+                    "extraction_source",
+                    "engine",
+                )
+                if pan_data.get(key)
+            }
+            st.session_state["idv_face_cross_checks"] = {
+                "first_last_name_match": _stored_name_check,
+                "dob_match": _stored_dob_check,
+                "pan_format": {
+                    "passed": pan_validation.get("valid"),
+                    "message": (
+                        f"PAN format is valid for entity type {pan_validation.get('entity_type', 'Unknown')}."
+                        if pan_validation.get("valid")
+                        else pan_validation.get("error", "PAN format check could not be completed.")
+                    ),
+                    "entity_type": pan_validation.get("entity_type", ""),
+                    "pan_number": pan_validation.get("pan") or pan_data.get("pan_number", ""),
+                },
+            }
+            st.session_state["idv_face_layered_analysis"] = {
+                "pan_layers": _stored_pan_layers,
+                "upload_authenticity": {
+                    "aadhaar": analyse_upload_authenticity(
+                        aadhaar_file.getvalue(),
+                        getattr(aadhaar_file, "name", "aadhaar_upload"),
+                        format_check=_aadhaar_format_check_payload(),
+                    ),
+                    "photo": analyse_upload_authenticity(
+                        selfie_bytes,
+                        selfie_name,
+                        format_check=_selfie_format_check_payload(),
+                    ),
+                },
+            }
+            st.session_state["idv_face_aadhaar_qr"] = {
+                key: aadhaar_qr.get(key)
+                for key in ("name", "uid", "dob", "yob", "gender", "dist", "state", "qr_type")
+                if aadhaar_qr.get(key)
+            }
             st.session_state["idv_face_saved"] = False
             st.session_state.pop("idv_face_saved_ref", None)
             st.session_state.pop("idv_face_saved_pdf", None)
@@ -1174,6 +1239,10 @@ def _page_identity_verification() -> None:
                     f"Cosine similarity: {_face_result['confidence']:.3f} "
                     f"(threshold: {_face_result['threshold']:.2f})"
                 )
+                if is_match:
+                    st.success("**Photo Match: PASS** — Aadhaar photo and selfie match.")
+                else:
+                    st.error("**Photo Match: FAIL** — Aadhaar photo and selfie do not match.")
 
                 # ── Save section ──────────────────────────────────────────
                 st.divider()
@@ -1213,6 +1282,28 @@ def _page_identity_verification() -> None:
                                 for k, v in _face_result.items()
                                 if k not in ("doc_annotated_rgb", "selfie_annotated_rgb")
                             }
+                            _pan_context = st.session_state.get("idv_face_pan_data") or {}
+                            _cross_checks = st.session_state.get("idv_face_cross_checks") or {}
+                            _layered_analysis = st.session_state.get("idv_face_layered_analysis") or {}
+                            _aadhaar_context = st.session_state.get("idv_face_aadhaar_qr") or {}
+                            _cross_checks["photo_match"] = {
+                                "passed": bool(_face_result.get("match")),
+                                "message": (
+                                    "Aadhaar photo and selfie match."
+                                    if _face_result.get("match")
+                                    else "Aadhaar photo and selfie do not match."
+                                ),
+                                "display_score": _face_result.get("display_score"),
+                                "threshold": _face_result.get("threshold"),
+                            }
+                            if _pan_context:
+                                db_payload["pan_extraction"] = _pan_context
+                            if _cross_checks:
+                                db_payload["cross_checks"] = _cross_checks
+                            if _layered_analysis:
+                                db_payload["layered_analysis"] = _layered_analysis
+                            if _aadhaar_context:
+                                db_payload["aadhaar_qr"] = _aadhaar_context
                             for k, v in list(db_payload.items()):
                                 if hasattr(v, "item"):
                                     db_payload[k] = v.item()
@@ -1243,6 +1334,9 @@ def _page_identity_verification() -> None:
                             except Exception:  # noqa: BLE001
                                 pdf_bytes = None
 
+                            _s_pan_name = st.session_state.get("idv_face_pan_name", "")
+                            _s_pan_bytes = st.session_state.get("idv_face_pan_bytes")
+
                             saved = save_identity_check(
                                 check_type="face_match",
                                 result=db_payload,
@@ -1251,6 +1345,10 @@ def _page_identity_verification() -> None:
                                 doc_filename=_s_doc_name,
                                 selfie_filename=_s_selfie_name,
                                 pdf_bytes=pdf_bytes,
+                                doc_bytes=_s_doc_bytes,
+                                selfie_bytes=_s_selfie_bytes,
+                                pan_filename=_s_pan_name,
+                                pan_bytes=_s_pan_bytes,
                             )
                             if saved:
                                 st.session_state["idv_face_saved"] = True

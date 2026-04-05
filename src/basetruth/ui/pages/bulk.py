@@ -11,14 +11,23 @@ import streamlit as st
 from basetruth.service import BaseTruthService
 from basetruth.ui.components import (
     _DB_IMPORTS_OK,
+    _db_available_cached,
     _display_truth_score,
     _page_title,
     _render_entity_link_widget,
     _render_report_summary,
     _save_uploaded_files,
-    db_available,
     minio_upload,
+    save_scan_to_db,
 )
+
+
+def _bulk_source_content_type(path: Path) -> str:
+    if path.suffix.lower() == ".pdf":
+        return "application/pdf"
+    if path.suffix.lower() == ".json":
+        return "application/json"
+    return "application/octet-stream"
 
 
 def _page_bulk(service: BaseTruthService) -> None:
@@ -72,10 +81,9 @@ def _page_bulk(service: BaseTruthService) -> None:
                         p,
                         forced_entity_ref=_batch_entity_ref or None,
                         extra_identity=bulk_extra_identity or None,
+                        persist_to_db=False,
                     )
                     _new_reports.append(r)
-                    if _batch_entity_ref is None and r.get("_entity_ref"):
-                        _batch_entity_ref = r["_entity_ref"]
                 except Exception as exc:  # noqa: BLE001
                     _new_errors.append(f"{p.name}: {exc}")
                 prog.progress((i + 1) / len(paths))
@@ -84,6 +92,11 @@ def _page_bulk(service: BaseTruthService) -> None:
         st.session_state["bt_bulk_errors"] = _new_errors
         st.session_state["bt_bulk_compare"] = compare_payslips
         st.session_state["bt_bulk_entity_ref"] = _batch_entity_ref
+        st.session_state["bt_bulk_source_paths"] = [str(path) for path in paths]
+        st.session_state["bt_bulk_forced_ref"] = bulk_forced_ref
+        st.session_state["bt_bulk_extra_identity"] = bulk_extra_identity
+        st.session_state["bt_bulk_saved"] = False
+        st.session_state.pop("bt_bulk_saved_ref", None)
         st.session_state.pop("bt_bundle_pdf_bytes", None)
         st.session_state.pop("bt_bundle_pdf_path", None)
 
@@ -137,15 +150,6 @@ def _page_bulk(service: BaseTruthService) -> None:
                 st.session_state["bt_bundle_pdf_bytes"] = _pdf_bytes
                 st.session_state["bt_bundle_pdf_title"] = f"{_ts}_case_report"
                 st.session_state["bt_bundle_pdf_path"] = str(_pdf_path)
-                if _DB_IMPORTS_OK and _batch_entity_ref:
-                    try:
-                        minio_upload(
-                            f"{_batch_entity_ref}/case_reports/{_ts}_case_report.pdf",
-                            _pdf_bytes,
-                            "application/pdf",
-                        )
-                    except Exception:  # noqa: BLE001
-                        pass
             except Exception as _pdf_err:  # noqa: BLE001
                 st.session_state["bt_bundle_pdf_bytes"] = None
                 st.warning(f"Scan complete — PDF generation failed: {_pdf_err}")
@@ -158,6 +162,62 @@ def _page_bulk(service: BaseTruthService) -> None:
     compare_payslips = st.session_state.get("bt_bulk_compare", compare_payslips)
 
     st.success(f"Scanned {len(reports)} document(s).")
+    if st.session_state.get("bt_bulk_saved"):
+        st.success(
+            f"Saved batch to database — Entity: **{st.session_state.get('bt_bulk_saved_ref') or 'unlinked'}**"
+        )
+    elif _DB_IMPORTS_OK and _db_available_cached():
+        if st.button("💾 Save Batch to Database", key="bulk_save_btn", use_container_width=True):
+            with st.spinner("Saving bulk scan results to database..."):
+                save_errors: List[str] = []
+                source_paths = [Path(path_str) for path_str in st.session_state.get("bt_bulk_source_paths", [])]
+                batch_entity_ref = st.session_state.get("bt_bulk_forced_ref") or None
+                extra_identity = st.session_state.get("bt_bulk_extra_identity") or None
+
+                for idx, report in enumerate(reports):
+                    pdf_bytes = None
+                    pdf_path_str = report.get("artifacts", {}).get("pdf_report_path", "")
+                    if pdf_path_str and Path(pdf_path_str).exists():
+                        pdf_bytes = Path(pdf_path_str).read_bytes()
+
+                    saved = save_scan_to_db(
+                        report,
+                        pdf_bytes=pdf_bytes,
+                        forced_entity_ref=batch_entity_ref,
+                        extra_identity=extra_identity,
+                        layered_screen_name="Bulk Scan",
+                    )
+                    if not saved:
+                        save_errors.append(report.get("source", {}).get("name", f"document-{idx+1}"))
+                        continue
+
+                    resolved_ref = saved.get("entity_ref")
+                    if resolved_ref and batch_entity_ref is None:
+                        batch_entity_ref = resolved_ref
+
+                    report["_entity_ref"] = resolved_ref
+                    if idx < len(source_paths):
+                        source_path = source_paths[idx]
+                        if resolved_ref and source_path.exists():
+                            minio_upload(
+                                f"{resolved_ref}/{source_path.name}",
+                                source_path.read_bytes(),
+                                _bulk_source_content_type(source_path),
+                            )
+
+                st.session_state["bt_bulk_reports"] = reports
+                st.session_state["bt_bulk_entity_ref"] = batch_entity_ref
+                if save_errors:
+                    st.error(
+                        "Some documents could not be saved: " + ", ".join(save_errors)
+                    )
+                else:
+                    st.session_state["bt_bulk_saved"] = True
+                    st.session_state["bt_bulk_saved_ref"] = batch_entity_ref
+                    st.rerun()
+    else:
+        st.info("Database is offline — batch reports are saved to disk only.")
+
     if errors:
         with st.expander(
             f"{len(errors)} document(s) had errors -- click to expand"
