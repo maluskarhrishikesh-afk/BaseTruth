@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List
@@ -937,16 +938,123 @@ _PAGES: Dict[str, str] = {
     "🎥  Video KYC": "video_kyc",
     "🔍  Scan Document": "scan",
     "📦  Bulk Scan": "bulk",
-    "📁  Cases": "cases",
-    "🗂️  Records": "records",
+    "�  Scans": "scans",
+    "�📁  Cases": "cases",
+    "🧠  Document Intelligence": "document_intelligence",
     "📊  Reports": "reports",
     "🧾  Layered Analysis": "layered_analysis",
     "🔗  Datasources": "datasources",
     "📋  Log Analyzer": "logs",
     "🗄️  Database Viewer": "database",
     "⚙️  Settings": "settings",
-    "🤖  Gemma4 Chat": "gemma_chat",
+    "💬  BaseTruth Q&A": "gemma_chat",
 }
+
+
+# ---------------------------------------------------------------------------
+# Unsaved-changes guard
+# ---------------------------------------------------------------------------
+
+# Session-state keys that must be cleared when a page is discarded.
+# File-uploader widget keys are included so the uploaders reset on discard.
+_PAGE_DISCARD_KEYS: Dict[str, list] = {
+    "identity": [
+        "_idv_has_uploads",
+        "idv_aadhaar", "idv_pan", "idv_selfie",
+        "idv_face_result", "idv_face_saved", "idv_face_doc_bytes",
+        "idv_face_selfie_bytes", "idv_face_pan_bytes",
+        "idv_face_forced_ref", "idv_face_extra_identity",
+        "idv_face_pan_data", "idv_face_cross_checks",
+        "idv_face_layered_analysis", "idv_face_aadhaar_qr",
+        "idv_face_saved_ref", "idv_face_saved_pdf",
+        "idv_ei_fn", "idv_ei_ln", "idv_ei_pan", "idv_ei_aadh",
+        "idv_ei_email", "idv_ei_phone", "_idv_auto_key",
+    ],
+    "scan": [
+        "_scan_has_uploads",
+        "scan_result",
+        "scan_pending_report",
+        "scan_pending_source_path",
+        "scan_pending_forced_ref",
+        "scan_pending_extra_identity",
+        "scan_saved",
+        "scan_saved_ref",
+    ],
+    "bulk": [
+        "_bulk_has_uploads",
+        "bulk_uploads",
+        "bulk_folder_input",
+        "bt_bulk_reports",
+        "bt_bulk_errors",
+        "bt_bulk_compare",
+        "bt_bulk_entity_ref",
+        "bt_bulk_source_paths",
+        "bt_bulk_forced_ref",
+        "bt_bulk_extra_identity",
+        "bt_bulk_saved",
+        "bt_bulk_saved_ref",
+        "bt_bulk_temp_dir",
+    ],
+    "video_kyc": ["_vkyc_active", "vkyc_session_id"],
+}
+
+
+def _is_page_dirty(page: str) -> bool:
+    """Return True when the given page has unsaved work in progress."""
+    if page == "identity":
+        return (
+            bool(st.session_state.get("_idv_has_uploads"))
+            and not st.session_state.get("idv_face_saved", False)
+        )
+    if page == "scan":
+        return (
+            bool(st.session_state.get("_scan_has_uploads"))
+            and not st.session_state.get("scan_saved", False)
+        )
+    if page == "bulk":
+        return bool(st.session_state.get("_bulk_has_uploads"))
+    if page == "video_kyc":
+        return bool(st.session_state.get("_vkyc_active"))
+    return False
+
+
+def _discard_page_state(page: str) -> None:
+    """Clear all session-state keys associated with a page's in-progress work."""
+    if page == "bulk":
+        temp_dir_str = str(st.session_state.get("bt_bulk_temp_dir") or "").strip()
+        if temp_dir_str:
+            try:
+                temp_dir = Path(temp_dir_str)
+                if temp_dir.exists() and temp_dir.name.startswith("bt_bulk_"):
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+            except Exception:
+                pass
+    for key in _PAGE_DISCARD_KEYS.get(page, []):
+        st.session_state.pop(key, None)
+
+
+@st.dialog("Unsaved Changes")
+def _unsaved_changes_dialog(pending_page: str) -> None:
+    """Modal that appears when the user tries to leave a page with unsaved work."""
+    st.warning(
+        "You have unsaved changes on this page. "
+        "If you leave now your uploads and current results will be discarded."
+    )
+    col_keep, col_discard = st.columns(2)
+    if col_keep.button("✏️ Continue Editing", use_container_width=True, key="_nav_keep"):
+        st.session_state.pop("_nav_pending", None)
+        st.rerun()
+    if col_discard.button(
+        "🗑️ Discard & Leave",
+        use_container_width=True,
+        type="primary",
+        key="_nav_discard",
+    ):
+        current = st.session_state.get("page", "dashboard")
+        _discard_page_state(current)
+        st.session_state["page"] = pending_page
+        st.session_state.pop("_nav_pending", None)
+        st.rerun()
 
 
 def _sidebar() -> str:
@@ -968,7 +1076,12 @@ def _sidebar() -> str:
             is_active = current_page == key
             btn_type = "primary" if is_active else "secondary"
             if st.button(label, key=f"nav_{key}", use_container_width=True, type=btn_type):
-                st.session_state["page"] = key
+                if key != current_page and _is_page_dirty(current_page):
+                    # Park the destination and let the dialog decide
+                    st.session_state["_nav_pending"] = key
+                else:
+                    st.session_state["page"] = key
+                    st.session_state.pop("_nav_pending", None)
                 st.rerun()
 
         st.divider()
@@ -1065,7 +1178,7 @@ Use **Scan** (single file) or **Bulk Scan** (entire loan folder) to add new docu
             st.metric("Entities", stats.get("entities", 0),
                       help="Unique applicants stored in the database.")
             if st.button("View →", key="dash_goto_records", use_container_width=True):
-                st.session_state["page"] = "records"
+                st.session_state["page"] = "document_intelligence"
                 st.rerun()
         with m2:
             st.metric("Docs Scanned", stats.get("total_scans", 0),
@@ -1096,7 +1209,7 @@ Use **Scan** (single file) or **Bulk Scan** (entire loan folder) to add new docu
                       f"{avg_s}/100" if avg_s is not None else "—",
                       help="Average Truth Score across all scans (100 = perfect).")
             if st.button("View →", key="dash_goto_records_score", use_container_width=True):
-                st.session_state["page"] = "records"
+                st.session_state["page"] = "document_intelligence"
                 st.rerun()
 
         st.divider()
@@ -3679,7 +3792,7 @@ def _page_identity_verification() -> None:
     IMG_TYPES = ["jpg", "jpeg", "png", "webp"]
 
     # ── Step 1: Document uploads ───────────────────────────────────────────
-    st.subheader("Step 1 — Upload Documents")
+    st.subheader("Upload Documents")
     col_a, col_p, col_s = st.columns(3)
 
     with col_a:
@@ -3778,7 +3891,7 @@ def _page_identity_verification() -> None:
     # ── Step 3: Cross-checks ───────────────────────────────────────────────
     if aadhaar_file or pan_file:
         st.divider()
-        st.subheader("Step 2 — Document Cross-Checks")
+        st.subheader("Document Cross-Checks")
         chk_cols = st.columns(2)
 
         # Name cross-check
@@ -3842,7 +3955,7 @@ def _page_identity_verification() -> None:
 
     # ── Step 4: Applicant details form (auto-filled from documents) ────────
     st.divider()
-    st.subheader("Step 3 — Applicant Details")
+    st.subheader("Applicant Details")
     st.info(
         "Fields marked **auto-filled** are extracted from the documents. "
         "Please provide Phone and Email manually.",
@@ -3880,27 +3993,51 @@ def _page_identity_verification() -> None:
 
     mc1, mc2 = st.columns(2)
     e_fn = mc1.text_input(
-        "First name  *(auto-filled)*" if _default_fn else "First name",
+        "First name \u00a0★ required",
         key="idv_ei_fn",
+        disabled=True,
+        help="Auto-filled from Aadhaar QR / PAN. Upload documents to populate.",
     )
     e_ln = mc2.text_input(
-        "Last name  *(auto-filled)*" if _default_ln else "Last name",
+        "Last name \u00a0★ required",
         key="idv_ei_ln",
+        disabled=True,
+        help="Auto-filled from Aadhaar QR / PAN. Upload documents to populate.",
     )
     mc3, mc4 = st.columns(2)
     e_pan = mc3.text_input(
-        "PAN number  *(auto-filled)*" if _default_pan else "PAN number",
+        "PAN number \u00a0★ required",
         key="idv_ei_pan",
         placeholder="ABCDE1234F",
+        disabled=True,
+        help="Auto-filled from PAN card OCR. Upload PAN card to populate.",
     )
     e_aadh = mc4.text_input(
-        "Aadhaar number  *(from QR)*" if _default_aadh else "Aadhaar number",
+        "Aadhaar number \u00a0★ required",
         key="idv_ei_aadh",
         placeholder="1234 5678 9012",
+        disabled=True,
+        help="Auto-filled from Aadhaar QR code. Upload Aadhaar card to populate.",
     )
     mc5, mc6 = st.columns(2)
     e_email = mc5.text_input("Email  *(enter manually)*", key="idv_ei_email", placeholder="applicant@email.com")
     e_phone = mc6.text_input("Phone  *(enter manually)*", key="idv_ei_phone", placeholder="+91 98765 43210")
+
+    # Required-field validation — blocks Save to Database
+    _required_missing_app = []
+    if not str(st.session_state.get("idv_ei_fn", "")).strip():
+        _required_missing_app.append("First name")
+    if not str(st.session_state.get("idv_ei_ln", "")).strip():
+        _required_missing_app.append("Last name")
+    if not str(st.session_state.get("idv_ei_pan", "")).strip():
+        _required_missing_app.append("PAN number")
+    if not str(st.session_state.get("idv_ei_aadh", "")).strip():
+        _required_missing_app.append("Aadhaar number")
+    if _required_missing_app:
+        st.caption(
+            f"⚠️ The following fields are required and will be auto-filled when you upload the corresponding documents: "
+            f"**{', '.join(_required_missing_app)}**"
+        )
 
     # Also allow linking to an existing entity via search
     forced_ref: str | None = None
@@ -4303,12 +4440,20 @@ def main() -> None:
     page = _sidebar()
     service = _get_service()
 
+    # If a navigation request is pending (user clicked away from a dirty page),
+    # show the unsaved-changes dialog before rendering anything else.
+    _nav_pending = st.session_state.get("_nav_pending")
+    if _nav_pending:
+        _unsaved_changes_dialog(_nav_pending)
+        # Still render the current page behind the dialog so it doesn't flash blank.
+
     # Route to modular page implementations (pages/ sub-package)
     from basetruth.ui.pages.dashboard import _page_dashboard as _m_dashboard  # noqa: PLC0415
     from basetruth.ui.pages.scan import _page_scan as _m_scan  # noqa: PLC0415
     from basetruth.ui.pages.bulk import _page_bulk as _m_bulk  # noqa: PLC0415
+    from basetruth.ui.pages.scans import _page_scans as _m_scans  # noqa: PLC0415
     from basetruth.ui.pages.cases import _page_cases as _m_cases  # noqa: PLC0415
-    from basetruth.ui.pages.records import _page_records as _m_records  # noqa: PLC0415
+    from basetruth.ui.pages.document_intelligence import _page_document_intelligence as _m_records  # noqa: PLC0415
     from basetruth.ui.pages.reports import _page_reports as _m_reports  # noqa: PLC0415
     from basetruth.ui.pages.layered_analysis import _page_layered_analysis as _m_layered_analysis  # noqa: PLC0415
     from basetruth.ui.pages.datasources import _page_datasources as _m_datasources  # noqa: PLC0415
@@ -4325,9 +4470,11 @@ def main() -> None:
         _m_scan(service)
     elif page == "bulk":
         _m_bulk(service)
+    elif page == "scans":
+        _m_scans()
     elif page == "cases":
         _m_cases(service)
-    elif page == "records":
+    elif page == "document_intelligence":
         _m_records()
     elif page == "reports":
         _m_reports(service)

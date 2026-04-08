@@ -109,6 +109,7 @@ def _page_scan(service: BaseTruthService) -> None:
             st.session_state["scan_pending_forced_ref"] = forced_ref
             st.session_state["scan_pending_extra_identity"] = extra_identity
             st.session_state["scan_saved"] = False
+            st.session_state["_scan_has_uploads"] = True
             st.session_state.pop("scan_saved_ref", None)
 
     report = st.session_state.get("scan_pending_report")

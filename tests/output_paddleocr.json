@@ -1,0 +1,21 @@
+{
+  "Psychology_Marksheet.jpg": {
+    "method": "unavailable",
+    "chars_extracted": 0,
+    "coherence_score": 0.0,
+    "text": ""
+  },
+  "SSC-Marksheet.pdf": {
+    "method": "paddleocr+pytesseract",
+    "paddleocr": {
+      "mean_confidence": 0.0,
+      "coherence_score": 0.0,
+      "chars_extracted": 0,
+      "text": ""
+    },
+    "pytesseract": {
+      "chars_extracted": 117,
+      "text": "(pytesseract unavailable: tesseract is not installed or it's not in your PATH. See README file for more information.)"
+    }
+  }
+}

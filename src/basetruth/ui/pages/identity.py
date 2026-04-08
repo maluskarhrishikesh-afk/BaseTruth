@@ -582,7 +582,7 @@ def _page_identity_verification() -> None:
         def getvalue(self) -> bytes:
             return self._data
 
-    st.subheader("Step 1 — Provide Documents")
+    st.subheader("Provide Documents")
 
     tab_upload, tab_camera = st.tabs(["📁 Upload Documents", "📷 Capture with Camera"])
 
@@ -900,7 +900,7 @@ def _page_identity_verification() -> None:
     # ── Step 2 — Document Cross-Checks and PAN Layers ─────────────────────
     if aadhaar_file or pan_file:
         st.divider()
-        st.subheader("Step 2 — Document Cross-Checks")
+        st.subheader("Document Cross-Checks")
         chk_cols = st.columns(2)
 
         aadhaar_name = (
@@ -994,9 +994,13 @@ def _page_identity_verification() -> None:
             True if selfie_bytes else None,
         )
 
+    # ── Mark page dirty when files are uploaded (for unsaved-changes guard) ────
+    if aadhaar_file or pan_file or selfie_bytes:
+        st.session_state["_idv_has_uploads"] = True
+
     # ── Step 3: Applicant Details form (auto-filled from documents) ────────
     st.divider()
-    st.subheader("Step 3 — Applicant Details")
+    st.subheader("Applicant Details")
     st.info(
         "Fields marked **auto-filled** are extracted from the documents. "
         "Please provide Phone and Email manually.",
@@ -1039,23 +1043,31 @@ def _page_identity_verification() -> None:
 
     mc1, mc2 = st.columns(2)
     e_fn = mc1.text_input(
-        "First name  *(auto-filled)*" if _default_fn else "First name",
+        "First name \u00a0★ required",
         key="idv_ei_fn",
+        disabled=True,
+        help="Auto-filled from Aadhaar QR / PAN. Upload documents to populate.",
     )
     e_ln = mc2.text_input(
-        "Last name  *(auto-filled)*" if _default_ln else "Last name",
+        "Last name \u00a0★ required",
         key="idv_ei_ln",
+        disabled=True,
+        help="Auto-filled from Aadhaar QR / PAN. Upload documents to populate.",
     )
     mc3, mc4 = st.columns(2)
     e_pan = mc3.text_input(
-        "PAN number  *(auto-filled)*" if _default_pan else "PAN number",
+        "PAN number \u00a0★ required",
         key="idv_ei_pan",
         placeholder="ABCDE1234F",
+        disabled=True,
+        help="Auto-filled from PAN card OCR. Upload PAN card to populate.",
     )
     e_aadh = mc4.text_input(
-        "Aadhaar number  *(from QR)*" if _default_aadh else "Aadhaar number",
+        "Aadhaar number \u00a0★ required",
         key="idv_ei_aadh",
         placeholder="1234 5678 9012",
+        disabled=True,
+        help="Auto-filled from Aadhaar QR code. Upload Aadhaar card to populate.",
     )
     mc5, mc6 = st.columns(2)
     e_email = mc5.text_input(
@@ -1068,6 +1080,22 @@ def _page_identity_verification() -> None:
         key="idv_ei_phone",
         placeholder="+91 98765 43210",
     )
+
+    # Required-field validation — blocks Save to Database
+    _required_missing = []
+    if not str(st.session_state.get("idv_ei_fn", "")).strip():
+        _required_missing.append("First name")
+    if not str(st.session_state.get("idv_ei_ln", "")).strip():
+        _required_missing.append("Last name")
+    if not str(st.session_state.get("idv_ei_pan", "")).strip():
+        _required_missing.append("PAN number")
+    if not str(st.session_state.get("idv_ei_aadh", "")).strip():
+        _required_missing.append("Aadhaar number")
+    if _required_missing:
+        st.caption(
+            f"⚠️ The following fields are required and will be auto-filled when you upload the "
+            f"corresponding documents: **{', '.join(_required_missing)}**"
+        )
 
     forced_ref: str | None = None
     extra_identity: dict | None = None
@@ -1264,11 +1292,19 @@ def _page_identity_verification() -> None:
                         )
                 else:
                     if _DB_IMPORTS_OK and _db_available_cached():
+                        _save_blocked = bool(_required_missing)
+                        if _save_blocked:
+                            st.warning(
+                                f"⚠️ Cannot save — required fields missing: "
+                                f"**{', '.join(_required_missing)}**. "
+                                "Upload the corresponding documents above to auto-fill them."
+                            )
                         if st.button(
                             "💾 Save to Database",
                             type="secondary",
                             use_container_width=True,
                             key="idv_save_btn",
+                            disabled=_save_blocked,
                         ):
                             _s_doc_name = st.session_state.get("idv_face_doc_name", "")
                             _s_selfie_name = st.session_state.get("idv_face_selfie_name", "")
@@ -1356,6 +1392,8 @@ def _page_identity_verification() -> None:
                                     saved.get("entity_ref") or _s_forced_ref
                                 )
                                 st.session_state["idv_face_saved_pdf"] = pdf_bytes
+                                # Clear the dirty flag — work is now persisted
+                                st.session_state.pop("_idv_has_uploads", None)
                                 st.rerun()
                             else:
                                 st.error(

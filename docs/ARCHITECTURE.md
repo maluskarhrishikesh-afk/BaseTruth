@@ -30,6 +30,11 @@ flowchart TD
   I --> J[JSON And Markdown And PDF Reports]
   J --> K[Operator UI]
   J --> DB[(PostgreSQL — Scans + PDF Reports)]
+  DB --> FORENSICS[11-Layer Forensics Engine\nimage_forensics_detect.py]
+  FORENSICS --> SCANS_REVIEW[Scans Screen\n1st-Level HITL Approval]
+  SCANS_REVIEW -->|approved| DI[Document Intelligence Screen]
+  SCANS_REVIEW -->|rejected| REJECTED[Rejected — Excluded]
+  DI --> REPORTS[Reports Screen]
   DB --> API[REST API — Entity and Scan Retrieval]
   API --> AUD[Auditor Download PDF]
 ```
@@ -49,6 +54,7 @@ flowchart TD
 
 - supports single-file upload and immediate scan
 - supports bulk upload and folder-driven scan workflows
+- keeps scan and bulk-scan persistence explicit: operators review results first, then click Save to Database to persist them
 - supports datasource registration, sync, and scan operations
 - supports report review without requiring analysts to browse the filesystem manually
 - supports case-centric review by grouping related verification reports
@@ -114,26 +120,56 @@ Each pack:
 - currently optimized for monthly payslip analysis
 - designed to expand to invoices, claims, statements, and KYC documents
 
-### 6. Image Forensics Layer (`src/basetruth/analysis/image_forensics.py`)
+### 6. Image Forensics Layer (`src/basetruth/analysis/image_forensics_detect.py`)
 
-Activated automatically when the input is a raw image file (.jpg, .png, .tiff, etc.).
+A 11-layer forensic engine that runs automatically on every image or PDF scan at save-time (inside `save_scan_to_db`). Results are stored in `scans.layered_analysis_json` (JSONB).
 
-| Check | Tool | What it catches |
+**Public API:**
+- `run_forensics(path: str) -> Dict` — runs all 11 layers on any image file (.jpg, .png, .bmp, .tiff, .webp)
+- `run_forensics_on_pdf(pdf_path: str) -> Dict` — renders PDF page 1 to a temp PNG via PyMuPDF (fitz), then calls `run_forensics`
+
+**Forensic layers (all 11 run on every scan):**
+
+| Layer | Check | Tool |
 |---|---|---|
-| EXIF suspicious tool detection | Pillow + exifread | Photoshop, GIMP, Canva, AI generators in Software/CreatorTool tags |
-| Missing camera EXIF | Pillow | Screenshots and generated images lacking Make/Model metadata |
-| Timestamp inconsistency | Pillow EXIF | Backdated capture timestamps |
-| Error Level Analysis (ELA) | Pillow + NumPy | Copy-paste, text replacement, region editing |
-| Noise consistency CV | OpenCV + NumPy | Local editing leaving mismatched noise patterns |
+| 1. ELA | Error Level Analysis — detects copy-paste and region edits | Pillow + NumPy |
+| 2. Metadata | EXIF tags: Software, Make/Model, DateTime, GPS presence | Pillow + exifread |
+| 3. Entropy | Shannon entropy — uniform low/high entropy flags generated documents | NumPy |
+| 4. Noise | Noise consistency — local editing leaves mismatched noise patterns | OpenCV + NumPy |
+| 5. DCT | JPEG DCT coefficient distribution — double-compression artefacts | OpenCV |
+| 6. Clone | Copy-clone detection — repeated blocks with pixel-shift matching | OpenCV + NumPy |
+| 7. Color | Channel correlation and histogram — synthetic palettes differ from authentic photos | NumPy |
+| 8. Edge | Edge density and continuity — cut-paste edges show unnatural boundaries | OpenCV |
+| 9. Saturation | Oversaturation detection — AI-generated images have unnatural saturation | OpenCV |
+| 10. Font | Font uniformity — mixed fonts in the same field flag text replacement | Pillow |
+| 11. AI-Artefact | Blob/colour-blob detection — AI generators leave distinctive colour artefacts | OpenCV |
 
-ELA works by resaving the image at a known JPEG quality (95 %) and measuring per-pixel differences.  Genuine unedited images show uniform error; edited regions re-compress differently and emit abnormally high pixel deltas.
+**Return structure (stored as `scans.layered_analysis_json`):**
+```json
+{
+  "scan_summary": {
+    "forensic_verdict": "ORIGINAL | UNCERTAIN | LIKELY TAMPERED | TAMPERED",
+    "forgery_score_0_100": 42.0,
+    "overall_explanation": "Plain-English summary of findings",
+    "evidence": ["list of evidence strings"]
+  },
+  "layers": {
+    "layer_1_ela": { "name": "...", "status": "CLEAN|SUSPICIOUS|N/A|ERROR", "plain_english": "...", "metrics": {} }
+  }
+}
+```
 
-**Risk scoring thresholds:**
-- ELA score < 8 → no penalty
-- ELA score 8–20 → low penalty (15 pts) — mild artefacts
-- ELA score ≥ 20 → high penalty (40 pts) — strong editing signature
-- Suspicious tool in EXIF → 45 pts
-- Noise CV > 1.5 → 25 pts
+**Scoring thresholds:**
+- ≥ 55 → TAMPERED
+- 30–54 → LIKELY TAMPERED
+- 15–29 → UNCERTAIN
+- < 15 → ORIGINAL
+
+**Graceful degradation:** `_FORENSICS_AVAILABLE` flag prevents import errors when numpy/cv2/Pillow are absent.
+
+### 6.0 Legacy Image Forensics (`src/basetruth/analysis/image_forensics.py`)
+
+An earlier 5-layer engine (EXIF, ELA, Noise, Timestamp, Risk Aggregation) retained for backward compatibility with existing Scan Document single-scan results. The new 11-layer engine replaces it in the Bulk Scan and save pipeline.
 
 ### 6.1 Identity Verification Layer (`src/basetruth/vision/face.py`)
 
@@ -171,10 +207,16 @@ A standalone offline deep-learning engine dedicated to verifying the identity of
 | Table | Purpose |
 |---|---|
 | `entities` | One row per verified person/organisation; searchable by name, PAN, Aadhaar, email, phone |
-| `scans` | One row per document scan; stores `report_json` (JSONB) + `pdf_report` (LargeBinary) |
+| `scans` | One row per document scan; stores `report_json` (JSONB) + `pdf_report` (LargeBinary) + `layered_analysis_json` (JSONB, 11-layer forensics) + `approved` / `approved_by` / `approved_at` / `approval_comment` (HITL approval workflow) |
+| `document_information` | One row per saved scan; stores rich extracted JSON (document typing, extracted fields, parser context, authenticity checks, fraud signals) |
 | `layered_analysis_entries` | One upserted row per `(entity, screen, section)` explainability snapshot; powers the Layered Analysis screen and final report |
 | `cases` | Case-management workflow record linked to an entity |
 | `case_notes` | Timestamped analyst notes on a case |
+
+**`scans` approval state machine:**
+- `approved IS NULL` → Pending review (not visible in Document Intelligence)
+- `approved = 'approved'` → Approved (visible in Document Intelligence and Reports)
+- `approved = 'rejected'` → Rejected (excluded from all downstream screens)
 
 The application degrades gracefully to file-only mode when `DATABASE_URL` is not set.
 

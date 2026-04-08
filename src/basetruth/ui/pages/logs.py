@@ -244,6 +244,9 @@ def _page_logs() -> None:
     if search_text:
         view = view[view["msg"].str.contains(search_text, case=False, na=False)]
 
+    # Newest records first
+    view = view.iloc[::-1].reset_index(drop=True)
+
     st.caption(f"Showing **{len(view):,}** of {len(df):,} entries")
 
     _LEVEL_COLORS: dict = {
@@ -281,7 +284,7 @@ def _page_logs() -> None:
 
     st.divider()
     st.markdown("##### 🔴 Live Tail — Latest Entries")
-    _tail = view.tail(15).iloc[::-1]
+    _tail = view.head(15)
     _tail_html = ""
     for _, row in _tail.iterrows():
         _lvl = str(row.get("level", "")).upper()
@@ -323,10 +326,8 @@ def _page_logs() -> None:
             value=min(0, _max_idx),
             key="log_json_slider",
         )
-        _record_idx = (
-            view.index[len(view) - 1 - _sel] if _sel <= _max_idx else view.index[0]
-        )
-        _chosen_record = records[_record_idx]
+        _record_iloc = _sel if _sel <= _max_idx else 0
+        _chosen_record = view.iloc[_record_iloc].to_dict()
         _c1, _c2 = st.columns([1, 3])
         with _c1:
             st.markdown(

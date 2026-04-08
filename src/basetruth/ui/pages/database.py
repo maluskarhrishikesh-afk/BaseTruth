@@ -16,6 +16,7 @@ from basetruth.ui.components import (
     minio_list_objects,
     minio_truncate_bucket,
     reset_db,
+    truncate_table,
 )
 
 _DB_TABLE_LABELS: dict[str, str] = {
@@ -42,17 +43,21 @@ _TABLE_SCHEMA: dict[str, list[tuple[str, str, str]]] = {
     ],
     "scans": [
         ("id", "SERIAL", "Primary key"),
-        ("entity_id", "FK → entities.id", "Linked entity"),
+        ("entity_id", "FK → entities.id", "Linked entity — nullable"),
         ("source_name", "VARCHAR(500)", "Original filename"),
         ("source_sha256", "VARCHAR(64)", "SHA-256 hash of source file"),
-        ("document_type", "VARCHAR(100)", "Detected doc type e.g. payslip, bank_statement"),
-        ("truth_score", "INTEGER", "0-100 authenticity score (higher = more genuine)"),
-        ("risk_level", "VARCHAR(20)", "low / medium / high / review"),
-        ("verdict", "VARCHAR(50)", "Pass / Fail / Review verdict"),
-        ("parse_method", "VARCHAR(50)", "Extraction method used"),
-        ("report_json", "JSONB", "Full structured scan report payload"),
-        ("pdf_report", "BYTEA", "PDF binary — excluded from display to save memory"),
+        ("document_type", "VARCHAR(100)", "Document type e.g. payslip, pan_card, aadhaar"),
+        ("layered_analysis_json", "JSONB", "Full 11-layer forensic analysis result (ELA, noise, clone, etc.)"),
+        ("first_level_approval", "VARCHAR(1)", "Y = approved, N = rejected, NULL = pending (initial reviewer)"),
+        ("first_level_approved_by", "VARCHAR(255)", "Initial reviewer name or ID"),
+        ("first_level_approved_at", "TIMESTAMPTZ", "Timestamp of initial reviewer decision"),
+        ("first_level_approval_comment", "TEXT", "Optional comment from initial reviewer"),
+        ("second_level_approval", "VARCHAR(1)", "Y = approved, N = rejected, NULL = pending (senior reviewer)"),
+        ("second_level_approved_by", "VARCHAR(255)", "Senior reviewer name or ID"),
+        ("second_level_approved_at", "TIMESTAMPTZ", "Timestamp of senior reviewer decision"),
+        ("second_level_approval_comment", "TEXT", "Optional comment from senior reviewer"),
         ("generated_at", "TIMESTAMPTZ", "Scan completion timestamp"),
+        ("updated_at", "TIMESTAMPTZ", "Last update timestamp"),
     ],
     "document_information": [
         ("id", "SERIAL", "Primary key"),
@@ -379,3 +384,57 @@ This screen gives you direct visibility into what is stored in the system.
                         )
                 else:
                     st.error("Type exactly `RESET` (all caps) to confirm.")
+
+        # ── Per-table individual reset ─────────────────────────────────────
+        st.markdown("---")
+        st.markdown("#### 🗑️ Reset Individual Tables")
+        st.caption(
+            "Truncate a single table without touching others.  "
+            "Useful when you only want to clear scans but keep entity records, etc."
+        )
+
+        # Labels shown in the UI and the actual table name they map to.
+        _INDIVIDUAL_TABLES: list[tuple[str, str]] = [
+            ("Entities", "entities"),
+            ("Scans", "scans"),
+            ("Document Extractions", "document_information"),
+            ("Identity Checks", "identity_checks"),
+            ("Layered Analysis Entries", "layered_analysis_entries"),
+            ("Cases", "cases"),
+            ("Case Notes", "case_notes"),
+        ]
+
+        # Display one row per table: label | description | confirm input | button
+        for _label, _tname in _INDIVIDUAL_TABLES:
+            _success_key = f"table_reset_success_{_tname}"
+            _confirm_key = f"table_reset_confirm_{_tname}"
+            _btn_key = f"table_reset_btn_{_tname}"
+
+            tcol1, tcol2, tcol3 = st.columns([3, 3, 2])
+            with tcol1:
+                st.markdown(f"**{_label}** (`{_tname}`)")
+            with tcol2:
+                _confirm_val = st.text_input(
+                    "Type RESET",
+                    key=_confirm_key,
+                    placeholder="RESET",
+                    label_visibility="collapsed",
+                )
+            with tcol3:
+                if st.button(f"🗑️ Clear {_label}", key=_btn_key):
+                    if _confirm_val.strip() == "RESET":
+                        with st.spinner(f"Truncating `{_tname}`…"):
+                            _ok = truncate_table(_tname)
+                        if _ok:
+                            st.session_state[_success_key] = True
+                            st.rerun()
+                        else:
+                            st.error(f"Failed to clear `{_tname}` — see Logs for details.")
+                    else:
+                        st.error("Type exactly `RESET` (all caps) to confirm.")
+
+            # Show success flash message on the row after a successful reset
+            if _success_key in st.session_state:
+                st.success(f"✅ `{_tname}` cleared successfully.")
+                del st.session_state[_success_key]
+

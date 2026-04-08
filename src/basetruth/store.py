@@ -39,7 +39,13 @@ log = get_logger(__name__)
 
 
 def _next_entity_ref(session: Session) -> str:
-    """Generate the next BT-XXXXXX reference string."""
+    """Generate the next BT-XXXXXX reference string.
+
+    We look up the highest existing entity ID and add 1 so each new applicant
+    gets a unique, human-readable reference like BT-000042.  Using the existing
+    max ID (rather than a database sequence) means the reference stays predictable
+    and survives table truncations during development.
+    """
     max_id: int = session.query(func.max(Entity.id)).scalar() or 0
     return f"BT-{(max_id + 1):06d}"
 
@@ -151,7 +157,17 @@ def extract_identity_fields(report: Dict[str, Any]) -> Dict[str, str]:
 def _find_or_create_entity(
     session: Session, identity: Dict[str, str]
 ) -> Optional[Entity]:
-    """Look up an existing entity by PAN / Aadhaar number, or create a new one."""
+    """Look up an existing entity or create a new one.
+
+    Match priority:
+      1. PAN number — unique national identifier, most reliable
+      2. Aadhaar UID — unique 12-digit identifier, reliable fallback
+      3. (first_name, last_name) — last resort; prevents duplicates when no ID number available
+
+    A new entity is only created when at least one identifier is present.
+    If the document has no usable fields at all we return None and the scan
+    is saved as an unlinked (entity_id = NULL) record.
+    """
     entity: Optional[Entity] = None
 
     if identity.get("pan_number"):
@@ -235,8 +251,15 @@ def _entity_to_dict(entity: Entity, session: Session) -> Dict[str, Any]:
         ),
         "layered_report_minio_key": entity.layered_report_minio_key or "",
         "scan_count": scan_count,
-        "latest_risk": latest_scan.risk_level if latest_scan else "",
-        "latest_score": latest_scan.truth_score if latest_scan else None,
+        # risk_level and truth_score columns were removed — derive verdict from layered_analysis_json instead
+        "latest_risk": (
+            (latest_scan.layered_analysis_json or {}).get("scan_summary", {}).get("forensic_verdict", "").lower()
+            if latest_scan else ""
+        ),
+        "latest_score": (
+            (latest_scan.layered_analysis_json or {}).get("scan_summary", {}).get("forgery_score_0_100")
+            if latest_scan else None
+        ),
         "created_at": (
             entity.created_at.isoformat() if entity.created_at else ""
         ),
@@ -244,12 +267,30 @@ def _entity_to_dict(entity: Entity, session: Session) -> Dict[str, Any]:
 
 
 def _json_ready(value: Any) -> Any:
+    """Recursively convert any value into something PostgreSQL / psycopg2 can store as JSONB.
+
+    PostgreSQL rejects JSON strings that contain null bytes (\\x00) or broken
+    Unicode sequences, which often sneak in from EXIF tags inside scanned images.
+    This function walks nested dicts / lists and cleans every string.
+    NumPy scalars (int64, float32, etc.) are converted to plain Python types
+    because psycopg2 does not know how to serialise them.
+    """
     if isinstance(value, dict):
         return {str(k): _json_ready(v) for k, v in value.items()}
     if isinstance(value, list):
         return [_json_ready(item) for item in value]
     if isinstance(value, tuple):
         return [_json_ready(item) for item in value]
+    if isinstance(value, str):
+        # PostgreSQL / psycopg2 rejects null bytes (U+0000) and lone surrogate
+        # characters inside JSON strings (UntranslatableCharacter error).
+        # Strip null bytes; replace any remaining invalid UTF-8 sequences.
+        cleaned = value.replace("\x00", "")
+        try:
+            cleaned.encode("utf-8")
+        except UnicodeEncodeError:
+            cleaned = cleaned.encode("utf-8", "replace").decode("utf-8")
+        return cleaned
     if hasattr(value, "item"):
         try:
             return value.item()
@@ -259,6 +300,12 @@ def _json_ready(value: Any) -> Any:
 
 
 def _mark_layered_analysis_dirty(entity: Entity) -> None:
+    """Record that this entity's layered-analysis PDF is now out of date.
+
+    Whenever a new scan or identity check is saved, the cached PDF summary
+    for the entity is no longer current.  Setting these flags tells the
+    report generator to rebuild the PDF the next time someone requests it.
+    """
     entity.layered_analysis_updated_at = datetime.now(timezone.utc)
     entity.layered_report_generated = False
     entity.layered_report_generated_at = None
@@ -273,6 +320,14 @@ def _upsert_layered_analysis_entry(
     section_name: str,
     details: Dict[str, Any],
 ) -> None:
+    """Save or update a single section's captured data in layered_analysis_entries.
+
+    Each (entity, screen, section) combination stores the latest snapshot of what
+    was captured on that screen section — e.g. (BT-000001, 'Bulk Scan', 'payslip.jpg').
+    If a row already exists we overwrite it (UPSERT) so the table always holds the
+    most recent data rather than growing unbounded with duplicates.
+    Calling this also marks the entity's PDF report as stale so it gets rebuilt.
+    """
     existing = (
         session.query(LayeredAnalysisEntry)
         .filter(
@@ -317,10 +372,9 @@ def _persist_scan_layered_analysis(
             "document_type": scan.document_type,
             "source_name": scan.source_name,
             "source_sha256": scan.source_sha256,
-            "truth_score": scan.truth_score,
-            "risk_level": scan.risk_level,
-            "verdict": scan.verdict,
-            "parse_method": scan.parse_method,
+            # Forensic verdict and score come from layered_analysis_json — no separate DB columns
+            "forensic_verdict": (scan.layered_analysis_json or {}).get("scan_summary", {}).get("forensic_verdict", ""),
+            "forgery_score": (scan.layered_analysis_json or {}).get("scan_summary", {}).get("forgery_score_0_100"),
             "structured_summary": structured_summary,
             "authenticity_checks": build_scan_authenticity_payload(report),
             "tamper_assessment": report.get("tamper_assessment") or {},
@@ -328,6 +382,114 @@ def _persist_scan_layered_analysis(
             "artifacts": report.get("artifacts") or {},
             "generated_at": scan.generated_at.isoformat() if scan.generated_at else "",
         },
+    )
+
+
+def _build_document_information_payload(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a rich JSON payload for document_information.extracted_data."""
+    structured_summary = report.get("structured_summary") or {}
+    key_fields = structured_summary.get("key_fields") or {}
+    named_fields = {}
+    if isinstance(key_fields.get("named_fields"), dict):
+        named_fields = key_fields.get("named_fields") or {}
+    gemma4_analysis = report.get("gemma4_analysis") or {}
+
+    # When no per-doc Gemma4 analysis ran (e.g. bulk batch mode), build a
+    # synthetic analysis from LiteParse key_fields + tamper_assessment so the
+    # Document Intelligence page always has rich data to display.
+    if not gemma4_analysis:
+        artifacts = report.get("artifacts") or {}
+        batch_class = artifacts.get("batch_classification") or {}
+        tamper = report.get("tamper_assessment") or {}
+        doc = structured_summary.get("document") or {}
+        doc_type = (
+            batch_class.get("document_type")
+            or doc.get("type", "generic")
+        )
+        confidence = float(
+            batch_class.get("confidence")
+            or doc.get("type_confidence")
+            or 0.0
+        )
+        truth_score = int(tamper.get("truth_score") or 100)
+        risk_level = tamper.get("risk_level") or "unknown"
+        parse_method = structured_summary.get("parse_method", "liteparse")
+
+        # Extracted fields from LiteParse (accurate field extraction)
+        extracted_fields: Dict[str, Any] = {}
+        for _k, _v in key_fields.items():
+            if _k == "named_fields" or _v in (None, "", [], {}):
+                continue
+            extracted_fields[_k] = _v
+        for _k, _v in named_fields.items():
+            if _v not in (None, "", [], {}):
+                extracted_fields[_k] = _v
+
+        # Fraud signals from rule-based tamper assessment.
+        # Signal fields are: name, severity, summary, passed, details (see models.Signal).
+        # Only include signals that failed (passed == False) with a non-empty name.
+        raw_signals = tamper.get("signals") or []
+        fraud_signals = [
+            {
+                "type": s.get("name") or "unknown",
+                "severity": s.get("severity", "low"),
+                "description": s.get("summary") or "",
+            }
+            for s in raw_signals
+            if s.get("passed") is False and (s.get("name") or s.get("summary"))
+        ]
+
+        # Authenticity verdict derived from truth_score
+        if truth_score >= 80:
+            verdict, assess_conf = "authentic", truth_score / 100
+        elif truth_score >= 50:
+            verdict, assess_conf = "suspicious", (100 - truth_score) / 100
+        else:
+            verdict, assess_conf = "tampered", (100 - truth_score) / 100
+
+        reasons = [f"Truth score: {truth_score}/100", f"Risk level: {risk_level}"]
+        for _s in raw_signals:
+            _reason = _s.get("reason") or _s.get("description") or ""
+            if _reason:
+                reasons.append(_reason)
+
+        summary = (
+            f"{doc_type.replace('_', ' ').title()} — "
+            f"truth score {truth_score}/100, risk {risk_level}. "
+            f"Extracted via {parse_method}."
+        )
+
+        gemma4_analysis = {
+            "document_type": doc_type,
+            "confidence": confidence,
+            "extracted_fields": extracted_fields,
+            "fraud_signals": fraud_signals,
+            "authenticity_assessment": {
+                "verdict": verdict,
+                "confidence": assess_conf,
+                "reasons": reasons,
+            },
+            "summary": summary,
+            "source": "liteparse+tamper",
+            "model": "liteparse+rule_based",
+        }
+
+    return _json_ready(
+        {
+            "document_type": (structured_summary.get("document") or {}).get("type", "generic"),
+            "document": structured_summary.get("document") or {},
+            "key_fields": key_fields,
+            "named_fields": named_fields,
+            "parse_method": structured_summary.get("parse_method", ""),
+            "parse_fallback": structured_summary.get("parse_fallback", False),
+            "parse_fallback_reason": structured_summary.get("parse_fallback_reason", ""),
+            "parser": structured_summary.get("parser") or {},
+            "source": report.get("source") or {},
+            "authenticity_checks": build_scan_authenticity_payload(report),
+            "tamper_assessment": report.get("tamper_assessment") or {},
+            "signals": report.get("signals") or [],
+            "gemma4_analysis": gemma4_analysis,
+        }
     )
 
 
@@ -537,17 +699,18 @@ def save_scan_to_db(
                     extra={"entity_ref": entity.entity_ref, "updated_fields": _updated_fields},
                 )
 
-            ss = report.get("structured_summary", {})
-            tamper = report.get("tamper_assessment", {})
+            # Sanitize the full report dict before storing as JSONB — this strips
+            # null bytes (U+0000) and lone surrogates that psycopg2 cannot encode.
+            # EXIF fields from image files (e.g. ImageDescription) often contain \x00.
+            report = _json_ready(report)
 
-            # Load PDF from artifact path if bytes were not supplied
-            if pdf_bytes is None:
-                pdf_path_str = report.get("artifacts", {}).get("pdf_report_path", "")
-                if pdf_path_str and Path(pdf_path_str).exists():
-                    try:
-                        pdf_bytes = Path(pdf_path_str).read_bytes()
-                    except OSError:
-                        pass
+            ss = report.get("structured_summary", {})
+            # The document_type comes from the report directly (new forensics-only format)
+            # or from structured_summary (old OCR format from single Scan Document screen).
+            _doc_type = (
+                report.get("document_type")
+                or (ss.get("document") or {}).get("type", "generic")
+            )
 
             scan = None
             if entity is not None:
@@ -556,35 +719,27 @@ def save_scan_to_db(
                     .filter(
                         Scan.entity_id == entity.id,
                         Scan.source_name == report.get("source", {}).get("name", ""),
-                        Scan.document_type == ss.get("document", {}).get("type", "generic"),
+                        Scan.document_type == _doc_type,
                     )
                     .order_by(Scan.generated_at.desc())
                     .first()
                 )
 
             if scan is None:
+                # Create a new scan row with only the columns that still exist in the schema.
+                # Old OCR columns (truth_score, risk_level, verdict, parse_method,
+                # report_json, pdf_report) have been dropped from the table.
                 scan = Scan(
                     entity_id=entity.id if entity else None,
                     source_name=report.get("source", {}).get("name", ""),
                     source_sha256=report.get("source", {}).get("sha256", ""),
-                    document_type=ss.get("document", {}).get("type", "generic"),
-                    truth_score=tamper.get("truth_score"),
-                    risk_level=tamper.get("risk_level", "low"),
-                    verdict=tamper.get("verdict", ""),
-                    parse_method=ss.get("parse_method", ""),
-                    report_json=report,
-                    pdf_report=pdf_bytes,
+                    document_type=_doc_type,
                 )
                 session.add(scan)
             else:
+                # Update mutable fields on the existing row
                 scan.entity_id = entity.id if entity else None
                 scan.source_sha256 = report.get("source", {}).get("sha256", "")
-                scan.truth_score = tamper.get("truth_score")
-                scan.risk_level = tamper.get("risk_level", "low")
-                scan.verdict = tamper.get("verdict", "")
-                scan.parse_method = ss.get("parse_method", "")
-                scan.report_json = report
-                scan.pdf_report = pdf_bytes
                 scan.generated_at = datetime.now(timezone.utc)
 
             if entity is not None:
@@ -600,10 +755,47 @@ def save_scan_to_db(
                 )
                 for stale_scan in stale_scans:
                     session.delete(stale_scan)
+
+            # ── Run image forensics (non-fatal; result stored in JSONB column) ─
+            # First check if forensics was already computed at scan time (Bulk Scan
+            # pre-runs all 11 layers and stores the result in report["_layered_forensics"]).
+            # If that key is present we use it directly — no need to re-run the analysis.
+            # If it is missing we fall back to running forensics from the source file path.
+            _forensics_result = report.get("_layered_forensics")
+            if _forensics_result is None:
+                # Fall back: compute forensics now — this happens for documents saved via
+                # Scan Document (single-scan), which does not pre-run forensics.
+                _source_path_str = report.get("source", {}).get("path", "")
+                if _source_path_str and Path(_source_path_str).exists():
+                    try:
+                        from basetruth.analysis.image_forensics_detect import (  # noqa: PLC0415
+                            run_forensics,
+                            run_forensics_on_pdf,
+                        )
+                        _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp"}
+                        _ext = Path(_source_path_str).suffix.lower()
+                        if _ext in _IMAGE_EXTS:
+                            _forensics_result = run_forensics(_source_path_str)
+                        elif _ext == ".pdf":
+                            _forensics_result = run_forensics_on_pdf(_source_path_str)
+                    except Exception as _fe:
+                        log.warning("save_scan_to_db: forensics failed (non-fatal): %s", _fe)
+            if _forensics_result:
+                scan.layered_analysis_json = _json_ready(_forensics_result)
+                log.info(
+                    "save_scan_to_db: forensics stored",
+                    extra={
+                        "source": report.get("source", {}).get("name", ""),
+                        "verdict": _forensics_result.get("scan_summary", {}).get("forensic_verdict", ""),
+                        "score": _forensics_result.get("scan_summary", {}).get("forgery_score_0_100", 0),
+                        "precomputed": report.get("_layered_forensics") is not None,
+                    },
+                )
+
             session.flush()
             log.info(
                 "save_scan_to_db: scan row upserted",
-                extra={"scan_id": scan.id, "document_type": scan.document_type, "risk_level": scan.risk_level},
+                extra={"scan_id": scan.id, "document_type": scan.document_type},
             )
 
             result = {
@@ -612,10 +804,11 @@ def save_scan_to_db(
             }
 
             # ── Persist DocumentInformation ────────────────────────────────
-            # Always create a row when entity exists — even if key_fields is
-            # empty we still want to record the document_type linkage.
-            if entity:
-                _key_fields = ss.get("key_fields") or {}
+            # Only create DocumentInformation when the report contains structured_summary
+            # (i.e. from the single Scan Document screen with OCR).  Forensics-only
+            # reports from Bulk Scan do not have OCR payload to store here.
+            if entity and report.get("structured_summary"):
+                _doc_info_payload = _build_document_information_payload(report)
                 _doc_type = ss.get("document", {}).get("type", "generic")
                 try:
                     doc_info = (
@@ -628,13 +821,13 @@ def save_scan_to_db(
                             entity_id=entity.id,
                             scan_id=scan.id,
                             document_type=_doc_type,
-                            extracted_data=_key_fields if _key_fields else {},
+                            extracted_data=_doc_info_payload,
                         )
                         session.add(doc_info)
                     else:
                         doc_info.entity_id = entity.id
                         doc_info.document_type = _doc_type
-                        doc_info.extracted_data = _key_fields if _key_fields else {}
+                        doc_info.extracted_data = _doc_info_payload
                     session.flush()
                     log.info(
                         "save_scan_to_db: DocumentInformation created",
@@ -642,7 +835,7 @@ def save_scan_to_db(
                             "doc_info_id": doc_info.id,
                             "entity_ref": entity.entity_ref,
                             "document_type": _doc_type,
-                            "key_field_count": len(_key_fields),
+                            "key_field_count": len(ss.get("key_fields") or {}),
                         },
                     )
                 except Exception as di_exc:
@@ -785,20 +978,88 @@ def get_entity_scans(entity_ref: str) -> List[Dict[str, Any]]:
                     "id": s.id,
                     "source_name": s.source_name,
                     "document_type": s.document_type or "generic",
-                    "truth_score": s.truth_score,
-                    "risk_level": s.risk_level or "low",
-                    "verdict": s.verdict or "",
-                    "parse_method": s.parse_method or "",
+                    # Forensic verdict + score derived from layered_analysis_json (new format)
+                    "forensic_verdict": (
+                        (s.layered_analysis_json or {}).get("scan_summary", {}).get("forensic_verdict", "")
+                    ),
+                    "forgery_score": (
+                        (s.layered_analysis_json or {}).get("scan_summary", {}).get("forgery_score_0_100")
+                    ),
+                    "layered_analysis_json": s.layered_analysis_json or {},
+                    # Two-level approval workflow fields
+                    "first_level_approval": s.first_level_approval,
+                    "first_level_approved_by": s.first_level_approved_by or "",
+                    "first_level_approved_at": (
+                        s.first_level_approved_at.isoformat() if s.first_level_approved_at else ""
+                    ),
+                    "first_level_approval_comment": s.first_level_approval_comment or "",
+                    "second_level_approval": s.second_level_approval,
+                    "second_level_approved_by": s.second_level_approved_by or "",
+                    "second_level_approved_at": (
+                        s.second_level_approved_at.isoformat() if s.second_level_approved_at else ""
+                    ),
+                    "second_level_approval_comment": s.second_level_approval_comment or "",
+                    # Legacy single-level approval kept for backwards compat
+                    "approved": s.approved,
                     "generated_at": (
                         s.generated_at.isoformat() if s.generated_at else ""
                     ),
-                    "has_pdf": s.pdf_report is not None and len(s.pdf_report) > 0,
-                    "report_json": s.report_json or {},
                 }
                 for s in latest_scans.values()
             ]
     except Exception as exc:
         log.warning("get_entity_scans failed: %s", exc)
+        return []
+
+
+def get_entity_document_information(entity_ref: str) -> List[Dict[str, Any]]:
+    """Return all document_information rows for an entity (most-recent first).
+
+    Each dict includes the full ``extracted_data`` JSONB payload (which contains
+    the Gemma4 analysis when available) together with the source document name,
+    document type, and scan timestamp so the Records page can render them.
+    """
+    try:
+        with db_session() as session:
+            entity = (
+                session.query(Entity)
+                .filter(Entity.entity_ref == entity_ref)
+                .first()
+            )
+            if not entity:
+                return []
+            rows = (
+                session.query(DocumentInformation)
+                .filter(DocumentInformation.entity_id == entity.id)
+                .order_by(DocumentInformation.created_at.desc())
+                .all()
+            )
+            result = []
+            for row in rows:
+                scan = (
+                    session.query(Scan).filter(Scan.id == row.scan_id).first()
+                )
+                result.append(
+                    {
+                        "id": row.id,
+                        "scan_id": row.scan_id,
+                        "document_type": row.document_type or "generic",
+                        "source_name": scan.source_name if scan else "",
+                        "scan_generated_at": (
+                            scan.generated_at.isoformat()
+                            if scan and scan.generated_at
+                            else ""
+                        ),
+                        "scan_approved": scan.approved if scan else None,
+                        "extracted_data": row.extracted_data or {},
+                        "created_at": (
+                            row.created_at.isoformat() if row.created_at else ""
+                        ),
+                    }
+                )
+            return result
+    except Exception as exc:
+        log.warning("get_entity_document_information failed: %s", exc)
         return []
 
 
@@ -855,6 +1116,296 @@ def list_recent_scans(limit: int = 200) -> List[Dict[str, Any]]:
         return []
 
 
+def _scan_to_summary_dict(s: "Scan", entity: Optional["Entity"]) -> Dict[str, Any]:
+    """Convert a Scan ORM row + optional Entity to a flat summary dict for the UI."""
+    # Determine the effective approval status from two-level system, falling back to legacy column
+    _fl = s.first_level_approval   # 'Y' | 'N' | None
+    _sl = s.second_level_approval  # 'Y' | 'N' | None
+
+    # Derive legacy 'approved' value from the two new columns so old code still works
+    if _fl == "Y" and _sl == "Y":
+        _effective_approved = "approved"   # both levels approved
+    elif _fl == "N" or _sl == "N":
+        _effective_approved = "rejected"   # at least one level rejected
+    else:
+        # Fall back to the old single-level column if the new ones haven't been set yet
+        _effective_approved = s.approved   # None = pending (could be old record)
+
+    return {
+        "id": s.id,
+        "source_name": s.source_name,
+        "document_type": s.document_type or "generic",
+        "generated_at": s.generated_at.isoformat() if s.generated_at else "",
+        # Legacy approval — derived from two-level system above
+        "approved": _effective_approved,
+        "approved_by": s.approved_by or "",
+        "approved_at": s.approved_at.isoformat() if s.approved_at else "",
+        "approval_comment": s.approval_comment or "",
+        # First-level approval (initial reviewer)
+        "first_level_approval": _fl,
+        "first_level_approved_by": s.first_level_approved_by or "",
+        "first_level_approved_at": s.first_level_approved_at.isoformat() if s.first_level_approved_at else "",
+        "first_level_approval_comment": s.first_level_approval_comment or "",
+        # Second-level approval (senior reviewer)
+        "second_level_approval": _sl,
+        "second_level_approved_by": s.second_level_approved_by or "",
+        "second_level_approved_at": s.second_level_approved_at.isoformat() if s.second_level_approved_at else "",
+        "second_level_approval_comment": s.second_level_approval_comment or "",
+        "entity_ref": entity.entity_ref if entity else "—",
+        "entity_name": (
+            f"{entity.first_name or ''} {entity.last_name or ''}".strip() if entity else "—"
+        ),
+        "layered_analysis_json": s.layered_analysis_json,
+    }
+
+
+def list_all_scans_with_status(limit: int = 200) -> List[Dict[str, Any]]:
+    """Return all scans (pending, approved, rejected) ordered newest-first."""
+    try:
+        with db_session() as session:
+            scans = (
+                session.query(Scan).order_by(Scan.generated_at.desc()).limit(limit).all()
+            )
+            result = []
+            for s in scans:
+                entity = (
+                    session.query(Entity).filter(Entity.id == s.entity_id).first()
+                    if s.entity_id
+                    else None
+                )
+                result.append(_scan_to_summary_dict(s, entity))
+            return result
+    except Exception as exc:
+        log.warning("list_all_scans_with_status failed: %s", exc)
+        return []
+
+
+def list_pending_scans(limit: int = 200) -> List[Dict[str, Any]]:
+    """Return scans where approval is still pending (approved IS NULL)."""
+    try:
+        with db_session() as session:
+            scans = (
+                session.query(Scan)
+                .filter(Scan.approved.is_(None))
+                .order_by(Scan.generated_at.desc())
+                .limit(limit)
+                .all()
+            )
+            result = []
+            for s in scans:
+                entity = (
+                    session.query(Entity).filter(Entity.id == s.entity_id).first()
+                    if s.entity_id
+                    else None
+                )
+                result.append(_scan_to_summary_dict(s, entity))
+            return result
+    except Exception as exc:
+        log.warning("list_pending_scans failed: %s", exc)
+        return []
+
+
+def list_approved_scans(entity_ref: Optional[str] = None, limit: int = 200) -> List[Dict[str, Any]]:
+    """Return approved scans, optionally filtered by entity_ref."""
+    try:
+        with db_session() as session:
+            q = session.query(Scan).filter(Scan.approved == "approved")
+            if entity_ref:
+                entity = (
+                    session.query(Entity)
+                    .filter(Entity.entity_ref == entity_ref)
+                    .first()
+                )
+                if entity:
+                    q = q.filter(Scan.entity_id == entity.id)
+                else:
+                    return []
+            scans = q.order_by(Scan.generated_at.desc()).limit(limit).all()
+            result = []
+            for s in scans:
+                ent = (
+                    session.query(Entity).filter(Entity.id == s.entity_id).first()
+                    if s.entity_id
+                    else None
+                )
+                result.append(_scan_to_summary_dict(s, ent))
+            return result
+    except Exception as exc:
+        log.warning("list_approved_scans failed: %s", exc)
+        return []
+
+
+def get_scan_with_forensics(scan_id: int) -> Optional[Dict[str, Any]]:
+    """Return a single scan row including its full layered_analysis_json."""
+    try:
+        with db_session() as session:
+            s = session.query(Scan).filter(Scan.id == scan_id).first()
+            if s is None:
+                return None
+            entity = (
+                session.query(Entity).filter(Entity.id == s.entity_id).first()
+                if s.entity_id
+                else None
+            )
+            return _scan_to_summary_dict(s, entity)
+    except Exception as exc:
+        log.warning("get_scan_with_forensics(%d) failed: %s", scan_id, exc)
+        return None
+
+
+def approve_scan(
+    scan_id: int,
+    approved_by: str = "",
+    comment: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Mark a scan as 1st-level approved.  Returns the updated summary dict or None on failure."""
+    try:
+        with db_session() as session:
+            s = session.query(Scan).filter(Scan.id == scan_id).first()
+            if s is None:
+                log.warning("approve_scan: scan %d not found", scan_id)
+                return None
+            # Set first-level approval to Y (Yes)
+            s.first_level_approval = "Y"
+            s.first_level_approved_by = approved_by or None
+            s.first_level_approved_at = datetime.now(timezone.utc)
+            s.first_level_approval_comment = comment or None
+            # Keep the legacy column in sync for backwards-compat reads
+            s.approved = "approved"
+            s.approved_by = approved_by or None
+            s.approved_at = datetime.now(timezone.utc)
+            s.approval_comment = comment or None
+            session.flush()
+            entity = (
+                session.query(Entity).filter(Entity.id == s.entity_id).first()
+                if s.entity_id
+                else None
+            )
+            result = _scan_to_summary_dict(s, entity)
+            log.info(
+                "approve_scan: 1st-level approved",
+                extra={"scan_id": scan_id, "approved_by": approved_by, "entity_ref": result.get("entity_ref")},
+            )
+            return result
+    except Exception as exc:
+        log.error("approve_scan(%d) failed: %s", scan_id, exc, exc_info=True)
+        return None
+
+
+def reject_scan(
+    scan_id: int,
+    approved_by: str = "",
+    comment: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Mark a scan as 1st-level rejected.  Returns the updated summary dict or None on failure."""
+    try:
+        with db_session() as session:
+            s = session.query(Scan).filter(Scan.id == scan_id).first()
+            if s is None:
+                log.warning("reject_scan: scan %d not found", scan_id)
+                return None
+            # Set first-level approval to N (No)
+            s.first_level_approval = "N"
+            s.first_level_approved_by = approved_by or None
+            s.first_level_approved_at = datetime.now(timezone.utc)
+            s.first_level_approval_comment = comment or None
+            # Keep legacy column in sync
+            s.approved = "rejected"
+            s.approved_by = approved_by or None
+            s.approved_at = datetime.now(timezone.utc)
+            s.approval_comment = comment or None
+            session.flush()
+            entity = (
+                session.query(Entity).filter(Entity.id == s.entity_id).first()
+                if s.entity_id
+                else None
+            )
+            result = _scan_to_summary_dict(s, entity)
+            log.info(
+                "reject_scan: 1st-level rejected",
+                extra={"scan_id": scan_id, "approved_by": approved_by, "entity_ref": result.get("entity_ref")},
+            )
+            return result
+    except Exception as exc:
+        log.error("reject_scan(%d) failed: %s", scan_id, exc, exc_info=True)
+        return None
+
+
+def second_level_approve_scan(
+    scan_id: int,
+    approved_by: str = "",
+    comment: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Mark a scan as 2nd-level (senior) approved.  Returns updated summary dict or None."""
+    try:
+        with db_session() as session:
+            s = session.query(Scan).filter(Scan.id == scan_id).first()
+            if s is None:
+                log.warning("second_level_approve_scan: scan %d not found", scan_id)
+                return None
+            if s.first_level_approval != "Y":
+                # 2nd-level approval only makes sense after 1st-level has passed
+                log.warning(
+                    "second_level_approve_scan: 1st-level not yet approved",
+                    extra={"scan_id": scan_id, "first_level": s.first_level_approval},
+                )
+                return None
+            # Set second-level approval to Y (Yes)
+            s.second_level_approval = "Y"
+            s.second_level_approved_by = approved_by or None
+            s.second_level_approved_at = datetime.now(timezone.utc)
+            s.second_level_approval_comment = comment or None
+            session.flush()
+            entity = (
+                session.query(Entity).filter(Entity.id == s.entity_id).first()
+                if s.entity_id
+                else None
+            )
+            result = _scan_to_summary_dict(s, entity)
+            log.info(
+                "second_level_approve_scan: 2nd-level approved",
+                extra={"scan_id": scan_id, "approved_by": approved_by},
+            )
+            return result
+    except Exception as exc:
+        log.error("second_level_approve_scan(%d) failed: %s", scan_id, exc, exc_info=True)
+        return None
+
+
+def second_level_reject_scan(
+    scan_id: int,
+    approved_by: str = "",
+    comment: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Mark a scan as 2nd-level (senior) rejected.  Returns updated summary dict or None."""
+    try:
+        with db_session() as session:
+            s = session.query(Scan).filter(Scan.id == scan_id).first()
+            if s is None:
+                log.warning("second_level_reject_scan: scan %d not found", scan_id)
+                return None
+            # Set second-level approval to N (No)
+            s.second_level_approval = "N"
+            s.second_level_approved_by = approved_by or None
+            s.second_level_approved_at = datetime.now(timezone.utc)
+            s.second_level_approval_comment = comment or None
+            session.flush()
+            entity = (
+                session.query(Entity).filter(Entity.id == s.entity_id).first()
+                if s.entity_id
+                else None
+            )
+            result = _scan_to_summary_dict(s, entity)
+            log.info(
+                "second_level_reject_scan: 2nd-level rejected",
+                extra={"scan_id": scan_id, "approved_by": approved_by},
+            )
+            return result
+    except Exception as exc:
+        log.error("second_level_reject_scan(%d) failed: %s", scan_id, exc, exc_info=True)
+        return None
+
+
 def update_entity(entity_ref: str, fields: Dict[str, str]) -> Optional[Dict[str, Any]]:
     """Update mutable identity fields on an entity record."""
     allowed = {"first_name", "last_name", "email", "phone", "pan_number", "aadhar_number"}
@@ -896,9 +1447,14 @@ def db_stats() -> Dict[str, int]:
             return {
                 "entities": session.query(func.count(Entity.id)).scalar() or 0,
                 "scans": session.query(func.count(Scan.id)).scalar() or 0,
+                # risk_level column removed — count scans with TAMPERED forensic verdict instead
                 "high_risk": (
                     session.query(func.count(Scan.id))
-                    .filter(Scan.risk_level == "high")
+                    .filter(
+                        Scan.layered_analysis_json["scan_summary"]["forensic_verdict"].astext.in_(
+                            ["TAMPERED", "LIKELY TAMPERED"]
+                        )
+                    )
                     .scalar()
                     or 0
                 ),
@@ -914,17 +1470,37 @@ def db_dashboard_stats() -> Dict[str, Any]:
     try:
         with db_session() as session:
             total_scans = session.query(func.count(Scan.id)).scalar() or 0
+            # risk_level column is removed — derive counts from layered_analysis_json forensic_verdict
             high_risk = (
-                session.query(func.count(Scan.id)).filter(Scan.risk_level == "high").scalar() or 0
+                session.query(func.count(Scan.id))
+                .filter(
+                    Scan.layered_analysis_json["scan_summary"]["forensic_verdict"].astext == "TAMPERED"
+                )
+                .scalar() or 0
             )
             medium_risk = (
-                session.query(func.count(Scan.id)).filter(Scan.risk_level == "medium").scalar() or 0
+                session.query(func.count(Scan.id))
+                .filter(
+                    Scan.layered_analysis_json["scan_summary"]["forensic_verdict"].astext == "LIKELY TAMPERED"
+                )
+                .scalar() or 0
             )
             low_risk = (
-                session.query(func.count(Scan.id)).filter(Scan.risk_level == "low").scalar() or 0
+                session.query(func.count(Scan.id))
+                .filter(
+                    Scan.layered_analysis_json["scan_summary"]["forensic_verdict"].astext.in_(["ORIGINAL", "UNCERTAIN"])
+                )
+                .scalar() or 0
             )
             entities = session.query(func.count(Entity.id)).scalar() or 0
-            avg_score_row = session.query(func.avg(Scan.truth_score)).scalar()
+            # truth_score column is removed — derive average from layered_analysis_json forgery_score
+            # Use a fallback of None when the column has no data yet
+            avg_score_row = session.execute(
+                text(
+                    "SELECT AVG((layered_analysis_json->'scan_summary'->>'forgery_score_0_100')::float) "
+                    "FROM scans WHERE layered_analysis_json IS NOT NULL"
+                )
+            ).scalar()
             avg_score = round(float(avg_score_row), 1) if avg_score_row is not None else None
             pending = (
                 session.query(func.count(Case.id)).filter(Case.disposition == "open").scalar() or 0
@@ -1419,6 +1995,46 @@ def reset_db() -> bool:
         return True
     except Exception as exc:
         log.error("reset_db failed: %s", exc)
+        return False
+
+
+# Allowlist of tables that may be individually truncated via the Danger Zone UI.
+# This prevents arbitrary table names from being injected into the SQL query.
+_TRUNCATABLE_TABLES = frozenset({
+    "entities",
+    "scans",
+    "document_information",
+    "identity_checks",
+    "layered_analysis_entries",
+    "cases",
+    "case_notes",
+})
+
+
+def truncate_table(table_name: str) -> bool:
+    """Truncate a single named table and restart its identity sequence.
+
+    Only tables listed in _TRUNCATABLE_TABLES are permitted — any other name
+    is rejected immediately so a caller cannot inject arbitrary SQL.  Truncation
+    uses CASCADE so dependent rows in child tables are also removed, keeping
+    foreign-key constraints satisfied.
+
+    Returns True on success, False on any error.
+    """
+    # Validate against the allowlist before touching the database
+    if table_name not in _TRUNCATABLE_TABLES:
+        log.error("truncate_table: rejected unknown or disallowed table '%s'", table_name)
+        return False
+    try:
+        with db_session() as session:
+            # Table name is taken from a controlled allowlist, so string interpolation is safe
+            session.execute(
+                text(f"TRUNCATE TABLE {table_name} RESTART IDENTITY CASCADE")  # noqa: S608
+            )
+        log.warning("truncate_table: table '%s' truncated by user request", table_name)
+        return True
+    except Exception as exc:
+        log.error("truncate_table('%s') failed: %s", table_name, exc)
         return False
 
 

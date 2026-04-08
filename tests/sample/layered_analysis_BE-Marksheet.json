@@ -1,0 +1,149 @@
+{
+  "scan_summary": {
+    "source_file": "BE-Marksheet.pdf",
+    "document_type": "academic_marksheet",
+    "analyzed_as": "BE-Marksheet_page1.png (page 1 rendered at 200 DPI from PDF)",
+    "format": "PNG",
+    "file_size_bytes": 3756609,
+    "file_entropy_bits": 7.9893,
+    "forensic_verdict": "LIKELY TAMPERED",
+    "forgery_score_0_100": 42.0,
+    "overall_explanation": "This is a University of Pune B.E. (Computer) marksheet for MALUSKAR HRISHIKESH NAMDEO (Seat B2084275, May 2006, First Class, 925/1500). The document was converted from PDF and rendered as a clean digital image — which is why some signals (metadata, clone ratio) look suspicious even though those are expected artifacts of PDF rendering rather than intentional forgery. The overall score is 42/100, placing it in the LIKELY TAMPERED zone. However, the most meaningful signals — ELA, noise, font consistency, and color anomaly — all read clean. The edge density and saturation flags are consistent with a text-heavy printed document. Manual review is recommended before making a final decision.",
+    "evidence": [
+      "Metadata: No metadata whatsoever — all metadata stripped (expected for PDF-rendered PNG, but suspicious in an original photo)",
+      "Clone: clone_ratio 0.442 — possible copy-move (high ratio is expected in a document with repeated table-row patterns)",
+      "Edge: 10.4% of tiles have unnaturally high edge density (drawn line or sharp boundary — normal for printed text documents)",
+      "Saturation: 4.2% of tiles are over-saturated vs image mean (minor signal, may reflect university seal or stamp)"
+    ]
+  },
+  "layers": {
+    "layer_1_ela": {
+      "name": "Error Level Analysis (ELA)",
+      "plain_english": "When you save a JPEG image, tiny quality details are lost. If someone pastes new text onto an old image and saves it again, the pasted area looks 'brighter' in the ELA heatmap because it hasn't lost as much quality as the rest. This document shows very low, uniform ELA — meaning the whole image has aged equally, which is a sign of an untouched original.",
+      "status": "CLEAN",
+      "metrics": {
+        "mean_ela": 1.201,
+        "max_ela": null,
+        "std_ela": null,
+        "suspicious_block_ratio": 0.0,
+        "interpretation": "LOW — uniform ELA across image (consistent with original)"
+      }
+    },
+    "layer_2_metadata": {
+      "name": "Metadata / EXIF Analysis",
+      "plain_english": "Every digital photo carries hidden tags (metadata) revealing which camera took it, when, and sometimes with what software it was edited. This PNG has zero metadata — which is expected because it was rendered from a PDF (PDFs don't embed camera metadata), but in an original photo submission this would be suspicious. No editing software names were detected in the tags.",
+      "status": "SUSPICIOUS",
+      "suspicious_flags": [
+        "No metadata whatsoever — all metadata stripped (common after editing)"
+      ],
+      "metrics": {
+        "format": "PNG",
+        "image_size_px": [1653, 2339],
+        "total_tags": 0,
+        "software": null,
+        "tamper_risk": "MEDIUM",
+        "interpretation": "No camera metadata present — acceptable for PDF renders, suspicious for original photo submissions"
+      }
+    },
+    "layer_3_file_entropy": {
+      "name": "File Entropy (Data Randomness)",
+      "plain_english": "Entropy measures how 'random' a file's raw data is. A perfectly original image has near-maximum randomness (close to 8.0 bits). Files that have been heavily edited and re-saved many times tend to lose some randomness because the compression removes redundant data more aggressively. This document scores 7.99/8.0 — sitting very close to maximum, which is healthy.",
+      "status": "CLEAN",
+      "metrics": {
+        "file_entropy_bits": 7.9893,
+        "max_possible": 8.0,
+        "interpretation": "HEALTHY — entropy near maximum, consistent with unmanipulated image data"
+      }
+    },
+    "layer_4_noise_residual": {
+      "name": "Noise Residual Analysis",
+      "plain_english": "Every real photograph has a tiny invisible 'static' noise pattern from the camera sensor — like the grain in an old film photo. If someone patches different regions together, the static noise won't match at the join. This document's noise is very uniform across all tiles (only 1.4% hotspot tiles), which means the image wasn't stitched from different sources.",
+      "status": "CLEAN",
+      "metrics": {
+        "mean_noise": null,
+        "hotspot_tile_ratio": 0.014,
+        "interpretation": "UNIFORM — noise residual consistent across entire image"
+      }
+    },
+    "layer_5_dct_analysis": {
+      "name": "DCT Double-Compression Analysis",
+      "plain_english": "When a JPEG image is edited and saved again, it leaves an invisible repeating pattern (like a comb) in the image's mathematical structure. This test only applies to JPEG files. This document is a PNG, so the test was skipped — PNG files don't use DCT compression and cannot carry this type of double-save fingerprint.",
+      "status": "N/A",
+      "metrics": {
+        "skipped": true,
+        "reason": "File format is PNG — DCT analysis applies to JPEG only"
+      }
+    },
+    "layer_6_clone_detection": {
+      "name": "Clone / Copy-Move Detection",
+      "plain_english": "This test looks for areas within the same image that are suspiciously similar to each other — like if someone used a 'clone stamp' tool to cover something up by copying the background over it. This marksheet has a clone_ratio of 0.442, which is high. However, in a structured document like a university marksheet, this is expected: table rows repeat the same printed lines, column rules, and text patterns. Without a clean reference copy to compare against, this alone is not conclusive.",
+      "status": "SUSPICIOUS",
+      "metrics": {
+        "keypoints": 3000,
+        "clone_matches": null,
+        "clone_ratio": 0.442,
+        "interpretation": "SUSPICIOUS — high ratio; expected in repeating table structures but warrants review"
+      }
+    },
+    "layer_7_color_anomaly": {
+      "name": "Color Anomaly Detection",
+      "plain_english": "This test looks for pixels whose color doesn't fit naturally with the rest of the image. If someone uses a digital paintbrush to cover something or pastes text with a slightly different ink color, those pixels will stand out as chromatic outliers. This marksheet has zero anomalous pixels detected — it's completely clean on this front.",
+      "status": "CLEAN",
+      "metrics": {
+        "anomaly_pixels": 0,
+        "anomaly_ratio": 0.0,
+        "anomaly_blobs": [],
+        "interpretation": "CLEAN — no significant chromatic anomalies detected"
+      }
+    },
+    "layer_8_edge_density": {
+      "name": "Edge Discontinuity / Density Analysis",
+      "plain_english": "This test finds areas with unusually sharp edges compared to the rest of the image. Digitally typed text or drawn lines often look much sharper than natural objects in a photo. In this marksheet, 10.4% of tiles show high edge density. For a printed document packed with table borders, column rules, and dense text, this is an expected characteristic — not necessarily a sign of tampering.",
+      "status": "SUSPICIOUS",
+      "metrics": {
+        "mean_edge_density": null,
+        "high_density_tile_ratio": 0.104,
+        "interpretation": "SUSPICIOUS — elevated localised edge density; consistent with printed text-heavy documents"
+      }
+    },
+    "layer_9_saturation": {
+      "name": "Saturation Anomaly Detection",
+      "plain_english": "This detects small areas that are unusually bright or vivid (over-saturated) compared to the rest of the document — a sign that someone may have digitally applied a color filter or drawn something on one specific spot. This marksheet has 4.2% over-saturated tiles. This may correspond to a university seal, stamp, or colored header — all of which are legitimate for official marksheets.",
+      "status": "SUSPICIOUS",
+      "metrics": {
+        "mean_saturation": null,
+        "high_saturation_tile_ratio": 0.042,
+        "interpretation": "SUSPICIOUS — localised saturation spikes (possible stamp, seal, or coloured header — verify visually)"
+      }
+    },
+    "layer_10_font_consistency": {
+      "name": "Font Consistency Analysis",
+      "plain_english": "This checks all the individual letters in the document to see if they all have the same thickness, height, and sharpness. If some letters look different from the rest — different stroke weight, different blurriness — it suggests someone may have typed over the original printed document or inserted new text from a different source. This marksheet has 1788 characters analysed, with very consistent stroke widths (cv=0.34) and zero suspicious regions.",
+      "status": "CLEAN",
+      "metrics": {
+        "char_count": 1788,
+        "height_cv": null,
+        "height_outlier_ratio": null,
+        "stroke_cv": 0.3446,
+        "stroke_outlier_ratio": null,
+        "sharpness_cv": null,
+        "sharpness_outlier_ratio": null,
+        "n_suspicious_regions": 0,
+        "suspicious_regions": [],
+        "interpretation": "CONSISTENT — font metrics uniform across document (no anomalous regions)"
+      }
+    },
+    "layer_11_ai_artifact": {
+      "name": "AI Generative Model Detection",
+      "plain_english": "Modern AI image generators (like Midjourney or Stable Diffusion) leave invisible 'checkerboard' pattern artifacts in the high-frequency parts of the image (detectable via Fourier Transform). This test checks for those invisible grids. The frequency spectrum of this marksheet looks completely natural (spike_ratio=1.78, threshold is 3.0), meaning this image was not AI-generated.",
+      "status": "CLEAN",
+      "metrics": {
+        "high_freq_mean": null,
+        "high_freq_max": null,
+        "spike_ratio": 1.78,
+        "threshold_for_suspicious": 3.0,
+        "interpretation": "NORMAL — Frequency spectrum looks natural; not AI-generated"
+      }
+    }
+  }
+}

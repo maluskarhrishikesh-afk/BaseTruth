@@ -47,6 +47,10 @@ These rules exist because they have caused bugs in the past. **Do not violate th
 
 11. **Temporary Files** — Whenever the "Coding Agent" creates temporary files or scratchpad tests, they MUST be deleted after use to avoid confusion and maintain clean codebases.
 
+12. **Meaningful Loggers** — Every non-trivial function, API endpoint, service method, and background process must include structured log calls using `get_logger(__name__)`. Log at the right level: `log.info` for key lifecycle events (scan started, entity saved, session created), `log.warning` for recoverable issues (fallback used, field missing), `log.error` for failures that need attention, `log.debug` for step-by-step diagnostic detail. Always include relevant context in the message (entity_ref, scan_id, doc_type, etc.) so log entries are self-contained and searchable without needing a debugger.
+
+13. **Code Comments in Simple Language** — Every significant function, algorithm, and non-obvious block of logic must have inline comments written in plain, simple English that any developer can understand on first read. Comments must explain *why* the code does something (the intent and the reason for choosing this approach), not just *what* it does (which the code itself already shows). Single-letter variables or complex maths must always be followed by a comment explaining what they represent. Forensic functions (ELA, DCT, noise, clone, etc.) must each have a plain-English docstring explaining the technique in 3–5 sentences a non-expert can follow.
+
 ## File Map
 
 | File | Purpose |

@@ -19,6 +19,7 @@ from basetruth.integrations.pdf import (
     extract_pdf_metadata,
     extract_text_from_pdf,
     extract_text_via_ocr,
+    get_document_image_bytes,
     is_image_file,
     is_image_only_pdf,
     ocr_image_directly,
@@ -152,6 +153,57 @@ class BaseTruthService:
     def scan_many(self, input_paths: List[str | Path]) -> List[Dict[str, Any]]:
         return [self.scan_document(path) for path in input_paths]
 
+    def batch_classify_document_types(
+        self,
+        paths: List[Path],
+    ) -> Dict[str, Dict[str, Any]]:
+        """Classify document types for all *paths* with a single Gemma4 call.
+
+        Returns a mapping ``{str(path): {document_type, is_image_based, confidence}}``.
+        Falls back gracefully (type="unknown") when Ollama is unavailable.
+        """
+        try:
+            from basetruth.integrations.ollama import classify_documents_batch  # noqa: PLC0415
+            from basetruth.integrations.pdf import get_document_image_bytes  # noqa: PLC0415
+
+            image_bytes_list: List[bytes] = []
+            filenames: List[str] = []
+            for p in paths:
+                try:
+                    img = get_document_image_bytes(p) or b""
+                except Exception:  # noqa: BLE001
+                    img = b""
+                image_bytes_list.append(img)
+                filenames.append(p.name)
+
+            log.info(
+                "batch_classify: calling Gemma4 for document type classification",
+                extra={"count": len(paths)},
+            )
+            results = classify_documents_batch(image_bytes_list, filenames)
+            classification_map: Dict[str, Dict[str, Any]] = {}
+            for i, p in enumerate(paths):
+                classification_map[str(p)] = results[i] if i < len(results) else {
+                    "filename": p.name,
+                    "document_type": "unknown",
+                    "is_image_based": False,
+                    "confidence": 0.0,
+                }
+            log.info(
+                "batch_classify: classification complete",
+                extra={
+                    "count": len(paths),
+                    "types": [v.get("document_type", "?") for v in classification_map.values()],
+                },
+            )
+            return classification_map
+        except Exception:  # noqa: BLE001
+            log.warning("batch_classify: failed, falling back to per-doc classification", exc_info=True)
+            return {
+                str(p): {"filename": p.name, "document_type": "unknown", "is_image_based": False, "confidence": 0.0}
+                for p in paths
+            }
+
     def _case_key_for_report(self, report: Dict[str, Any]) -> str:
         summary = report.get("structured_summary", {})
         document_type = summary.get("document", {}).get("type", "generic")
@@ -172,6 +224,7 @@ class BaseTruthService:
         forced_entity_ref: Optional[str] = None,
         extra_identity: Optional[Dict[str, str]] = None,
         persist_to_db: bool = True,
+        pre_classified: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         path = Path(input_path)
         if not path.exists():
@@ -376,6 +429,58 @@ class BaseTruthService:
             },
         )
 
+        # ── Document classification / per-doc Gemma4 analysis ────────────────
+        # When pre_classified is supplied (Bulk Scan batch mode) we already have the
+        # document type from a single batch Gemma4 call and skip the per-doc VLM call.
+        # When scanning individually, attempt a per-doc Gemma4 analysis as before.
+        gemma4_analysis: Dict[str, Any] = {}
+        batch_classification: Dict[str, Any] = pre_classified or {}
+
+        if pre_classified:
+            log.info(
+                "scan_document: per-doc Gemma4 analysis skipped — using batch pre-classification",
+                extra={
+                    "doc_type": pre_classified.get("document_type", "?"),
+                    "is_image_based": pre_classified.get("is_image_based", False),
+                    "confidence": pre_classified.get("confidence", 0.0),
+                },
+            )
+        else:
+            try:
+                from basetruth.integrations.ollama import analyze_document_with_ollama  # noqa: PLC0415
+
+                _doc_hint = (
+                    structured_summary.get("document", {}).get("type", "") or ""
+                )
+                _img_bytes = get_document_image_bytes(source_path)
+                if _img_bytes:
+                    with log_timing(log, "gemma4_universal_analysis", path=str(path)):
+                        gemma4_analysis = analyze_document_with_ollama(
+                            _img_bytes, doc_hint=_doc_hint
+                        )
+                    if gemma4_analysis:
+                        log.info(
+                            "scan_document: Gemma4 analysis complete",
+                            extra={
+                                "doc_type": gemma4_analysis.get("document_type", "?"),
+                                "verdict": (
+                                    gemma4_analysis.get("authenticity_assessment", {})
+                                    .get("verdict", "?")
+                                ),
+                                "fraud_signals": len(
+                                    gemma4_analysis.get("fraud_signals") or []
+                                ),
+                            },
+                        )
+                    else:
+                        log.debug("scan_document: Gemma4 analysis returned empty result")
+                else:
+                    log.debug(
+                        "scan_document: Gemma4 analysis skipped — could not rasterise document"
+                    )
+            except Exception:  # noqa: BLE001
+                log.warning("scan_document: Gemma4 analysis failed", exc_info=True)
+
         source = {
             "path": str(source_path),
             "name": source_path.name,
@@ -399,7 +504,9 @@ class BaseTruthService:
                 "is_image_only_pdf": image_only_pdf,
                 "ocr_engine": ocr_engine,
                 "image_forensics": image_forensics_result or {},
+                "batch_classification": batch_classification,
             },
+            gemma4_analysis=gemma4_analysis or None,
         )
         verification_markdown_path.write_text(render_scan_report(report.to_dict()), encoding="utf-8")
 

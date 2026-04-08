@@ -69,6 +69,7 @@ class VerificationReport:
     tamper_assessment: Dict[str, Any]
     artifacts: Dict[str, Any]
     comparison: Dict[str, Any] | None = None
+    gemma4_analysis: Dict[str, Any] | None = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

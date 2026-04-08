@@ -29,6 +29,7 @@ from basetruth.ui.theme import (  # noqa: F401 — re-exported for page modules
 try:
     from basetruth.db import db_available, init_db
     from basetruth.store import (
+        approve_scan,
         db_dashboard_stats,
         db_stats,
         db_table_counts,
@@ -38,8 +39,13 @@ try:
         get_entity_identity_checks,
         get_entity_latest_pdf,
         get_entity_scans,
+        get_entity_document_information,
         get_scan_pdf,
+        get_scan_with_forensics,
+        list_all_scans_with_status,
+        list_approved_scans,
         list_cases_from_db,
+        list_pending_scans,
         list_recent_scans,
         minio_available,
         minio_bucket_stats,
@@ -50,10 +56,14 @@ try:
         minio_truncate_bucket,
         minio_upload,
         mark_layered_report_generated,
+        reject_scan,
         reset_db,
         save_identity_check,
         save_scan_to_db,
         search_entities,
+        second_level_approve_scan,
+        second_level_reject_scan,
+        truncate_table,
         update_case_in_db,
         update_entity,
     )
@@ -92,6 +102,9 @@ except Exception:  # noqa: BLE001
         return None, None
 
     def get_entity_scans(ref: str) -> list:  # type: ignore[misc]
+        return []
+
+    def get_entity_document_information(ref: str) -> list:  # type: ignore[misc]
         return []
 
     def get_scan_pdf(scan_id: int) -> Optional[bytes]:  # type: ignore[misc]
@@ -133,6 +146,9 @@ except Exception:  # noqa: BLE001
     def reset_db() -> bool:  # type: ignore[misc]
         return False
 
+    def truncate_table(table_name: str) -> bool:  # type: ignore[misc]
+        return False
+
     def save_identity_check(**kwargs) -> Optional[dict]:  # type: ignore[misc]
         return None
 
@@ -152,6 +168,30 @@ except Exception:  # noqa: BLE001
         return False
 
     def update_entity(ref: str, fields: dict) -> Optional[dict]:  # type: ignore[misc]
+        return None
+
+    def approve_scan(scan_id: int, approved_by: str = "", comment: str = "") -> Optional[dict]:  # type: ignore[misc]
+        return None
+
+    def reject_scan(scan_id: int, approved_by: str = "", comment: str = "") -> Optional[dict]:  # type: ignore[misc]
+        return None
+
+    def list_all_scans_with_status(limit: int = 200) -> list:  # type: ignore[misc]
+        return []
+
+    def list_pending_scans(limit: int = 200) -> list:  # type: ignore[misc]
+        return []
+
+    def list_approved_scans(entity_ref: Optional[str] = None, limit: int = 200) -> list:  # type: ignore[misc]
+        return []
+
+    def get_scan_with_forensics(scan_id: int) -> Optional[dict]:  # type: ignore[misc]
+        return None
+
+    def second_level_approve_scan(scan_id: int, approved_by: str = "", comment: str = "") -> Optional[dict]:  # type: ignore[misc]
+        return None
+
+    def second_level_reject_scan(scan_id: int, approved_by: str = "", comment: str = "") -> Optional[dict]:  # type: ignore[misc]
         return None
 
 
@@ -229,6 +269,14 @@ def _get_service() -> BaseTruthService:
 # ---------------------------------------------------------------------------
 
 def _save_uploaded_files(files: List[Any], temp_dir: Path) -> List[Path]:
+    """Write Streamlit UploadedFile objects to a temporary directory on disk.
+
+    Streamlit keeps uploaded files in memory as UploadedFile objects.  Most of
+    our forensic functions (ELA, noise analysis, etc.) need real file paths.
+    This helper materialises them as actual files so the forensic engine can
+    open them normally.  The caller is responsible for deleting temp_dir when
+    it is no longer needed.
+    """
     saved: List[Path] = []
     temp_dir.mkdir(parents=True, exist_ok=True)
     for file in files:

@@ -7,12 +7,12 @@ binaries — no manual PATH setup needed on any OS (Linux, macOS, Windows/WSL2).
 
 ### Files
 
-| File | Purpose |
+| File | Purpose (Simple English) |
 |---|---|
-| `Dockerfile` | Multi-stage build: builder stage compiles wheels; runtime stage installs system binaries |
-| `docker-compose.yml` | Two services: `basetruth-cli` (one-shot) and `basetruth-api` (REST server) |
-| `.dockerignore` | Keeps image small — excludes venv, artifacts, IDE files |
-| `requirements.txt` | Pinned package versions for reproducible Docker builds |
+| `Dockerfile` | The master recipe that tells Docker exactly how to build the application and install all required tools automatically |
+| `docker-compose.yml` | The blueprint that tells Docker to start both the background worker and the web server together |
+| `.dockerignore` | A list of files to ignore during the build so the final application size stays small and fast |
+| `requirements.txt` | The exact list of Python packages needed so the app works exactly the same way on every computer |
 
 ### Binaries installed into the image (no manual action required)
 
@@ -48,12 +48,12 @@ Results are written to `./artifacts/` on your host machine via the bind mount.
 
 ### Environment variables (docker-compose or docker run -e)
 
-| Variable | Default | Purpose |
+| Variable | Default | Purpose (Simple English) |
 |---|---|---|
-| `BASETRUTH_ARTIFACT_ROOT` | `/app/artifacts` | Where scan outputs are written |
-| `TESSERACT_CMD` | `/usr/bin/tesseract` | Override if custom Tesseract location |
-| `EXIFTOOL_PATH` | `/usr/bin/exiftool` | Override if custom ExifTool location |
-| `API_PORT` | `8000` | Host port for the REST API service |
+| `BASETRUTH_ARTIFACT_ROOT` | `/app/artifacts` | The folder where the system saves its final generated reports and files |
+| `TESSERACT_CMD` | `/usr/bin/tesseract` | Tells the system where the OCR reading tool is installed on your computer |
+| `EXIFTOOL_PATH` | `/usr/bin/exiftool` | Tells the system where the deep photo checker tool is installed |
+| `API_PORT` | `8000` | The web address port where you can talk to the application (e.g. localhost:8000) |
 
 ---
 
@@ -78,51 +78,51 @@ All packages below are installed in the project venv and importable.
 
 ### PDF Extraction and Metadata
 
-| Package | Version | Purpose | pip extra |
+| Package | Version | Purpose (Simple English) | pip extra |
 |---|---|---|---|
-| `pymupdf` (fitz) | 1.27.2 | Best-quality text extraction, page rendering, stream inspection | `pdf` / `ocr` |
-| `pypdf` | 6.9.1 | PDF metadata, form fields, cross-reference table, annotations | `pdf` |
-| `pdfplumber` | 0.11.9 | Structured table extraction from PDFs — excellent for payslips | `forensics` |
-| `pikepdf` | 10.5.1 | qpdf Python wrapper — PDF encryption analysis, signature objects, XRef repair | `forensics` |
-| `pypdfium2` | 5.6.0 | Fast PDF rendering (pulled in by ocrmypdf) | — |
+| `pymupdf` (fitz) | 1.27.2 | Pulls text directly out of PDF files and helps read them | `pdf` / `ocr` |
+| `pypdf` | 6.9.1 | Reads hidden properties inside PDFs like author names, titles, and form data | `pdf` |
+| `pdfplumber` | 0.11.9 | Great for extracting data that is organised in tables (like rows and columns on a payslip) | `forensics` |
+| `pikepdf` | 10.5.1 | Used to inspect digital signatures and check if a PDF has been secretly modified or encrypted | `forensics` |
+| `pypdfium2` | 5.6.0 | Helps process and load PDF pages very quickly | — |
 
 ### Image Analysis and Hashing
 
-| Package | Version | Purpose | pip extra |
+| Package | Version | Purpose (Simple English) | pip extra |
 |---|---|---|---|
-| `pillow` | 12.1.1 | Image preprocessing, region cropping, format conversion | `ocr` |
-| `opencv-python` | 4.13.0 | Image manipulation detection, template alignment, copy-paste region analysis | `forensics` |
-| `imagehash` | 4.3.2 | Perceptual hashing — detect near-duplicate or tampered document images | `forensics` |
-| `numpy` | 2.4.3 | Array operations underlying opencv and scipy | — |
+| `pillow` | 12.1.1 | A tool to edit, crop, and resize images before we analyse them | `ocr` |
+| `opencv-python` | 4.13.0 | Advanced image detective: checks if parts of an image were copied, pasted, or photoshopped | `forensics` |
+| `imagehash` | 4.3.2 | Creates a unique digital fingerprint for an image to check if two documents look exactly the same | `forensics` |
+| `numpy` | 2.4.3 | Helps other tools do heavy mathematical calculations behind the scenes | — |
 
-### OCR
+### OCR (Reading text from images)
 
-| Package | Version | Purpose | pip extra |
+| Package | Version | Purpose (Simple English) | pip extra |
 |---|---|---|---|
-| `pytesseract` | 0.3.13 | Tesseract OCR for image-only PDFs (Aadhaar, PAN, scanned docs) | `ocr` |
-| `ocrmypdf` | 17.4.0 | Scan normalisation — adds OCR text layer to scanned PDFs | `ocr` |
-| `pdf2image` | 1.17.0 | PDF-to-image conversion using Poppler | `ocr` |
+| `pytesseract` | 0.3.13 | Reads text out of standard images or scanned photos (like reading an Aadhaar or PAN card photo) | `ocr` |
+| `ocrmypdf` | 17.4.0 | Takes a flat scanned document and makes the text selectable and searchable | `ocr` |
+| `pdf2image` | 1.17.0 | Converts a PDF file into standard image files (like JPGs or PNGs) | `ocr` |
 
 ### Metadata and EXIF
 
-| Package | Version | Purpose | pip extra |
+| Package | Version | Purpose (Simple English) | pip extra |
 |---|---|---|---|
-| `exifread` | 3.5.1 | Pure Python EXIF metadata from images — no binary required | `forensics` |
-| `pyexiftool` | 0.5.6 | Rich metadata via ExifTool binary — flags Photoshop/GIMP edit history | `forensics` |
+| `exifread` | 3.5.1 | Reads hidden camera data in photos (like what phone took the picture) | `forensics` |
+| `pyexiftool` | 0.5.6 | A deeper hidden data reader — can easily spot if Photoshop or GIMP was used to edit a photo | `forensics` |
 
 ### Cryptography and Signatures
 
-| Package | Version | Purpose | pip extra |
+| Package | Version | Purpose (Simple English) | pip extra |
 |---|---|---|---|
-| `cryptography` | 46.0.5 | PKCS#7 / CMS signature chain parsing, certificate inspection | `forensics` |
+| `cryptography` | 46.0.5 | Checks the digital locks and signatures to make sure a document is genuine and from a trusted source | `forensics` |
 
-### Statistics and ML
+### Statistics and ML (Machine Learning)
 
-| Package | Version | Purpose | pip extra |
+| Package | Version | Purpose (Simple English) | pip extra |
 |---|---|---|---|
-| `scipy` | 1.17.1 | Statistical anomaly detection — field value outlier scoring | `forensics` |
-| `scikit-learn` | 1.8.0 | ML fraud pattern detection — isolation forest, clustering | `ml` |
-| `faiss-cpu` | 1.13.2 | Vector similarity search — compare documents against known fraud templates | `ml` |
+| `scipy` | 1.17.1 | Uses maths to spot unusual numbers, amounts, or dates that look out of place | `forensics` |
+| `scikit-learn` | 1.8.0 | Uses smart AI methods to look for common patterns that usually mean a document is fake | `ml` |
+| `faiss-cpu` | 1.13.2 | A super fast search engine to compare a document against thousands of known fake templates | `ml` |
 
 ---
 
@@ -191,11 +191,11 @@ pip install "basetruth[pdf,ocr,forensics,ml]"
 
 ## Connector Tooling
 
-| Package | Purpose | pip extra |
+| Package | Purpose (Simple English) | pip extra |
 |---|---|---|
-| `boto3` | S3 datasource sync | `connectors` |
-| `google-api-python-client` / `google-auth` | Google Drive datasource sync | `connectors` |
-| `requests` | SharePoint / Microsoft Graph datasource sync | `connectors` |
+| `boto3` | Allows the app to talk to and download documents from Amazon S3 storage | `connectors` |
+| `google-api-python-client` / `google-auth` | Allows the app to securely log in and download documents from Google Drive | `connectors` |
+| `requests` | Used to talk over the internet to download documents from Microsoft SharePoint | `connectors` |
 
 ---
 

@@ -16,14 +16,15 @@
 | Video KYC | 🎥 | `video_kyc` | Video KYC |
 | Scan Document | 🔍 | `scan` | Scan Document |
 | Bulk Scan | 📦 | `bulk` | Bulk Scan |
+| Scans | 🔬 | `scans` | Scans |
 | Cases | 📁 | `cases` | Cases |
-| Records | 🗂️ | `records` | Records |
+| Document Intelligence | 🧠 | `document_intelligence` | Document Intelligence |
 | Reports | 📊 | `reports` | Reports |
 | Datasources | 🔗 | `datasources` | Datasources |
 | Log Analyzer | 📋 | `logs` | Log Analyzer |
 | Database Viewer | 🗄️ | `database` | Database Viewer |
 | Settings | ⚙️ | `settings` | Settings |
-| Gemma4 Chat | 🤖 | `gemma_chat` | Gemma4 Chat |
+| BaseTruth Q&A | 💬 | `gemma_chat` | BaseTruth Q&A |
 
 **Rules:**
 - The sidebar label, icon, and page title must always match.
@@ -178,20 +179,83 @@
 | Document type selector | Select | Activates the relevant validation pack |
 | "Start Scan" button | Click | Runs all fraud detectors; shows Truth Score, risk level, and detailed signal report |
 | Entity link widget | Search/select | Links scan result to a person record |
+| Unsaved-changes navigation guard | Click another page before saving | Shows a modal asking the operator to continue editing or discard; discard clears uploaded file and scan result |
 | "💾 Save to Database" button | Click after scan completes | Saves the scan to `scans`; uploads the original source document to MinIO; shows success or visible failure |
 
 ---
 
 ## 📦 Bulk Scan
 
-**Purpose:** Scan many documents at once from a folder or a file list.
+**Purpose:** Scan many documents at once from a folder or a file list. Captures two things per document: (1) tamper assessment — truth score and risk level; (2) rich document analysis — document type, extracted fields, fraud signals, and authenticity verdict.
+
+> **Extraction Architecture:**
+> - **Gemma4 (free-form batch classification):** At the start of each bulk scan, Gemma4 receives all document images in a **single LLM call**. It identifies each document type by observing visual content, layout, headings, and structure — **without a fixed list to pick from**, so it can classify any document type correctly. It also determines whether each file is image-based or text-based. This is the only Gemma4 call in a bulk scan.
+> - **LiteParse (text-based PDFs / Word / Excel):** For digitally-created structured documents, LiteParse (Node.js) extracts named fields, tables, and metadata accurately and feeds the tamper pipeline.
+> - **pytesseract / PaddleOCR (image-based files):** For scanned/photographed documents (JPEG, PNG, TIFF, scanned PDF), OCR extracts raw text which LiteParse then structures.
+> - **Document Intelligence data:** When no per-doc Gemma4 analysis exists, a synthetic analysis is automatically produced from LiteParse key_fields + tamper_assessment signals so Document Intelligence always shows rich data.
+> - **Target accuracy:** ≥ 95% document type classification accuracy by letting Gemma4 use its own knowledge rather than constraining it to a fixed list.
 
 | Element | Action | Expected Result |
 |---|---|---|
-| Folder path input or file uploader | Enter path or upload zip | Queues all documents |
-| "Start Bulk Scan" button | Click | Scans each file in sequence; shows progress bar + per-file results |
-| "💾 Save Batch to Database" button | Click after the scan batch completes | Saves each report to `scans`; uploads the original source documents to MinIO under the resolved entity reference; shows success or visible failures |
-| Summary table | After completion | Shows all results with pass/fail verdict and download links |
+| File uploader or folder path | Upload files or enter path | Files queued for scanning; any results from a previous scan are cleared immediately |
+| Entity link widget | Fill in PAN / email / phone | Links every document in the batch to the same applicant profile |
+| "Run bulk scan →" button | Click | Shows live status: (1) "🔍 Classifying documents with Gemma4…" → "✅ Gemma4 classified N docs: payslip, bank_statement…"; (2) per-document "📄 Scanning X/N: filename (type) with LiteParse/PaddleOCR…" with a progress bar |
+| Unsaved-changes navigation guard | Click another page before saving | Shows a modal asking the operator to continue editing or discard the current batch; discard clears uploaded files, results, and the temporary batch workspace |
+| Document Results section | After scan | Expandable card per file showing tamper verdict (score + risk) and forensic detail |
+| Classifier diagnostics | Expand | Developer-facing diagnostics: parse method, text-extraction length, classification confidence |
+| "💾 Save to Database" button | Click after batch completes | Saves each report to `scans`; runs 11-layer forensic analysis on images/PDFs and stores results in `scans.layered_analysis_json`; upserts `document_information` with analysis data; uploads source documents to MinIO; sets scan `approved` to NULL (pending review); shows success or visible failure |
+
+**Important rules:**
+- Uploading a new set of files immediately clears all previous scan results from the UI. The previously saved database records are never affected.
+- Starting a new scan with "Run bulk scan →" also immediately clears any previous results.
+- No summary table is shown. The Document Results section (expandable cards) is the only result view.
+- Bulk Scan does **not** auto-save to PostgreSQL during the scan run; results remain review-only until the operator clicks **Save to Database**.
+- Saving a batch must always show a clear success, warning, or error outcome.
+- `document_information.extracted_data` must be stored as rich JSON, not just sparse key fields.
+- Bulk saves use the same operational UPSERT behavior as single-document saves.
+- If Ollama is unavailable during classification, batch classification falls back gracefully (type="unknown") and the scan continues — no hard failure.
+- The entire scan report dict is deep-sanitized through `_json_ready()` before insertion, stripping null bytes (U+0000) and lone surrogates from ALL fields (including EXIF metadata from image files) to prevent PostgreSQL `UntranslatableCharacter` errors.
+- OCR quality is guarded by a coherence gate: PaddleOCR results with > 15% isolated single-character tokens are treated as garbled and the VLM fallback (Gemma4) is invoked instead — important for complex Indian documents such as board marksheets.
+- All saved scans start with `approved = NULL` (pending). They only appear in Document Intelligence after being approved on the **🔬 Scans** screen.
+
+**Fraud signals in Document Intelligence**: Only tamper signals that **failed** the check (`passed == False`) are shown as fraud signals. Passed checks (no issue found) are suppressed. Signal fields map from `models.Signal`: `name` → type, `summary` → description.
+
+---
+
+## 🔬 Scans
+
+**Purpose:** Human-in-the-loop 1st-level approval screen. Analysts review the 11-layer forensic results for each saved scan and either Approve or Reject it. Only approved scans flow into Document Intelligence.
+
+**Workflow position:** After **Bulk Scan → Save to Database** (or **Scan Document → Save**), every saved scan lands here as **Pending**. The analyst reviews the forensic evidence and decides.
+
+| Element | Action | Expected Result |
+|---|---|---|
+| "⏳ Pending" tab | Auto-renders | Lists all scans where `approved IS NULL`, ordered newest-first |
+| "✅ Approved" tab | Auto-renders | Lists all approved scans |
+| "❌ Rejected" tab | Auto-renders | Lists all rejected scans |
+| "📋 All" tab | Auto-renders | Lists all scans in all states |
+| Scan card | Auto-renders per scan | Shows: source file name, document type, entity ref, entity name, risk level badge, forensic verdict badge, forgery score, and scan timestamp |
+| "🔬 Forensic Details" expander (per card) | Click | Shows: forensic verdict, forgery score metric, plain-English summary, evidence list, and all 11 layers with status icon + plain-English explanation each |
+| "📋 Raw JSON" sub-expander | Click | Shows full `layered_analysis_json` as formatted JSON |
+| Comment field (Pending only) | Type | Optional reviewer comment stored with the approval decision |
+| "✅ Approve" button (Pending only) | Click | Calls `approve_scan()`; sets `approved='approved'`, `approved_by='reviewer'`, `approved_at=NOW()`; shows success toast; reruns page |
+| "❌ Reject" button (Pending only) | Click | Calls `reject_scan()`; sets `approved='rejected'`; shows warning toast; reruns page |
+| If DB is offline | Page load | Shows warning; no scan list rendered |
+
+**Forensic verdict colour mapping:**
+- ORIGINAL → 🟢
+- UNCERTAIN → 🟡
+- LIKELY TAMPERED → 🟠
+- TAMPERED → 🔴
+
+**Important rules:**
+- Every approve/reject action must show a visible outcome (success or error). Silent failures are not allowed.
+- The page title must be `_page_title("🔬", "Scans")` matching the `_PAGES` entry `"🔬  Scans": "scans"`.
+- Approve/Reject buttons only appear for Pending scans.
+- Approved and Rejected scan cards show the reviewer name, timestamp, and comment (read-only).
+- After approval, the scan immediately appears in Document Intelligence on the next page load.
+
+---
 
 ---
 
@@ -209,15 +273,23 @@
 
 ---
 
-## 🗂️ Records
+## 🧠 Document Intelligence
 
-**Purpose:** Browse and search the entity registry.
+**Purpose:** Per-entity, per-document AI analysis viewer. Shows the rich information Gemma4 extracted from every scanned document, grouped by applicant.
 
 | Element | Action | Expected Result |
 |---|---|---|
-| Search bar | Type | Filters entities by name, PAN, Aadhaar, email, or BT-ref |
-| Entity row | Click | Opens entity detail with all linked scans, identity checks, and cases |
-| "Download PDF" per scan | Click | Downloads the stored PDF report for that scan |
+| Search bar + field selector | Type name, PAN, email, BT-ref | Filters the entity list |
+| Applicant selector | Select | Shows compact applicant strip (name, ref, PAN, Aadhaar) |
+| Document cards (with Gemma4 analysis) | Listed first | Each shows: document type + confidence, authenticity verdict, confidence score, extracted fields table, fraud signals, structured parser fields |
+| Documents without Gemma4 analysis | Listed separately (collapsed) | Shows basic key_fields; caption invites re-scan |
+| Fraud signal badge | In expander header | Count shown inline when fraud signals > 0 |
+
+**Important rules:**
+- **Only approved scans appear here.** Scans with `approved IS NULL` (pending) or `approved='rejected'` are never shown. A warning banner is shown when pending/rejected scans exist for the selected entity, directing the analyst to the Scans screen.
+- This page shows NO identity card, NO edit form, NO scan history, and NO identity check history. Those belong on the Layered Analysis and Reports pages.
+- Data is populated by Bulk Scan → Save to Database → Approve on Scans screen. A synthetic analysis derived from LiteParse key_fields and tamper signals is always generated when no per-doc Gemma4 analysis exists, so Document Intelligence always has rich data for approved scans.
+- Coming soon: cross-document pattern analysis (DOB, first name, last name cross-check) and a 2nd-level approval step.
 
 ---
 
@@ -252,21 +324,23 @@
 
 ---
 
-## 🤖 Gemma4 Chat
+## 💬 BaseTruth Q&A
 
-**Purpose:** Chat with a locally hosted Gemma model through Ollama from within the BaseTruth UI.
+**Purpose:** Immersive, data-aware chat with a locally hosted LLM (Gemma4 via Ollama). The chatbot acts as an intelligent assistant that can answer general questions *and* seamlessly query the application's PostgreSQL database and MinIO storage—without exposing the underlying SQL or commands to the user.
+
+**Capabilities:**
+- **Text-to-SQL (Invisible UX):** When asked about data (e.g., "How many documents are high risk?"), the LLM generates a SQL query. The system intercepts it, safely runs the query, and feeds the results back to the LLM to summarize. The user only sees the natural language answer.
+- **Storage Exploration:** The LLM can list MinIO objects (globally or by entity) using internal commands, allowing users to ask "What files are stored for BT-000001?" and get a clean summary.
 
 | Element | Action | Expected Result |
 |---|---|---|
-| Endpoint auto-detection | Page load | Tries the configured Ollama URL first, then the local fallback addresses appropriate for local or Docker execution |
-| Model selector | Select | Switches the chat target to another Ollama model visible from the current runtime |
-| Chat input | Type message + send | Sends the conversation to Ollama and streams the assistant response into the chat window |
-| Clear conversation | Click | Clears the current in-memory chat history from Streamlit session state |
-| Retry connection | Click when disconnected | Re-runs endpoint discovery and reconnects without leaving the page |
+| Suggestion chips | Click | Sends a predefined query (e.g. data queries) seamlessly into the chat |
+| Chat input | Type message + send | Sends message; if the LLM generates SQL/MinIO commands, they are executed silently before streaming the final response |
+| Invisible Guardrails | Background processing | Only SELECT SQL is allowed. Strictly bounded limits (max 100 rows). 10-second query timeouts. Rolled-back transactions. |
 
 **Important rules:**
-- The page title must remain `_page_title("🤖", "Gemma4 Chat")`.
-- When the UI runs in Docker, the page must not assume `localhost:11434`; it must use a host-reachable Ollama endpoint.
+- The page must **not** display "Database Connected" indicators or status bars. The experience should feel magical; if the DB is offline, the LLM simply states it doesn't have the information right now.
+- The page title must remain `_page_title("💬", "BaseTruth Q&A")`.
 
 ---
 

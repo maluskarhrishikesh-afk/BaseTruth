@@ -1,0 +1,78 @@
+{
+  "document_type": "Marksheet",
+  "candidate_name": null,
+  "board_or_university_name": "UNIVERSITY OF PUNE",
+  "school_or_college_name": null,
+  "examination_name": "B.E. (REV) (COMPUTER) EXAMINATION",
+  "enrollment_or_seat_number": "B2084275",
+  "year_or_date_of_passing": "MAY 2006",
+  "subjects": [
+    {
+      "subject_name": "ADV.COMP.ARCH. & COMPUTING. (ELE-II)",
+      "max_marks": 100,
+      "marks_obtained": 72,
+      "grade": null
+    },
+    {
+      "subject_name": "COMPUTER NETWORKS. (ELE-II)",
+      "max_marks": 100,
+      "marks_obtained": 54,
+      "grade": null
+    },
+    {
+      "subject_name": "OPERATING SYSTEMS. (ELE-II)",
+      "max_marks": 100,
+      "marks_obtained": 32,
+      "grade": null
+    },
+    {
+      "subject_name": "OBJECT ORIENTED MODELING & DESI (ELE-II)",
+      "max_marks": 100,
+      "marks_obtained": 59,
+      "grade": null
+    },
+    {
+      "subject_name": "ARTIFICIAL INTELLIGENCE (ELE-I)",
+      "max_marks": 100,
+      "marks_obtained": 40,
+      "grade": null
+    },
+    {
+      "subject_name": "ARTIFICIAL INTELLIGENCE (ELE-I)",
+      "max_marks": 100,
+      "marks_obtained": 39,
+      "grade": null
+    },
+    {
+      "subject_name": "COMPUTER LABORATORY-I",
+      "max_marks": 100,
+      "marks_obtained": 70,
+      "grade": null
+    },
+    {
+      "subject_name": "SEMINAR & TECHNICAL COMP",
+      "max_marks": 50,
+      "marks_obtained": 37,
+      "grade": null
+    }
+  ],
+  "computed_total": 403,
+  "printed_grand_total": "925/1500",
+  "percentage_or_cgpa": null,
+  "result": "FIRST CLASS",
+  "data_quality_notes": [
+    "The candidate name remains unreadable/not clearly visible in the provided image section.",
+    "The printed Grand Total is recorded as '925/1500' as it is the explicit printed value, despite the discrepancy with the sum of individual subject marks (393)."
+  ],
+  "reasoning_steps": [
+    "Re-examined the image for the candidate name; it is not clearly legible.",
+    "Confirmed the Seat Number: B2084275.",
+    "Re-extracted all subject data, maintaining the structure.",
+    "Confirmed the printed grand total as '925/1500' as per the user's feedback, treating it as a required string value rather than a simple integer."
+  ],
+  "_validation_errors": [
+    "Candidate name is missing. Look carefully, it is usually prominent.",
+    "printed_grand_total is not a valid number."
+  ],
+  "_extraction_attempts": 2
+}

@@ -358,6 +358,9 @@ def _ocr_confidence_score(text: str) -> float:
     - Contains digits                      +0.1
     - PAN format found                     +0.3
     - Aadhaar format found                 +0.2
+    Coherence penalty:
+    - > 15% word-tokens are isolated single characters  -0.2
+      (indicates garbled layout OCR on complex documents)
     """
     if not text or not text.strip():
         return 0.0
@@ -371,6 +374,14 @@ def _ocr_confidence_score(text: str) -> float:
         score += 0.3
     if _AADHAAR_RE.search(text):
         score += 0.2
+
+    # Coherence penalty: high rate of isolated single-character alphabetic tokens
+    # is a strong indicator of failed layout OCR (e.g. complex Indian certificates).
+    word_tokens = [w for w in re.split(r"[\s\n]+", text.strip()) if re.search(r"[a-zA-Z]", w)]
+    if word_tokens:
+        single_char_count = sum(1 for w in word_tokens if re.fullmatch(r"[a-zA-Z]", w))
+        if single_char_count / len(word_tokens) > 0.15:
+            score = max(0.0, score - 0.20)
 
     return min(score, 1.0)
 
@@ -414,10 +425,15 @@ def ocr_image_directly(path: Path) -> Tuple[str, str]:
 
     # --- Step 2: PaddleOCR (best for ID documents) ---
     paddle_text, paddle_conf = _ocr_with_paddle(pil_img)
-    if paddle_text and paddle_conf >= 0.70:
+    # Use PaddleOCR result only when BOTH mean character confidence AND text
+    # coherence are acceptable.  A high per-character confidence does not
+    # guarantee good layout extraction for complex documents (multi-column
+    # tables, mixed Hindi/English, stamps, etc.). The coherence gate lets
+    # garbled results fall through to the VLM fallback below.
+    if paddle_text and paddle_conf >= 0.70 and _ocr_confidence_score(paddle_text) > 0.35:
         log.debug(
-            "PaddleOCR confidence=%.2f for %s — using paddle result",
-            paddle_conf, path.name,
+            "PaddleOCR confidence=%.2f coherence=%.2f for %s — using paddle result",
+            paddle_conf, _ocr_confidence_score(paddle_text), path.name,
         )
         return paddle_text, "paddleocr"
 
@@ -499,3 +515,74 @@ def extract_image_file_metadata(path: Path) -> Dict[str, Any]:
         payload["message"] = f"Could not open image: {exc}"
 
     return payload
+
+
+def get_document_image_bytes(path: Path, max_dim: int = 1024) -> bytes | None:
+    """Return image bytes (JPEG) suitable for a Gemma4 vision call.
+
+    For raw image files (JPG, PNG, …) the file is read directly and rescaled.
+    For PDF files the first page is rasterised via PyMuPDF or pdf2image /
+    Poppler.  Returns ``None`` when no image can be produced.
+
+    Parameters
+    ----------
+    path:
+        Path to the source document.
+    max_dim:
+        Maximum width or height in pixels.  Larger images are resized keeping
+        the aspect ratio.  1024 px is a good balance between Gemma4 accuracy
+        and request size.
+    """
+    import io as _io
+
+    def _pil_to_jpeg(pil_img: Any) -> bytes:
+        pil_img = pil_img.convert("RGB")
+        w, h = pil_img.size
+        if max(w, h) > max_dim:
+            scale = max_dim / max(w, h)
+            pil_img = pil_img.resize((int(w * scale), int(h * scale)))
+        buf = _io.BytesIO()
+        pil_img.save(buf, format="JPEG", quality=85)
+        return buf.getvalue()
+
+    try:
+        from PIL import Image as _PIL  # type: ignore
+    except ImportError:
+        return None
+
+    # ── Raw image file ──────────────────────────────────────────────────────
+    if is_image_file(path):
+        try:
+            with _PIL.open(str(path)) as img:
+                return _pil_to_jpeg(img.copy())
+        except Exception:  # noqa: BLE001
+            return None
+
+    # ── PDF — try PyMuPDF first (no Poppler needed) ─────────────────────────
+    if path.suffix.lower() == ".pdf":
+        try:
+            import fitz  # type: ignore  (PyMuPDF)
+
+            doc = fitz.open(str(path))
+            if doc.page_count > 0:
+                page = doc.load_page(0)
+                mat = fitz.Matrix(2.0, 2.0)  # 2× zoom → ~144 dpi
+                pix = page.get_pixmap(matrix=mat)
+                img = _PIL.frombytes("RGB", (pix.width, pix.height), pix.samples)
+                doc.close()
+                return _pil_to_jpeg(img)
+            doc.close()
+        except Exception:  # noqa: BLE001
+            pass  # Fall through to pdf2image
+
+        # ── PDF — fallback to pdf2image / Poppler ───────────────────────────
+        try:
+            from pdf2image import convert_from_path  # type: ignore
+
+            images = convert_from_path(str(path), dpi=150, first_page=1, last_page=1)
+            if images:
+                return _pil_to_jpeg(images[0])
+        except Exception:  # noqa: BLE001
+            pass
+
+    return None

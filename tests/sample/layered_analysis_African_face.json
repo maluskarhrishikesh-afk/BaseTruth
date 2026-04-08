@@ -1,0 +1,169 @@
+{
+  "scan_summary": {
+    "source_file": "African_face.png",
+    "document_type": "photograph",
+    "analyzed_as": "African_face.png (direct image submission)",
+    "format": "PNG",
+    "file_size_bytes": 311857,
+    "file_entropy_bits": 7.9851,
+    "forensic_verdict": "TAMPERED",
+    "forgery_score_0_100": 73.0,
+    "overall_explanation": "This is a portrait-style PNG photograph (571×576 pixels). Multiple independent forensic signals converge on a TAMPERED verdict with a score of 73/100. The image has no metadata at all (a hallmark of post-edit re-exports), 9.7% of image blocks show anomalous ELA re-compression (meaning different parts of the image were saved at different quality levels), an unusual blue-tinted region (hue ≈ 206°) covering ~949 pixels is detectable as a color anomaly, and edge density is unnaturally high in 14.5% of tiles. Taken together, these signals strongly suggest the image was edited — either text, an annotation, or a color overlay was digitally added to a region of the face/background after the original photo was taken.",
+    "evidence": [
+      "ELA: 9.7% of blocks have anomalous re-compression error — tampered regions were re-saved at a different quality level from the rest",
+      "Metadata: No metadata whatsoever — all metadata stripped (common after editing in tools like Photoshop, GIMP, or mobile editing apps)",
+      "Color anomaly: 0.698% of pixels have an implausible blue hue (≈206°, saturation 221) — a 949px blob at position [207, 84] that does not match the surrounding skin tones or background",
+      "Edge: 14.5% of tiles have unnaturally high edge density — sharp boundary consistent with a digitally drawn line or pasted element",
+      "Saturation: 3.5% of tiles are over-saturated vs image mean — localised colour edit or filter applied to a sub-region"
+    ]
+  },
+  "layers": {
+    "layer_1_ela": {
+      "name": "Error Level Analysis (ELA)",
+      "plain_english": "When you save a JPEG image, tiny quality details are lost uniformly across the whole picture. If someone pastes a new element (like text or another face) onto the photo and saves it again, the pasted area will have a different 'error level' — it will glow brighter in the ELA heatmap because it hasn't degraded as much as the original pixels. This image has 9.7% of its blocks glowing suspiciously — well above the 5% threshold — meaning significant regions were likely edited and re-saved after the original capture.",
+      "status": "SUSPICIOUS",
+      "metrics": {
+        "mean_ela": 1.592,
+        "max_ela": 70.0,
+        "std_ela": 2.739,
+        "suspicious_block_ratio": 0.0969,
+        "threshold_for_suspicious": 0.05,
+        "interpretation": "SUSPICIOUS — blocks with anomalous re-compression error (edges of edits or paste)"
+      }
+    },
+    "layer_2_metadata": {
+      "name": "Metadata / EXIF Analysis",
+      "plain_english": "Every original digital photo carries hidden tags (metadata) recording which camera was used, when the photo was taken, and sometimes the GPS location. When someone edits a photo in Photoshop, GIMP, or a mobile app and exports it, the editing tool often strips all the original camera metadata and replaces it with nothing (or their own software tag). This image has zero metadata — not a single tag — which strongly suggests it was exported from a photo-editing tool after being modified.",
+      "status": "SUSPICIOUS",
+      "suspicious_flags": [
+        "No metadata whatsoever — all metadata stripped (common after editing)"
+      ],
+      "metrics": {
+        "format": "PNG",
+        "image_size_px": [571, 576],
+        "mode": "RGBA",
+        "total_tags": 0,
+        "software": null,
+        "tamper_risk": "MEDIUM",
+        "interpretation": "No camera metadata present — highly suspicious for an original photograph"
+      }
+    },
+    "layer_3_file_entropy": {
+      "name": "File Entropy (Data Randomness)",
+      "plain_english": "Entropy measures how 'random' a file's raw data is. A perfectly untouched image has near-maximum randomness (close to 8.0 bits). Files that have been heavily edited and re-saved lose some natural randomness. This image scores 7.985/8.0 — which is still high. Entropy alone doesn't confirm tampering here, but it's consistent with a single re-export after editing (not heavily re-saved multiple times).",
+      "status": "CLEAN",
+      "metrics": {
+        "file_entropy_bits": 7.9851,
+        "max_possible": 8.0,
+        "interpretation": "HEALTHY — entropy near maximum; consistent with a single-pass export after editing"
+      }
+    },
+    "layer_4_noise_residual": {
+      "name": "Noise Residual Analysis",
+      "plain_english": "Every real camera sensor produces a faint, invisible 'static' pattern — like grain in old film. If parts of an image were copied from different photos or digitally generated, their noise pattern won't match the rest of the photo. This image has 7.8% hotspot tiles — below the 10% threshold, so the noise is broadly uniform. However, this is a PNG (lossless), so noise can be preserved even across edits, making this test less decisive here.",
+      "status": "CLEAN",
+      "metrics": {
+        "mean_noise": 1.72,
+        "std_noise": 3.4131,
+        "noise_cv_global": 2.2617,
+        "hotspot_tile_ratio": 0.078,
+        "threshold_for_suspicious": 0.10,
+        "interpretation": "UNIFORM — noise residual broadly consistent across image (below hotspot threshold)"
+      }
+    },
+    "layer_5_dct_analysis": {
+      "name": "DCT Double-Compression Analysis",
+      "plain_english": "When a JPEG image is edited and saved again, it leaves an invisible repeating 'comb' pattern in its mathematical structure. This test hunts for that double-save fingerprint. Since this file is a PNG (not JPEG), the test does not apply — PNG files use lossless compression and cannot carry DCT double-compression signatures.",
+      "status": "N/A",
+      "metrics": {
+        "skipped": true,
+        "reason": "File format is PNG — DCT analysis applies to JPEG only"
+      }
+    },
+    "layer_6_clone_detection": {
+      "name": "Clone / Copy-Move Detection",
+      "plain_english": "This test compares every part of the image to every other part of the same image, looking for areas that are suspiciously similar — which would suggest someone used a 'clone stamp' to cover something up by copying the background over it. This image has only 341 keypoints and a clone_ratio of 0.114 — well below the 0.25 suspicious threshold. No copy-move manipulation was detected.",
+      "status": "CLEAN",
+      "metrics": {
+        "keypoints": 341,
+        "clone_matches": 39,
+        "clone_ratio": 0.1144,
+        "threshold_for_suspicious": 0.25,
+        "interpretation": "CLEAN — no significant copy-move pattern detected"
+      }
+    },
+    "layer_7_color_anomaly": {
+      "name": "Color Anomaly Detection",
+      "plain_english": "This test identifies pixels whose color doesn't fit naturally with the rest of the image's color palette. It separates the dominant colors (skin tones, background) and flags any pixels that are a completely different hue with high saturation — which suggests they were painted or pasted on. A suspicious blue-tinted blob (hue ≈ 206°, saturation 221 out of 255) covering 949 pixels was found at the upper-right area of the face [x=207, y=84]. This is the strongest single tampering signal in this image.",
+      "status": "SUSPICIOUS",
+      "metrics": {
+        "anomaly_pixels": 941,
+        "anomaly_ratio": 0.006981,
+        "threshold_for_suspicious": 0.003,
+        "anomaly_blobs": [
+          {
+            "area_px": 949,
+            "bounding_box": [207, 84, 81, 42],
+            "mean_hue_degrees": 206.2,
+            "mean_saturation": 221.4,
+            "plain_english_location": "Upper-right region of the image, approximately at the forehead/eye area"
+          }
+        ],
+        "interpretation": "HIGHLY SUSPICIOUS — large chromatically-anomalous region detected (possible drawn annotation, paint-over, or colour splice)"
+      }
+    },
+    "layer_8_edge_density": {
+      "name": "Edge Discontinuity / Density Analysis",
+      "plain_english": "Digitally drawn lines, pasted overlays, or inserted text have unnaturally sharp, clean edges compared to natural photographic edges (which are slightly blurred by the camera lens and depth of field). This test measures where edge density spikes to 3× the image average. In this portrait photo, 14.5% of tiles show unnaturally high edge density — well above the 6% threshold — indicating sharp, unnatural boundaries that are consistent with a digitally inserted element.",
+      "status": "SUSPICIOUS",
+      "metrics": {
+        "mean_edge_density": 12.5322,
+        "high_density_tile_ratio": 0.1453,
+        "threshold_for_suspicious": 0.06,
+        "interpretation": "SUSPICIOUS — elevated localised edge density (drawn line or sharp boundary anomaly)"
+      }
+    },
+    "layer_9_saturation": {
+      "name": "Saturation Anomaly Detection",
+      "plain_english": "Real photos have relatively consistent color vibrancy (saturation) across the image. If someone applies a color filter or draws something in a vibrant color over just one region of a photo, those tiles will be dramatically more saturated than the surrounding areas. This image has 3.5% of tiles with saturation over 3× the image mean — a signal that a localised color edit or vivid annotation was applied to part of the image.",
+      "status": "SUSPICIOUS",
+      "metrics": {
+        "mean_saturation": 47.58,
+        "high_saturation_tile_ratio": 0.035,
+        "threshold_for_suspicious": 0.02,
+        "high_saturation_coords_sample": [
+          [352, 96, 32, 32],
+          [352, 128, 32, 32],
+          [384, 128, 32, 32],
+          [384, 160, 32, 32],
+          [320, 288, 32, 32]
+        ],
+        "interpretation": "SUSPICIOUS — localised saturation spikes (possible annotation or colour edit)"
+      }
+    },
+    "layer_10_font_consistency": {
+      "name": "Font Consistency Analysis",
+      "plain_english": "This test checks whether any text in the image has inconsistent letter thickness, height, or sharpness — which would suggest that someone physically wrote on a printed document or inserted text from a different source. Since this is a portrait photograph (not a text document), only 76 character-like blobs were detected — too few for a meaningful font analysis. The test ran but the result is not applicable to a photo. No suspicious font regions were found.",
+      "status": "N/A",
+      "metrics": {
+        "char_count": 76,
+        "stroke_cv": 0.4244,
+        "n_suspicious_regions": 0,
+        "suspicious_regions": [],
+        "interpretation": "CONSISTENT — font metrics uniform; insufficient text for definitive font forensics on a portrait photo"
+      }
+    },
+    "layer_11_ai_artifact": {
+      "name": "AI Generative Model Detection",
+      "plain_english": "AI image generators (like Midjourney, DALL-E, or Stable Diffusion) leave invisible 'checkerboard' grid artifacts in the high-frequency regions of an image, detectable via Fourier Transform analysis. A spike_ratio above 3.0 indicates AI generation. This image scores 1.29 — well below the threshold — confirming this is not a fully AI-generated image. However, this does not rule out AI-assisted face-swapping tools that modify only a region of a real photo.",
+      "status": "CLEAN",
+      "metrics": {
+        "high_freq_mean": 142.77,
+        "high_freq_max": 184.66,
+        "spike_ratio": 1.29,
+        "threshold_for_suspicious": 3.0,
+        "interpretation": "NORMAL — Frequency spectrum looks natural; not a fully AI-generated image (partial AI editing not ruled out)"
+      }
+    }
+  }
+}

@@ -54,6 +54,14 @@ _SessionLocal = None
 
 
 def get_engine():
+    """Return the shared SQLAlchemy engine, creating it on first call.
+
+    Uses a connection pool of 5 (with up to 10 overflow connections) so
+    multiple Streamlit user sessions can share the same pool instead of each
+    opening their own connection.  pool_pre_ping=True silently drops dead
+    connections before reusing them (important after DB container restarts).
+    Returns None if DATABASE_URL is not set — callers must handle that case.
+    """
     global _engine
     if _engine is None and DATABASE_URL:
         try:
@@ -71,6 +79,12 @@ def get_engine():
 
 
 def db_available() -> bool:
+    """Quick connectivity test — returns True only when PostgreSQL answers.
+
+    Runs a trivial SELECT 1 query.  Called from the UI to decide whether
+    to show the database status badge.  Deliberately kept cheap (one query,
+    5-second timeout) because it runs on every page render.
+    """
     engine = get_engine()
     if engine is None:
         log.debug("db_available: no engine (DATABASE_URL not set?)")
@@ -86,6 +100,16 @@ def db_available() -> bool:
 
 @contextmanager
 def db_session() -> Generator[Session, None, None]:
+    """Yield a database session then commit, or rollback on any exception.
+
+    Usage:
+        with db_session() as session:
+            session.query(...)
+
+    The session is committed automatically when the 'with' block exits cleanly.
+    If any exception is raised inside the block, all changes are rolled back and
+    the exception is re-raised so callers can log it as they see fit.
+    """
     engine = get_engine()
     if engine is None:
         raise RuntimeError("DATABASE_URL not configured or DB unreachable")
@@ -146,7 +170,13 @@ class Entity(Base):
 
 
 class Scan(Base):
-    """One row per document scan."""
+    """One row per document scan.
+
+    Stores the identity of the scanned document, the 11-layer forensic analysis result,
+    and the two-level human approval status. Old OCR-based columns (truth_score,
+    risk_level, verdict, parse_method, report_json, pdf_report) have been removed —
+    all forensic signals are now captured in layered_analysis_json.
+    """
 
     __tablename__ = "scans"
 
@@ -154,16 +184,28 @@ class Scan(Base):
     entity_id = Column(
         Integer, ForeignKey("entities.id", ondelete="SET NULL"), nullable=True
     )
+    # Identity of the document that was scanned
     source_name = Column(String(500), nullable=False)
     source_sha256 = Column(String(64), default="")
     document_type = Column(String(100), default="generic")
-    truth_score = Column(Integer, nullable=True)
-    risk_level = Column(String(20), default="low")
-    verdict = Column(Text, default="")
-    parse_method = Column(String(100), default="")
-    report_json = Column(JSONB, nullable=False)
-    pdf_report = Column(LargeBinary, nullable=True)
+    # All 11 forensic layers (ELA, noise, metadata, clone, etc.) stored as JSON
+    layered_analysis_json = Column(JSONB, nullable=True)
+    # Legacy single-level approval — kept for backwards compat, derived from first/second levels
+    approved = Column(String(10), nullable=True)  # 'approved' | 'rejected' | None
+    approved_by = Column(String(255), nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    approval_comment = Column(Text, nullable=True)
+    # Two-level human-in-the-loop approval — 'Y' = approved, 'N' = rejected, NULL = pending
+    first_level_approval = Column(String(1), nullable=True)   # 1st reviewer decision
+    first_level_approved_by = Column(String(255), nullable=True)
+    first_level_approved_at = Column(DateTime(timezone=True), nullable=True)
+    first_level_approval_comment = Column(Text, nullable=True)
+    second_level_approval = Column(String(1), nullable=True)  # 2nd reviewer decision
+    second_level_approved_by = Column(String(255), nullable=True)
+    second_level_approved_at = Column(DateTime(timezone=True), nullable=True)
+    second_level_approval_comment = Column(Text, nullable=True)
     generated_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     entity = relationship("Entity", back_populates="scans")
     extracted_info = relationship("DocumentInformation", back_populates="scan", cascade="all, delete-orphan")
@@ -357,6 +399,51 @@ def init_db() -> bool:
                     "ON layered_analysis_entries (entity_id, screen_name, section_name)"
                 )
             )
+            # Forensic analysis JSON stored per scan row
+            conn.execute(text(
+                "ALTER TABLE scans ADD COLUMN IF NOT EXISTS layered_analysis_json JSONB"
+            ))
+            # Human-in-the-loop approval columns
+            conn.execute(text(
+                "ALTER TABLE scans ADD COLUMN IF NOT EXISTS approved VARCHAR(10)"
+            ))
+            conn.execute(text(
+                "ALTER TABLE scans ADD COLUMN IF NOT EXISTS approved_by VARCHAR(255)"
+            ))
+            conn.execute(text(
+                "ALTER TABLE scans ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ"
+            ))
+            conn.execute(text(
+                "ALTER TABLE scans ADD COLUMN IF NOT EXISTS approval_comment TEXT"
+            ))
+            conn.execute(text(
+                "ALTER TABLE scans ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()"
+            ))
+            # Two-level approval columns — Y/N/NULL per level
+            conn.execute(text(
+                "ALTER TABLE scans ADD COLUMN IF NOT EXISTS first_level_approval VARCHAR(1)"
+            ))
+            conn.execute(text(
+                "ALTER TABLE scans ADD COLUMN IF NOT EXISTS first_level_approved_by VARCHAR(255)"
+            ))
+            conn.execute(text(
+                "ALTER TABLE scans ADD COLUMN IF NOT EXISTS first_level_approved_at TIMESTAMPTZ"
+            ))
+            conn.execute(text(
+                "ALTER TABLE scans ADD COLUMN IF NOT EXISTS first_level_approval_comment TEXT"
+            ))
+            conn.execute(text(
+                "ALTER TABLE scans ADD COLUMN IF NOT EXISTS second_level_approval VARCHAR(1)"
+            ))
+            conn.execute(text(
+                "ALTER TABLE scans ADD COLUMN IF NOT EXISTS second_level_approved_by VARCHAR(255)"
+            ))
+            conn.execute(text(
+                "ALTER TABLE scans ADD COLUMN IF NOT EXISTS second_level_approved_at TIMESTAMPTZ"
+            ))
+            conn.execute(text(
+                "ALTER TABLE scans ADD COLUMN IF NOT EXISTS second_level_approval_comment TEXT"
+            ))
         log.info("DB schema ready")
         return True
     except Exception as exc:

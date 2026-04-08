@@ -20,7 +20,8 @@
 
 ### `entities`
 
-One row per applicant / person / organisation.
+**What is it used for?**
+Stores the basic profile of every person or organisation in the system (like their first name, last name, email, PAN, and Aadhaar). Think of this as the master record for an applicant. Every document or check they do is linked back to this identity.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -45,7 +46,8 @@ One row per applicant / person / organisation.
 
 ### `scans`
 
-Current operational scan record per entity/source document.
+**What is it used for?**
+Stores the final result of every document uploaded and scanned by the system. All document intelligence is captured in `layered_analysis_json` — a full 11-layer forensic result. Each scan goes through a **two-level human approval process** before it is considered fully verified.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -53,14 +55,28 @@ Current operational scan record per entity/source document.
 | `entity_id` | FK → `entities.id` | Nullable when no entity could be resolved |
 | `source_name` | VARCHAR(500) | Original filename |
 | `source_sha256` | VARCHAR(64) | Source hash |
-| `document_type` | VARCHAR(100) | Detected/selected document type |
-| `truth_score` | INTEGER | Integrity score |
-| `risk_level` | VARCHAR(20) | Low/medium/high/etc. |
-| `verdict` | TEXT | Human-readable outcome |
-| `parse_method` | VARCHAR(100) | Parser used |
-| `report_json` | JSONB | Full verification payload |
-| `pdf_report` | BYTEA | Optional PDF report bytes |
+| `document_type` | VARCHAR(100) | Document type e.g. payslip, pan_card, aadhaar |
+| `layered_analysis_json` | JSONB | Full 11-layer forensic result (ELA, noise, clone, etc.) |
+| `first_level_approval` | VARCHAR(1) | `Y` = approved, `N` = rejected, `NULL` = pending (initial reviewer) |
+| `first_level_approved_by` | VARCHAR(255) | Who made the 1st-level decision |
+| `first_level_approved_at` | TIMESTAMPTZ | When 1st-level decision was made |
+| `first_level_approval_comment` | TEXT | Optional 1st-level reviewer comment |
+| `second_level_approval` | VARCHAR(1) | `Y` = approved, `N` = rejected, `NULL` = pending (senior reviewer) |
+| `second_level_approved_by` | VARCHAR(255) | Who made the 2nd-level decision |
+| `second_level_approved_at` | TIMESTAMPTZ | When 2nd-level decision was made |
+| `second_level_approval_comment` | TEXT | Optional 2nd-level reviewer comment |
+| `approved` | VARCHAR(10) | Legacy column — derived value: `approved` / `rejected` / `NULL` |
+| `approved_by` | VARCHAR(255) | Legacy — mirrors 1st-level approved_by |
+| `approved_at` | TIMESTAMPTZ | Legacy — mirrors 1st-level approved_at |
+| `approval_comment` | TEXT | Legacy — mirrors 1st-level comment |
 | `generated_at` | TIMESTAMPTZ | Save timestamp |
+| `updated_at` | TIMESTAMPTZ | Last update timestamp |
+
+**Two-level approval flow:**
+1. A new scan begins with `first_level_approval = NULL`, `second_level_approval = NULL` → **Pending**
+2. Initial reviewer approves → `first_level_approval = 'Y'` → **Awaiting 2nd Review**
+3. Senior reviewer approves → `second_level_approval = 'Y'` → **Fully Approved**
+4. Either reviewer rejects → their level = `'N'` → **Rejected**
 
 **Operational UPSERT key:**
 - `(entity_id, source_name, document_type)`
@@ -69,7 +85,8 @@ Current operational scan record per entity/source document.
 
 ### `identity_checks`
 
-Current operational identity-check record per entity and check type.
+**What is it used for?**
+Stores the results of biometric checks like Face Matching (comparing a selfie to an ID) and Video KYC (live video verification). This tells you if a person successfully proved they are who they claim to be.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -96,7 +113,8 @@ Current operational identity-check record per entity and check type.
 
 ### `layered_analysis_entries`
 
-Latest explainability data per entity, screen, and section. This is the dedicated source for the Layered Analysis screen and final explainability report.
+**What is it used for?**
+A very detailed logbook that records every tiny piece of information captured during a user's verification journey (like the exact text pulled from their Aadhaar scan or details from their identity check). This table's main job is to collect all evidence to magically generate the final PDF "Layered Analysis" report.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -120,10 +138,47 @@ Latest explainability data per entity, screen, and section. This is the dedicate
 
 ### `document_information`, `cases`, `case_notes`
 
-These tables continue to behave as before:
-- `document_information` stores extracted document key fields.
-- `cases` stores workflow state.
-- `case_notes` stores append-only analyst notes.
+**What are they used for?**
+- **`document_information`**: Stores the rich extracted JSON for a scanned document so operators and auditors can review the normalized document profile without reparsing the source file. The payload is intentionally broader than a few key fields and includes document typing, parser hints, authenticity checks, extracted fields, and top fraud signals.
+- **`cases`**: Like a to-do list for human analysts. When a document is flagged as risky and needs manual review, a "case" is created here to track its status (open, closed, under review).
+- **`case_notes`**: The comment section for cases. Analysts can leave text notes explaining why they approved or rejected a document.
+
+#### `document_information`
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | SERIAL | Primary key |
+| `entity_id` | FK → `entities.id` | Required |
+| `scan_id` | FK → `scans.id` | Required; one operational row per saved scan |
+| `document_type` | VARCHAR(100) | Normalized document type |
+| `extracted_data` | JSONB | Rich extracted JSON payload |
+| `created_at` | TIMESTAMPTZ | Insert timestamp |
+
+**Operational UPSERT key:**
+- `scan_id`
+
+**`extracted_data` JSON shape (current):**
+- `document_type`
+- `document`
+- `key_fields`
+- `named_fields`
+- `source`
+- `authenticity_checks`
+- `tamper_assessment`
+- `signals`
+- `gemma4_analysis` — present when Ollama/Gemma4 was reachable at scan time; contains:
+  - `document_type` — Gemma4's own classification (may differ from heuristic classifier)
+  - `document_subtype`
+  - `confidence` — float 0–1 for Gemma4's document-type certainty
+  - `extracted_fields` — flat key-value dict of all fields Gemma4 found on the document
+  - `fraud_signals` — list of `{type, severity, description}` objects
+  - `authenticity_assessment` — `{verdict, confidence, reasons}` where verdict is one of `authentic / suspicious / tampered / unknown`
+  - `summary` — 2–3 sentence plain-English narrative
+  - `engine` — always `"gemma4_ollama"`
+  - `model` — Ollama model name used (e.g. `"gemma4:latest"`)
+  - `raw_response` — unprocessed Gemma4 output (for debugging)
+
+This lets Bulk Scan and Scan Document save the latest structured facts, forensic evidence, and parser context in one place in `layered_analysis_json` on the scan row.
 
 ---
 
