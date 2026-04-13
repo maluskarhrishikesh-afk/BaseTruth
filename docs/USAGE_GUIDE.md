@@ -63,7 +63,7 @@ automatically pre-selects them — you do not need to search again.
 
 **What gets checked:**
 - Deskewing + perspective correction before OCR (automatic)
-- PaddleOCR extracts text; falls back to Tesseract if needed
+- PaddleOCR extracts text on all active OCR paths; there is no Tesseract fallback in the current runtime
 - If OCR confidence is low, Gemma VLM is called as a final fallback
 - Image forensics: ELA tampering, copy-move detection, GAN detection,
   EXIF metadata, noise consistency
@@ -259,10 +259,10 @@ Entity (created in Step 1 or auto-created in Step 2)
 ### Core (required)
 - [ ] PostgreSQL running + `DATABASE_URL` environment variable set
 - [ ] MinIO / S3 running + `MINIO_*` or `AWS_*` environment variables set
-- [ ] Tesseract OCR installed on PATH
-
-### For better ID card OCR (strongly recommended)
 - [ ] `pip install paddlepaddle paddleocr`
+
+### OCR runtime (required for scans and PAN recovery)
+- [ ] Ensure PaddleOCR models can be downloaded or are already cached in the runtime
 - [ ] Uncomment `paddlepaddle` and `paddleocr` in requirements.txt
 
 ### For VLM OCR fallback (when OCR confidence is low)
@@ -277,7 +277,7 @@ Entity (created in Step 1 or auto-created in Step 2)
 
 ### Engine selection (optional via environment variables)
 ```
-BASETRUTH_OCR_ENGINE=auto          # auto | paddleocr | pytesseract
+BASETRUTH_OCR_ENGINE=paddleocr     # paddleocr
 BASETRUTH_FACE_ENGINE=auto         # auto | insightface | mediapipe
 BASETRUTH_VLM_ENGINE=auto          # auto | gemma_local | gemini_api | none
 BASETRUTH_OCR_CONF_THRESHOLD=0.70  # float 0–1 — VLM fallback trigger

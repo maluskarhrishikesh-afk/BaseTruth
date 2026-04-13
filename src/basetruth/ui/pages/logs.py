@@ -317,7 +317,8 @@ def _page_logs() -> None:
     st.divider()
     st.markdown("##### 🔎 JSON Inspector")
     st.caption("Select a log entry to view its full structured payload.")
-    if len(view) > 0:
+    if len(view) > 1:
+        # Slider needs min < max, so it only works when there are at least 2 entries
         _max_idx = len(view) - 1
         _sel = st.slider(
             "Entry (most recent = 0)",
@@ -328,6 +329,12 @@ def _page_logs() -> None:
         )
         _record_iloc = _sel if _sel <= _max_idx else 0
         _chosen_record = view.iloc[_record_iloc].to_dict()
+    elif len(view) == 1:
+        # Only one entry — show it directly without a slider
+        _chosen_record = view.iloc[0].to_dict()
+    else:
+        _chosen_record = None
+    if _chosen_record is not None:
         _c1, _c2 = st.columns([1, 3])
         with _c1:
             st.markdown(

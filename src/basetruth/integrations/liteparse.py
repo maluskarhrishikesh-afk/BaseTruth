@@ -4,8 +4,8 @@ from __future__ import annotations
 LiteParse integration -- subprocess wrapper for the @llamaindex/liteparse Node.js CLI.
 
 LiteParse converts PDFs and images to structured JSON (text + layout data per page)
-using a combination of pdfjs-dist, Tesseract OCR, and ImageMagick (for rasterising
-PDF pages to images before OCR).
+using its own Node.js parsing stack plus ImageMagick when it needs to rasterise
+PDF pages. BaseTruth keeps direct OCR on its Python side standardised on PaddleOCR.
 
 Command resolution order
 ------------------------

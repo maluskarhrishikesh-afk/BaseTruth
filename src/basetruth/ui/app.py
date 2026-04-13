@@ -938,8 +938,8 @@ _PAGES: Dict[str, str] = {
     "🎥  Video KYC": "video_kyc",
     "🔍  Scan Document": "scan",
     "📦  Bulk Scan": "bulk",
-    "�  Scans": "scans",
-    "�📁  Cases": "cases",
+    "🔬  Scans": "scans",
+    "📁  Cases": "cases",
     "🧠  Document Intelligence": "document_intelligence",
     "📊  Reports": "reports",
     "🧾  Layered Analysis": "layered_analysis",
@@ -1468,11 +1468,11 @@ def _page_scan(service: BaseTruthService) -> None:
                     or summary.get("parse_fallback_reason", "")
                 ).split("|")[0].strip()  # First segment only -- drops the verbose stacktrace
 
-                if is_image_only and ocr_engine == "pytesseract":
+                if is_image_only and ocr_engine == "paddleocr":
                     # OCR ran and succeeded.
                     st.info(
                         "**Image-only PDF detected** -- LiteParse required ImageMagick which is "
-                        "not installed. BaseTruth used **Tesseract OCR** as a fallback and "
+                        "not installed. BaseTruth used **PaddleOCR** for the OCR pass and "
                         "successfully extracted text from the document.  "
                         "Field extraction quality may differ from a full LiteParse scan."
                     )
@@ -1487,14 +1487,10 @@ def _page_scan(service: BaseTruthService) -> None:
                         "**Option A (recommended) -- Install ImageMagick:**  \n"
                         "Download from https://imagemagick.org/script/download.php#windows  \n"
                         "Restart the terminal after install, then re-scan.\n\n"
-                        "**Option B -- Install Tesseract + Poppler:**  \n"
-                        "1. Tesseract: https://github.com/UB-Mannheim/tesseract/wiki  \n"
-                        "   Add its folder to your system PATH  \n"
-                        "2. Poppler: https://github.com/oschwartz10612/poppler-windows/releases  \n"
-                        "   Add poppler/bin to your system PATH  \n"
-                        "3. In the BaseTruth folder run:  \n"
-                        "   `.venv\\Scripts\\pip install pytesseract pdf2image`  \n"
-                        "4. Re-scan the document."
+                        "**Option B -- Install PaddleOCR runtime:**  \n"
+                        "1. In the BaseTruth folder run:  \n"
+                        "   `.venv\\Scripts\\pip install paddleocr paddlepaddle`  \n"
+                        "2. Re-scan the document."
                     )
                 elif is_image_only:
                     st.warning(
@@ -1804,7 +1800,7 @@ def _page_bulk(service: BaseTruthService) -> None:
             if fallback:
                 st.warning(f"Parse fallback used: {fallback_reason}")
             if text_len == 0:
-                st.error("No text was extracted from this document — classification will be generic. Check that LiteParse (Node.js) is installed or Tesseract OCR is available.")
+                st.error("No text was extracted from this document — classification will be generic. Check that LiteParse (Node.js) is installed or that PaddleOCR is available.")
             elif text_len < 100:
                 st.warning(f"Very little text extracted ({text_len} chars). Classification may be unreliable.")
             if preview:
@@ -2918,7 +2914,7 @@ def _page_logs() -> None:
 _DB_TABLE_LABELS: dict[str, str] = {
     "entities":   "Entities",
     "scans":      "Scans",
-    "document_information": "Document Extractions",
+    "document_extractions": "Document Extractions",
     "cases":      "Cases",
     "case_notes": "Case Notes",
 }
@@ -3465,100 +3461,36 @@ def _parse_aadhaar_qr(img_bytes: bytes) -> Dict[str, Any]:
 
 
 def _extract_pan_info(img_bytes: bytes) -> Dict[str, Any]:
-    """OCR a PAN card image and extract PAN number + name.
-
-    Uses multiple preprocessing strategies and psm modes to handle varying
-    scan quality. Tries each strategy until a PAN number is found.
-    """
+    """Read PAN text from the uploaded image using the shared PaddleOCR path."""
     try:
-        import cv2
-        import numpy as np
-        nparr = np.frombuffer(img_bytes, np.uint8)
-        orig = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        if orig is None:
+        from basetruth.integrations.pdf import ocr_image_bytes_directly
+
+        text, engine = ocr_image_bytes_directly(img_bytes)
+        if engine != "paddleocr" or not text.strip():
             return {}
-
-        def _try_ocr(gray_img) -> str:
-            """Run pytesseract with multiple psm modes and return best text."""
-            try:
-                import pytesseract
-            except ImportError:
-                return ""
-            best = ""
-            for psm in (6, 11, 3, 8, 7):
-                try:
-                    t = pytesseract.image_to_string(
-                        gray_img,
-                        config=f"--psm {psm} --oem 3 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ",
-                        timeout=15,  # prevent hangs on high-resolution images
-                    )
-                    if len(t) > len(best):
-                        best = t
-                    # Stop early if we already found a PAN pattern
-                    if _re.search(r"[A-Z]{5}[0-9]{4}[A-Z]", t.upper()):
-                        return t
-                except Exception:  # noqa: BLE001
-                    pass
-            return best
-
-        def _preprocess(img_bgr):
-            """Return a list of preprocessed grayscale variants.
-
-            Caps the image at max_w=1200 px so pytesseract never times out on
-            high-resolution scans (e.g. 1902×2518 → previous 3× = 5706×7554).
-            Small images are still upscaled up to 1.5×.
-            """
-            h_orig, w_orig = img_bgr.shape[:2]
-            max_w = 1200
-            scale = min(max_w / max(w_orig, 1), 1.5)
-            resized = cv2.resize(img_bgr, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-            gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
-            variants = [gray]
-            _, otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            variants.append(otsu)
-            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-            variants.append(clahe.apply(gray))
-            kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
-            variants.append(cv2.filter2D(gray, -1, kernel))
-            return variants
 
         _pan_re_global = _re.compile(r"[A-Z]{5}[0-9]{4}[A-Z]")
         _skip_words = {"INCOME", "DEPARTMENT", "GOVT", "INDIA", "TAX", "PERMANENT",
                        "ACCOUNT", "NUMBER", "CARD", "OF", "SIGNATURE", "FATHER"}
 
         result: Dict[str, Any] = {}
-        all_text = ""
+        pan_match = _pan_re_global.search(text.upper())
+        if pan_match:
+            result["pan_number"] = pan_match.group()
 
-        for variant in _preprocess(orig):
-            text = _try_ocr(variant)
-            if not text.strip():
-                continue
-            all_text += "\n" + text
-            # Look for PAN number
-            if not result.get("pan_number"):
-                pan_match = _pan_re_global.search(text.upper())
-                if pan_match:
-                    result["pan_number"] = pan_match.group()
-            # Look for cardholder name (upper-case line, multi-word, no boilerplate)
-            if not result.get("name"):
-                for line in text.splitlines():
-                    clean = _re.sub(r"[^A-Z\s]", "", line.strip().upper()).strip()
-                    words = [w for w in clean.split() if len(w) >= 2]
-                    if (
-                        len(words) >= 2
-                        and not any(kw in clean for kw in _skip_words)
-                        and not _pan_re_global.search(clean)
-                    ):
-                        result["name"] = " ".join(words)
-                        break
-            if result.get("pan_number") and result.get("name"):
+        for line in text.splitlines():
+            clean = _re.sub(r"[^A-Z\s]", "", line.strip().upper()).strip()
+            words = [w for w in clean.split() if len(w) >= 2]
+            if (
+                len(words) >= 2
+                and not any(kw in clean for kw in _skip_words)
+                and not _pan_re_global.search(clean)
+            ):
+                result["name"] = " ".join(words)
                 break
 
-        # Last-resort: search the entire accumulated text dump
-        if not result.get("pan_number") and all_text:
-            m = _pan_re_global.search(all_text.upper())
-            if m:
-                result["pan_number"] = m.group()
+        if result:
+            result["engine"] = "paddleocr"
 
         return result
     except Exception:  # noqa: BLE001

@@ -136,14 +136,6 @@ If the document is a "Marksheet", output THIS exact JSON structure:
   "examination_name": "",
   "enrollment_or_seat_number": "",
   "year_or_date_of_passing": "",
-  "subjects": [
-    {
-      "subject_name": "",
-      "max_marks": null,
-      "marks_obtained": null,
-      "grade": ""
-    }
-  ],
   "computed_total": null,
   "printed_grand_total": null,
   "percentage_or_cgpa": "",

@@ -68,7 +68,7 @@
 ## Phase 7: Image Document Scanning and Visual Forensics ✅
 
 - **[DONE]** Raw image file scanning pipeline (`.jpg`, `.jpeg`, `.png`, `.tiff`, `.bmp`, `.webp`) in `scan_document()`
-- **[DONE]** Direct OCR on image files via pytesseract (no Poppler dependency)
+- **[DONE]** Direct OCR on image files via PaddleOCR (no Poppler or Tesseract dependency)
 - **[DONE]** `src/basetruth/analysis/image_forensics.py` — multi-layer image forensics:
   - EXIF suspicious tool detection (Photoshop, GIMP, Canva, Stable Diffusion, Midjourney, etc.)
   - Missing camera EXIF signal

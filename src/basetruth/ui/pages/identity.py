@@ -1,6 +1,7 @@
-"""Identity Verification page — Aadhaar QR, PAN OCR (capped upscale), layered fraud detection, ArcFace face match."""
+"""Identity Verification page — Aadhaar QR, PAN extraction, layered fraud detection, ArcFace face match."""
 from __future__ import annotations
 
+import concurrent.futures as _cf
 import re as _re
 import xml.etree.ElementTree as _ET
 from typing import Any, Dict
@@ -9,7 +10,17 @@ import streamlit as st
 
 from basetruth.analysis.identity_checks import compare_dob_values, compare_first_last_names
 from basetruth.analysis.upload_authenticity import analyse_upload_authenticity, build_format_check
-from basetruth.integrations.ollama import extract_pan_details_with_ollama, extract_aadhaar_details_with_ollama
+from basetruth.integrations.pdf import ocr_image_bytes_directly
+from basetruth.integrations.ollama import (
+    extract_pan_details_and_signature_with_ollama,
+    extract_aadhaar_details_with_ollama,
+    classify_document_type_with_ollama,
+    probe_ollama,
+    select_ollama_model,
+    _extract_json_object,
+    OLLAMA_CONNECT_TIMEOUT_SEC,
+    OLLAMA_READ_TIMEOUT_SEC,
+)
 from basetruth.ui.components import (
     _DB_IMPORTS_OK,
     _db_available_cached,
@@ -159,83 +170,20 @@ def _parse_aadhaar_qr(img_bytes: bytes) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# PAN card OCR fallback — FIXED: capped upscale (no 3× on large images)
+# PAN card OCR helper — shared PaddleOCR path
 # ---------------------------------------------------------------------------
 
 
 def _extract_pan_info_ocr(img_bytes: bytes) -> Dict[str, Any]:
-    """OCR a PAN card image and extract PAN number + name.
+    """Read PAN text from the uploaded image using PaddleOCR only.
 
-    Preprocessing caps the image at 1 200 px wide (still upscales small images
-    up to 1.5×) rather than blindly applying a 3× scale. This prevents
-    pytesseract from timing out on high-resolution scans.
+    The identity flow must stay on the same OCR engine as the rest of
+    BaseTruth, so this helper delegates to the shared PaddleOCR pipeline.
     """
     try:
-        import cv2  # noqa: PLC0415
-        import numpy as np  # noqa: PLC0415
-
-        nparr = np.frombuffer(img_bytes, np.uint8)
-        orig = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        if orig is None:
+        text, engine = ocr_image_bytes_directly(img_bytes)
+        if engine != "paddleocr" or not text.strip():
             return {}
-
-        def _try_ocr(gray_img) -> str:  # type: ignore[no-untyped-def]
-            try:
-                import pytesseract  # noqa: PLC0415
-            except ImportError:
-                return ""
-            best = ""
-            for psm in (6, 11, 3, 8, 7):
-                try:
-                    t = pytesseract.image_to_string(
-                        gray_img,
-                        config=(
-                            f"--psm {psm} --oem 3 "
-                            "-c tessedit_char_whitelist="
-                            "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 "
-                        ),
-                        timeout=15,  # prevent hangs on large images
-                    )
-                    if len(t) > len(best):
-                        best = t
-                    if _re.search(r"[A-Z]{5}[0-9]{4}[A-Z]", t.upper()):
-                        return t
-                except Exception:  # noqa: BLE001
-                    pass
-            return best
-
-        def _preprocess(img_bgr):  # type: ignore[no-untyped-def]
-            """Return a list of preprocessed grayscale variants for OCR.
-
-            For camera-captured images the cap is raised to 2400 px and the
-            max upscale to 2.5× so small/low-res captures still get useful
-            text extraction. Adaptive threshold and denoising are added to
-            handle uneven lighting and camera noise.
-            """
-            _, w_orig = img_bgr.shape[:2]
-            max_w = 2400  # raised from 1200 — camera images need more detail
-            scale = min(max_w / max(w_orig, 1), 2.5)  # raised from 1.5×
-            resized = cv2.resize(
-                img_bgr, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC
-            )
-            gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
-            # Denoise first — camera sensors add noise that hurts OCR
-            denoised = cv2.fastNlMeansDenoising(gray, h=12)
-            variants = [gray, denoised]
-            _, otsu = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            variants.append(otsu)
-            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-            variants.append(clahe.apply(denoised))
-            kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
-            variants.append(cv2.filter2D(denoised, -1, kernel))
-            # Adaptive threshold — best for uneven camera lighting / shadows
-            adapt = cv2.adaptiveThreshold(
-                denoised, 255,
-                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                cv2.THRESH_BINARY, 15, 4,
-            )
-            variants.append(adapt)
-            return variants
 
         _pan_re_global = _re.compile(r"[A-Z]{5}[0-9]{4}[A-Z]")
         _skip_words = {
@@ -244,48 +192,44 @@ def _extract_pan_info_ocr(img_bytes: bytes) -> Dict[str, Any]:
         }
 
         result: Dict[str, Any] = {}
-        all_text = ""
+        m = _pan_re_global.search(text.upper())
+        if m:
+            result["pan_number"] = m.group()
 
-        for variant in _preprocess(orig):
-            text = _try_ocr(variant)
-            if not text.strip():
-                continue
-            all_text += "\n" + text
-            if not result.get("pan_number"):
-                m = _pan_re_global.search(text.upper())
-                if m:
-                    result["pan_number"] = m.group()
-            if not result.get("name"):
-                for line in text.splitlines():
-                    clean = _re.sub(r"[^A-Z\s]", "", line.strip().upper()).strip()
-                    words = [w for w in clean.split() if len(w) >= 2]
-                    if (
-                        len(words) >= 2
-                        and not any(kw in clean for kw in _skip_words)
-                        and not _pan_re_global.search(clean)
-                    ):
-                        result["name"] = " ".join(words)
-                        break
-            if result.get("pan_number") and result.get("name"):
+        for line in text.splitlines():
+            clean = _re.sub(r"[^A-Z\s]", "", line.strip().upper()).strip()
+            words = [w for w in clean.split() if len(w) >= 2]
+            if (
+                len(words) >= 2
+                and not any(kw in clean for kw in _skip_words)
+                and not _pan_re_global.search(clean)
+            ):
+                result["name"] = " ".join(words)
                 break
 
-        if not result.get("pan_number") and all_text:
-            m = _pan_re_global.search(all_text.upper())
+        if not result.get("pan_number"):
+            m = _pan_re_global.search(text.upper())
             if m:
                 result["pan_number"] = m.group()
 
         if result.get("name") and not result.get("full_name"):
             result["full_name"] = result["name"]
         if result:
-            result["engine"] = "ocr"
+            result["engine"] = "paddleocr"
         return result
     except Exception:  # noqa: BLE001
         return {}
 
 
 def _extract_pan_info(img_bytes: bytes) -> Dict[str, Any]:
-    """Extract PAN fields using Gemma4 first, then OCR fallback when needed."""
-    gemma_data = extract_pan_details_with_ollama(img_bytes)
+    """Extract PAN fields using Gemma4 first, then PaddleOCR recovery when needed.
+
+    Uses the combined Gemma4 call that returns both PAN text fields and the
+    signature bounding-box in a single request, halving the Ollama round-trips
+    compared to the previous two-call approach.
+    """
+    # One Gemma4 call returns both PAN fields AND sig_box — no second call needed
+    gemma_data = extract_pan_details_and_signature_with_ollama(img_bytes)
     ocr_data = _extract_pan_info_ocr(img_bytes)
 
     merged: Dict[str, Any] = {}
@@ -330,6 +274,12 @@ def _extract_pan_info(img_bytes: bytes) -> Dict[str, Any]:
         merged["field_sources"] = field_sources
         merged["extraction_source"] = " + ".join(sources)
         merged["engine"] = "gemma4_ollama" if sources and sources[0] == "gemma4" else "ocr"
+
+    # Forward the signature bounding-box supplied by the combined Gemma4 call
+    # so callers can pass it straight to _crop_pan_signature and skip a second
+    # Gemma4 round-trip for signature detection.
+    if gemma_data.get("sig_box"):
+        merged["sig_box"] = gemma_data["sig_box"]
 
     if gemma_data.get("model"):
         merged["gemma_model"] = gemma_data["model"]
@@ -386,6 +336,268 @@ def _pan_tampering_check(img_bytes: bytes) -> Dict[str, Any]:
         }
     except Exception as exc:  # noqa: BLE001
         return {"passed": None, "score": None, "reason": f"Tampering check unavailable: {exc}"}
+
+
+# ---------------------------------------------------------------------------
+# PAN signature crop
+# ---------------------------------------------------------------------------
+
+# System + user prompts for Gemma4 signature bounding-box detection.
+# Uses full-image-fraction coordinates so results work regardless of
+# image resolution or how much background surrounds the card.
+_SIG_SYSTEM_PROMPT = (
+    "You are a precise document layout analyser. "
+    "Return strict JSON only. No commentary, no markdown."
+)
+_SIG_USER_PROMPT = (
+    "Look at this document image. There is a handwritten signature somewhere "
+    "on the document (often a cursive ink stroke below printed text).\n\n"
+    "Locate ONLY the handwritten signature strokes -- do NOT include:\n"
+    "  - the printed word 'Signature' (label below the strokes)\n"
+    "  - the PAN number or any other printed text\n"
+    "  - the hologram or photo area\n\n"
+    "IMPORTANT: Signatures often start very close to the left margin. "
+    "Make sure x1 captures the very beginning of the LEFTMOST ink stroke. "
+    "When in doubt, bias x1 slightly to the left.\n\n"
+    "Return a JSON object with the bounding box as fractions of the "
+    "FULL image dimensions (0.0 = left/top edge, 1.0 = right/bottom edge):\n\n"
+    "{\n"
+    '  "x1": <left edge of ink strokes / image width>,\n'
+    '  "y1": <top edge of ink strokes / image height>,\n'
+    '  "x2": <right edge of ink strokes / image width>,\n'
+    '  "y2": <bottom edge of ink strokes / image height>,\n'
+    '  "confidence": <0.0-1.0>\n'
+    "}\n\n"
+    "Rules:\n"
+    "- All values must be between 0.0 and 1.0.\n"
+    "- x1 < x2 and y1 < y2.\n"
+    "- Max 3% padding around ink strokes -- tight fit only.\n"
+    "- If no signature found, set all coordinates and confidence to 0.0.\n"
+    "- Output JSON only -- no extra text."
+)
+
+# Fixed ratios used as fallback when Gemma4 is unavailable.
+# Calibrated against a camera-captured PAN card photo WITH background margin
+# (the card occupies roughly the central 60% of a typical phone shot).
+_SIG_FALLBACK_BOX: Dict[str, float] = {"x1": 0.10, "y1": 0.77, "x2": 0.37, "y2": 0.88}
+
+# Safety margin added to the Gemma4 box before cropping.
+# We add extra on the LEFT (x1) because Gemma4 tends to start boxes
+# slightly right of the first ink stroke.
+_SIG_GEMMA4_EXPAND = 0.03        # 3% on right/top/bottom
+_SIG_GEMMA4_EXPAND_LEFT = 0.07   # 7% extra on left to capture first strokes
+
+
+def _crop_pan_signature(
+    img_bytes: bytes,
+    *,
+    precomputed_box: Dict[str, float] | None = None,
+) -> bytes | None:
+    """Crop the applicant's handwritten signature from a PAN card image.
+
+    Strategy
+    --------
+    1. If ``precomputed_box`` is provided (e.g. from the combined Gemma4 call
+       in ``_extract_pan_info``), use it directly and skip the Gemma4 network
+       call entirely — this is the normal fast path when PAN extraction and
+       signature detection were already done in one shot.
+    2. Otherwise, ask Gemma4 (via Ollama) for the signature bounding box as
+       normalised fractions {x1, y1, x2, y2}.
+    3. Expand the chosen box by a 5 % safety margin on every side — Gemma4 can
+       underestimate by a few percent, and the cleanup step will retighten.
+    4. Coarse-crop the expanded region from the original image.
+    5. Clean up with OpenCV:
+       a. Grayscale + light denoise.
+       b. Adaptive Gaussian threshold (C=12) to isolate ink strokes regardless
+          of varying local brightness.
+       c. Dilate to merge nearby stroke segments into contour blobs.
+       d. Filter contours by minimum area (noise) AND by Y centroid position
+          (ignore anything in the lower 35 % of the crop — card edge / beige
+          background).
+       e. Tighten to the union bounding rect of valid ink contours.
+       f. Resize to ≤ 300 px wide so the displayed image matches a realistic
+          human signature size — real signatures are small (3–5 cm).
+       g. Whiten background, encode as high-quality JPEG.
+    6. Fallback: if Gemma4 is unreachable or returns bad coordinates, use
+       fixed ratios known to work for standard camera-captured PAN cards.
+
+    Returns ``None`` on any failure so callers treat a missing signature as a
+    non-fatal condition without crashing the identity-verification flow.
+    """
+    import base64
+    import json
+
+    import requests
+    import cv2  # noqa: PLC0415
+    import numpy as np  # noqa: PLC0415
+
+    try:
+        nparr = np.frombuffer(img_bytes, np.uint8)
+        img   = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img is None:
+            return None
+        h, w = img.shape[:2]
+
+        # ── Step 1: Determine signature bounding box ──────────────────────
+        box: Dict[str, float] | None = None
+
+        # Fast path: use the box already returned by the combined Gemma4 call
+        # so we avoid a second network round-trip to Ollama.
+        if precomputed_box is not None:
+            pb = precomputed_box
+            width_f  = pb.get("x2", 0) - pb.get("x1", 0)
+            height_f = pb.get("y2", 0) - pb.get("y1", 0)
+            if (
+                0 <= pb.get("x1", 0) < pb.get("x2", 0) <= 1
+                and 0 <= pb.get("y1", 0) < pb.get("y2", 0) <= 1
+                and width_f >= 0.03
+                and height_f >= 0.02
+            ):
+                # Accept the box and apply asymmetric expand:
+                # Extra left margin because Gemma4 often starts too far right,
+                # clipping the beginning of the first stroke.
+                box = {
+                    "x1": max(0.0, pb["x1"] - _SIG_GEMMA4_EXPAND - _SIG_GEMMA4_EXPAND_LEFT),
+                    "y1": max(0.0, pb["y1"] - _SIG_GEMMA4_EXPAND),
+                    "x2": min(1.0, pb["x2"] + _SIG_GEMMA4_EXPAND),
+                    "y2": min(1.0, pb["y2"] + _SIG_GEMMA4_EXPAND),
+                }
+
+        # Slow path: ask Gemma4 when no precomputed box is available
+        if box is None:
+            base_url, models, _ = probe_ollama()
+            if base_url:
+                model = select_ollama_model(models)
+                payload = {
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": _SIG_SYSTEM_PROMPT},
+                        {
+                            "role": "user",
+                            "content": _SIG_USER_PROMPT,
+                            "images": [base64.b64encode(img_bytes).decode("ascii")],
+                        },
+                    ],
+                    "stream": False,
+                    "options": {"temperature": 0},
+                }
+                try:
+                    resp = requests.post(  # nosemgrep: basetruth-ssrf
+                        f"{base_url}/api/chat",
+                        json=payload,
+                        timeout=(OLLAMA_CONNECT_TIMEOUT_SEC, OLLAMA_READ_TIMEOUT_SEC),
+                    )
+                    resp.raise_for_status()
+                    raw  = str(resp.json().get("message", {}).get("content", "")).strip()
+                    text = _extract_json_object(raw)
+                    data = json.loads(text) if text else {}
+                    x1, y1, x2, y2 = (
+                        float(data.get("x1", 0)),
+                        float(data.get("y1", 0)),
+                        float(data.get("x2", 0)),
+                        float(data.get("y2", 0)),
+                    )
+                    # Validate: in range, non-degenerate, not unreasonably large
+                    width_f  = x2 - x1
+                    height_f = y2 - y1
+                    if (
+                        0 <= x1 < x2 <= 1
+                        and 0 <= y1 < y2 <= 1
+                        and width_f >= 0.03
+                        and height_f >= 0.02
+                        and width_f <= 0.7
+                        and height_f <= 0.5
+                    ):
+                        # Asymmetric expand: extra left to avoid clipping first stroke
+                        box = {
+                            "x1": max(0.0, x1 - _SIG_GEMMA4_EXPAND - _SIG_GEMMA4_EXPAND_LEFT),
+                            "y1": max(0.0, y1 - _SIG_GEMMA4_EXPAND),
+                            "x2": min(1.0, x2 + _SIG_GEMMA4_EXPAND),
+                            "y2": min(1.0, y2 + _SIG_GEMMA4_EXPAND),
+                        }
+                except Exception:  # noqa: BLE001
+                    box = None  # fall back silently
+
+        if box is None:
+            box = _SIG_FALLBACK_BOX
+
+        # ── Step 2: Coarse crop ────────────────────────────────────────────
+        px0 = int(w * box["x1"]); py0 = int(h * box["y1"])
+        px1 = int(w * box["x2"]); py1 = int(h * box["y2"])
+        if px1 <= px0 or py1 <= py0:
+            return None
+        coarse = img[py0:py1, px0:px1]
+
+        # -- Step 3: Adaptive threshold + contour tightening ----------------
+        gray     = cv2.cvtColor(coarse, cv2.COLOR_BGR2GRAY)
+        denoised = cv2.fastNlMeansDenoising(gray, h=10, templateWindowSize=7, searchWindowSize=21)
+
+        # Adaptive threshold isolates dark ink regardless of local brightness.
+        # blockSize=31 gives finer local contrast for camera-captured cards.
+        binary = cv2.adaptiveThreshold(
+            denoised, 255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY_INV,
+            blockSize=31,
+            C=10,
+        )
+        # Morphological close merges nearby stroke segments without inflating
+        # blob boundaries as aggressively as the previous dilate-only approach.
+        kernel  = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        closed  = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=2)
+        contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        coarse_area = coarse.shape[0] * coarse.shape[1]
+        coarse_h    = coarse.shape[0]
+        min_area    = max(20, coarse_area * 0.0008)  # lower floor catches thin strokes
+        y_cutoff    = coarse_h * 0.85  # reject bottom 15% (card edge / 'Signature' label)
+
+        valid: list = []
+        for c in contours:
+            if cv2.contourArea(c) < min_area:
+                continue
+            M = cv2.moments(c)
+            if M["m00"] == 0:
+                continue
+            cy = M["m01"] / M["m00"]
+            if cy > y_cutoff:
+                continue  # card edge / background noise
+            valid.append(c)
+
+        if valid:
+            all_pts        = np.concatenate(valid, axis=0)
+            bx, by, bw, bh = cv2.boundingRect(all_pts)
+            pad_x = 10; pad_y = 10
+            tx  = max(0, bx - pad_x)
+            ty  = max(0, by - pad_y)
+            tx2 = min(coarse.shape[1], bx + bw + pad_x)
+            ty2 = min(coarse.shape[0], by + bh + pad_y)
+            tight = coarse[ty:ty2, tx:tx2] if (tx2 - tx) >= 20 and (ty2 - ty) >= 6 else coarse
+        else:
+            tight = coarse
+
+        # ── Step 4: Produce clean white-background grayscale JPEG ─────────
+        tight_gray     = cv2.cvtColor(tight, cv2.COLOR_BGR2GRAY)
+        denoised_tight = cv2.fastNlMeansDenoising(tight_gray, h=8)
+        _, mask        = cv2.threshold(denoised_tight, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        result         = np.where(mask == 255, np.uint8(255), denoised_tight)
+
+        # Resize to a realistic signature display size (<= 400 px wide).
+        # Real handwritten signatures are 3-5 cm wide.
+        _MAX_SIG_W = 400
+        sig_h, sig_w = result.shape[:2]
+        if sig_w > _MAX_SIG_W:
+            scale    = _MAX_SIG_W / sig_w
+            new_w    = _MAX_SIG_W
+            new_h    = max(1, int(sig_h * scale))
+            result   = cv2.resize(result, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+        ok, buf = cv2.imencode(".jpg", result, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        return bytes(buf) if ok else None
+
+    except Exception:  # noqa: BLE001
+        # Signature crop is best-effort — never let it crash the main flow
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -547,6 +759,280 @@ def _build_pan_layer_analysis(
 
 
 # ---------------------------------------------------------------------------
+# Document-type pre-validation
+# ---------------------------------------------------------------------------
+
+# These sets say which Gemma4 document_type values are acceptable for each slot.
+# If Gemma4 finds something NOT in the accepted set (and is confident enough),
+# we reject the upload and explain what was wrong.
+_SLOT_ACCEPTED_TYPES: Dict[str, set] = {
+    "aadhaar": {"aadhaar_card"},
+    "pan":     {"pan_card"},
+    "selfie":  {"photograph_selfie"},
+}
+
+# Human-readable slot names used in error messages shown to the user.
+_SLOT_DISPLAY_NAMES: Dict[str, str] = {
+    "aadhaar": "Aadhaar card",
+    "pan":     "PAN card",
+    "selfie":  "selfie / portrait photo",
+}
+
+# We only block an upload when Gemma4 is THIS confident that it is the wrong
+# type.  Below this threshold we let it through — the classifier might be wrong
+# and we don't want to frustrate users with false rejections.
+_DOC_CHECK_CONFIDENCE_THRESHOLD = 0.65
+
+
+def _check_document_type(img_bytes: bytes, slot: str) -> Dict[str, Any]:
+    """Run a fast Gemma4 check to confirm the uploaded image belongs to the right slot.
+
+    This runs BEFORE the heavy QR decode / OCR so a wrong document is caught
+    early, without wasting time on extraction.
+
+    How it works
+    ------------
+    1. Call Gemma4 with a short, focused prompt: "what type of document is this?"
+    2. If Gemma4 says it is the EXPECTED type (e.g. aadhaar_card for the Aadhaar
+       slot) → return ok=True.
+    3. If Gemma4 says it is a DIFFERENT known type with high confidence
+       (e.g. pan_card uploaded to the Aadhaar slot) → return ok=False with an
+       explanation message so the user knows exactly what to fix.
+    4. If Ollama is not running, or confidence is low, or the type is "other"
+       → return ok=True (skipped) so we never block a legitimate upload just
+       because the classifier was uncertain.
+
+    Parameters
+    ----------
+    img_bytes : raw image bytes to check
+    slot      : one of "aadhaar", "pan", "selfie"
+
+    Returns a dict:
+        ok         — True = proceed with extraction; False = wrong document
+        skipped    — True = Ollama unavailable, check was not run
+        detected   — what Gemma4 thinks the document is
+        confidence — how sure Gemma4 was (0.0–1.0)
+        reason     — human-readable explanation for the user
+    """
+    result = classify_document_type_with_ollama(img_bytes)
+
+    # Ollama is not reachable — skip silently so we never block the user
+    if not result or not result.get("available"):
+        return {
+            "ok":         True,
+            "skipped":    True,
+            "detected":   "unknown",
+            "confidence": 0.0,
+            "reason":     "Ollama unavailable — document type check skipped.",
+        }
+
+    doc_type   = result.get("document_type", "other")
+    confidence = result.get("confidence", 0.0)
+    reason     = result.get("reason", "")
+
+    accepted   = _SLOT_ACCEPTED_TYPES.get(slot, set())
+    slot_label = _SLOT_DISPLAY_NAMES.get(slot, slot)
+
+    # "other" means Gemma4 could not confidently identify the document type
+    # → do not block; the user might be uploading something valid but unusual
+    if doc_type == "other":
+        return {
+            "ok":         True,
+            "skipped":    False,
+            "detected":   doc_type,
+            "confidence": confidence,
+            "reason":     reason or "Document type could not be identified — proceeding anyway.",
+        }
+
+    # Document type matches what is expected for this slot → all good
+    if doc_type in accepted:
+        return {
+            "ok":         True,
+            "skipped":    False,
+            "detected":   doc_type,
+            "confidence": confidence,
+            "reason":     reason,
+        }
+
+    # Gemma4 detected a DIFFERENT known document type with high confidence → block
+    if confidence >= _DOC_CHECK_CONFIDENCE_THRESHOLD:
+        # Map the detected type to a friendly display name for the error message
+        detected_label = {
+            "aadhaar_card":      "an Aadhaar card",
+            "pan_card":          "a PAN card",
+            "photograph_selfie": "a selfie / portrait photo",
+        }.get(doc_type, f"a '{doc_type}'")
+        return {
+            "ok":         False,
+            "skipped":    False,
+            "detected":   doc_type,
+            "confidence": confidence,
+            "reason": (
+                f"This image looks like {detected_label}, but this slot expects "
+                f"a {slot_label}. Please upload the correct document."
+            ),
+        }
+
+    # Confidence is below the threshold — we are not sure enough to block the upload
+    return {
+        "ok":         True,
+        "skipped":    False,
+        "detected":   doc_type,
+        "confidence": confidence,
+        "reason":     reason,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Parallel upload prefetch
+# ---------------------------------------------------------------------------
+
+
+def _prefetch_upload_results(up_aadhaar, up_pan, up_selfie) -> None:
+    """Run all pending document-analysis work concurrently before rendering results.
+
+    When the user uploads all three documents at the same time we would normally
+    process them one after another (Aadhaar → PAN → Selfie), forcing the user to
+    wait for the sum of all three analysis times.
+
+    This function detects which computations are NOT yet cached in session state,
+    fires them all at the same time with a thread pool, and writes every result
+    back to session state in the main thread once all threads are done.  A single
+    "Analysing documents…" spinner replaces the three individual spinners — the
+    total wait becomes the time of the SLOWEST task, not the sum.
+
+    Thread safety
+    -------------
+    - All session-state READS happen here in the main thread, BEFORE any thread
+      is launched.  We pass captured values as closure defaults so threads never
+      touch session_state directly.
+    - All session-state WRITES happen here in the main thread, AFTER all threads
+      have finished.  This avoids any concurrent mutation of session state.
+    - Streamlit widgets are never called from inside threads.
+    """
+    # Each entry in `tasks` is a callable that returns a dict of {cache_key: result}.
+    # active_slots tracks which document types have actual pending work so we can
+    # choose the right spinner message (specific for one doc, generic for many).
+    tasks: list = []
+    active_slots: list = []  # e.g. ["aadhaar"] or ["pan", "selfie"]
+
+    # ── Aadhaar pipeline: doc check → QR decode → Gemma4 fallback ───────
+    if up_aadhaar:
+        _ab    = up_aadhaar.getvalue()                              # capture bytes in main thread
+        _adc_k = f"_idv_doccheck_aadhaar_{up_aadhaar.size}"
+        _aqr_k = f"_idv_qr_{up_aadhaar.size}"
+        _adc_miss = _adc_k not in st.session_state                  # True = needs computing
+        _aqr_miss = _aqr_k not in st.session_state
+        # Snapshot existing values so threads never touch session_state
+        _existing_adc = st.session_state.get(_adc_k)
+
+        if _adc_miss or _aqr_miss:
+            def _do_aadhaar(
+                ab=_ab, adc_k=_adc_k, aqr_k=_aqr_k,
+                adc_miss=_adc_miss, aqr_miss=_aqr_miss,
+                existing_adc=_existing_adc,
+            ):
+                """Thread worker for Aadhaar: doc check + QR decode."""
+                out: Dict[str, Any] = {}
+                # Doc check: use the captured value if already computed, else run it
+                dc = _check_document_type(ab, "aadhaar") if adc_miss else existing_adc
+                if adc_miss:
+                    out[adc_k] = dc
+                # QR decode only runs if the doc check passed
+                if dc and dc.get("ok") and aqr_miss:
+                    pqr = _parse_aadhaar_qr(ab)
+                    # Fall back to Gemma4 OCR if the standard QR scanner found nothing
+                    if pqr.get("qr_found") is False or not pqr:
+                        fb = extract_aadhaar_details_with_ollama(ab)
+                        if fb:
+                            pqr = fb
+                    out[aqr_k] = pqr
+                return out
+            active_slots.append("aadhaar")
+            tasks.append(_do_aadhaar)
+
+    # ── PAN pipeline: doc check → OCR/Gemma4 extraction → signature crop ─
+    if up_pan:
+        _pb     = up_pan.getvalue()
+        _pdc_k  = f"_idv_doccheck_pan_{up_pan.size}"
+        _pocr_k = f"_idv_pan_{up_pan.size}"
+        _psig_k = f"_idv_pan_sig_v3_{up_pan.size}"
+        _pdc_miss  = _pdc_k  not in st.session_state
+        _pocr_miss = _pocr_k not in st.session_state
+        _psig_miss = _psig_k not in st.session_state
+        # Snapshot existing values so the thread never touches session_state
+        _existing_pdc  = st.session_state.get(_pdc_k)
+        _existing_pocr = st.session_state.get(_pocr_k)  # may be {} when already cached
+
+        if _pdc_miss or _pocr_miss or _psig_miss:
+            def _do_pan(
+                pb=_pb, pdc_k=_pdc_k, pocr_k=_pocr_k, psig_k=_psig_k,
+                pdc_miss=_pdc_miss, pocr_miss=_pocr_miss, psig_miss=_psig_miss,
+                existing_pdc=_existing_pdc, existing_pocr=_existing_pocr,
+            ):
+                """Thread worker for PAN: doc check + combined OCR extraction + sig crop."""
+                out: Dict[str, Any] = {}
+                dc = _check_document_type(pb, "pan") if pdc_miss else existing_pdc
+                if pdc_miss:
+                    out[pdc_k] = dc
+                if dc and dc.get("ok"):
+                    # Combined Gemma4 call returns PAN fields AND the signature
+                    # bounding-box in a single response to avoid two round-trips
+                    pan_data = _extract_pan_info(pb) if pocr_miss else (existing_pocr or {})
+                    if pocr_miss:
+                        out[pocr_k] = pan_data
+                    # Crop the signature strip using the bounding box Gemma4 returned
+                    if psig_miss:
+                        sig = _crop_pan_signature(pb, precomputed_box=pan_data.get("sig_box"))
+                        out[psig_k] = sig
+                return out
+            active_slots.append("pan")
+            tasks.append(_do_pan)
+
+    # ── Selfie pipeline: doc check only (no extraction needed) ───────────
+    if up_selfie:
+        _sb    = up_selfie.getvalue()
+        _sdc_k = f"_idv_doccheck_selfie_{up_selfie.size}"
+        if _sdc_k not in st.session_state:
+            def _do_selfie(sb=_sb, sdc_k=_sdc_k):
+                """Thread worker for Selfie: just confirm it is a portrait photo."""
+                dc = _check_document_type(sb, "selfie")
+                return {sdc_k: dc}
+            tasks.append(_do_selfie)
+            active_slots.append("selfie")
+
+    if not tasks:
+        return  # every result is already cached — nothing to compute
+
+    # Choose the right spinner message:
+    # - single slot pending: show the document-specific message the user already knows
+    # - two or more slots pending: show the combined parallel message
+    if len(active_slots) == 1:
+        _spin_msg = {
+            "aadhaar": "Scanning Aadhaar QR code...",
+            "pan":     "Reading PAN card...",
+            "selfie":  "Verifying selfie...",
+        }.get(active_slots[0], "Verifying document type...")
+    else:
+        _spin_msg = "Analysing documents... (running in parallel)"
+
+    # Fire all pending tasks at the same time and wait for the last one to finish.
+    # One spinner covers the whole batch; total wait = slowest pipeline, not the sum.
+    with st.spinner(_spin_msg):
+        with _cf.ThreadPoolExecutor(max_workers=len(tasks)) as pool:
+            futures = [pool.submit(fn) for fn in tasks]
+            for fut in _cf.as_completed(futures):
+                try:
+                    # Write each result back to session state in the main thread
+                    for cache_key, result in fut.result().items():
+                        st.session_state[cache_key] = result
+                except Exception:  # noqa: BLE001
+                    # Individual pipeline failures are surfaced in the display
+                    # columns below — don't crash the whole page here
+                    pass
+
+
+# ---------------------------------------------------------------------------
 # Identity Verification page
 # ---------------------------------------------------------------------------
 
@@ -596,6 +1082,10 @@ def _page_identity_verification() -> None:
     with tab_upload:
         col_a, col_p, col_s = st.columns(3)
 
+        # ── Pass 1: render all three file uploaders side by side ─────────
+        # We only render the widgets here and collect which files the user has
+        # provided.  No analysis happens yet — that comes next in the parallel
+        # prefetch block so all three pipelines can run at the same time.
         with col_a:
             st.markdown("**📄 Aadhaar Card**")
             _up_aadhaar = st.file_uploader(
@@ -605,38 +1095,6 @@ def _page_identity_verification() -> None:
                 label_visibility="visible",
             )
             st.caption("Limit 200MB per file • JPG, JPEG, PNG, WEBP")
-            if _up_aadhaar:
-                aadhaar_file = _up_aadhaar  # type: ignore[assignment]
-                # Preview + QR inline in the upload tab
-                _a_key = f"_idv_qr_{_up_aadhaar.size}"
-                if _a_key not in st.session_state:
-                    with st.spinner("Scanning Aadhaar QR code..."):
-                        parsed_qr = _parse_aadhaar_qr(_up_aadhaar.getvalue())
-                        if parsed_qr.get("qr_found") is False or not parsed_qr:
-                            gemma_fallback = extract_aadhaar_details_with_ollama(_up_aadhaar.getvalue())
-                            if gemma_fallback:
-                                parsed_qr = gemma_fallback
-                        st.session_state[_a_key] = parsed_qr
-                _aq = st.session_state[_a_key]
-                st.image(_up_aadhaar.getvalue(), caption="Aadhaar card", use_container_width=True)
-                if _aq.get("qr_found") is False:
-                    st.warning("No QR code detected. Ensure the QR code is visible.")
-                elif _aq.get("qr_type") in ("xml", "gemma4"):
-                    if _aq.get("qr_type") == "gemma4":
-                        st.success("Aadhaar details extracted via Gamma4 fallback")
-                    else:
-                        st.success("QR decoded successfully")
-                    st.markdown(
-                        f"**Name:** {_aq.get('name', '—')}  \n"
-                        f"**DOB/YOB:** {_aq.get('dob') or _aq.get('yob', '—')}  \n"
-                        f"**Gender:** {_aq.get('gender', '—')}  \n"
-                        f"**District:** {_aq.get('dist', '—')}, {_aq.get('state', '—')}"
-                    )
-                    st.caption("Aadhaar looks good")
-                elif _aq.get("qr_type") == "secure":
-                    st.info(_aq.get("note", "Secure QR detected."))
-                elif not _aq:
-                    st.warning("QR scan error — check that OpenCV is available.")
 
         with col_p:
             st.markdown("**💳 PAN Card**")
@@ -647,33 +1105,6 @@ def _page_identity_verification() -> None:
                 label_visibility="visible",
             )
             st.caption("Limit 200MB per file • JPG, JPEG, PNG, WEBP")
-            if _up_pan:
-                pan_file = _up_pan  # type: ignore[assignment]
-                # Preview + OCR inline in the upload tab
-                _p_key = f"_idv_pan_{_up_pan.size}"
-                if _p_key not in st.session_state:
-                    with st.spinner("Reading PAN card..."):
-                        st.session_state[_p_key] = _extract_pan_info(_up_pan.getvalue())
-                _pd = st.session_state[_p_key]
-                st.image(_up_pan.getvalue(), caption="PAN card", use_container_width=True)
-                _extracted_pan = _pd.get("pan_number", "")
-                if _extracted_pan or _pd.get("full_name") or _pd.get("date_of_birth"):
-                    st.success("PAN decoded successfully")
-                if _extracted_pan:
-                    _pv = _validate_pan(_extracted_pan)
-                    if _pv["valid"]:
-                        st.markdown(
-                            f"**PAN:** {_extracted_pan}  \n"
-                            f"**Entity type:** {_pv['entity_type']}"
-                        )
-                    else:
-                        st.warning(f"PAN read: `{_extracted_pan}` — {_pv.get('error', '')}")
-                else:
-                    st.info("PAN number not detected. Enter it manually below if Gemma4 and OCR could not read it.")
-                if _pd.get("full_name") or _pd.get("name"):
-                    st.markdown(f"**Full name on PAN:** {_pd.get('full_name') or _pd.get('name')}")
-                if _pd.get("date_of_birth"):
-                    st.markdown(f"**Date of birth:** {_pd['date_of_birth']}")
 
         with col_s:
             st.markdown("**🤳 Selfie Photo**")
@@ -684,10 +1115,125 @@ def _page_identity_verification() -> None:
                 label_visibility="visible",
             )
             st.caption("Limit 200MB per file • JPG, JPEG, PNG, WEBP")
+
+        # ── Pass 2: run all pending analysis jobs in parallel ─────────────
+        # _prefetch_upload_results checks which computations are not yet
+        # cached in session state and fires them all at the same time via a
+        # thread pool.  On subsequent page re-renders everything is already
+        # cached, so this call returns immediately with no spinner shown.
+        _prefetch_upload_results(_up_aadhaar, _up_pan, _up_selfie)
+
+        # ── Pass 3: display results from session state ────────────────────
+        # All heavy Gemma4 / QR / OCR work is now done (or was already cached
+        # from a previous render).  These blocks only READ from session state
+        # — no blocking calls happen during rendering.
+
+        with col_a:
+            if _up_aadhaar:
+                # Read the doc-type check result cached by the prefetch above
+                _a_doccheck = st.session_state.get(
+                    f"_idv_doccheck_aadhaar_{_up_aadhaar.size}", {}
+                )
+                # Treat an explicit False as "wrong type"; missing key means
+                # the prefetch had an error, so we allow the file through rather
+                # than blocking a legitimate upload
+                _a_check_failed = _a_doccheck.get("ok") is False
+                aadhaar_file = _up_aadhaar if not _a_check_failed else None  # type: ignore[assignment]
+                # Always show a preview so the user can confirm what they uploaded
+                st.image(_up_aadhaar.getvalue(), caption="Aadhaar card", use_container_width=True)
+                # Read QR decode result cached by the prefetch (empty if blocked)
+                _aq = st.session_state.get(f"_idv_qr_{_up_aadhaar.size}", {})
+                if _a_check_failed:
+                    # Wrong document type — show the classifier's reason message
+                    st.error(f"\u26a0\ufe0f {_a_doccheck.get('reason', 'Wrong document type uploaded. Please upload an Aadhaar card here.')}")
+                elif _aq.get("qr_found") is False:
+                    st.warning("No QR code detected. Ensure the QR code is visible.")
+                elif _aq.get("qr_type") in ("xml", "gemma4"):
+                    if _aq.get("qr_type") == "gemma4":
+                        st.success("Aadhaar details extracted via Gamma4 fallback")
+                    else:
+                        st.success("QR decoded successfully")
+                    st.markdown(
+                        f"**UID:** {_aq.get('uid', '—')}  \n"
+                        f"**Full Name:** {_aq.get('name', '—')}  \n"
+                        f"**DOB/YOB:** {_aq.get('dob') or _aq.get('yob', '—')}  \n"
+                        f"**Gender (M/F/T):** {_aq.get('gender', '—')}  \n"
+                        f"**Care of (typically Father or Husband's name):** {_aq.get('co', '—')}  \n"
+                        f"**VTC (Village/Town/City):** {_aq.get('vtc', '—')}  \n"
+                        f"**District:** {_aq.get('dist', '—')}  \n"
+                        f"**State:** {_aq.get('state', '—')}  \n"
+                        f"**PIN Code:** {_aq.get('pc', '—')}"
+                    )
+                    st.caption("Aadhaar looks good")
+                elif _aq.get("qr_type") == "secure":
+                    st.info(_aq.get("note", "Secure QR detected."))
+                elif not _aq:
+                    st.warning("QR scan error — check that OpenCV is available.")
+
+        with col_p:
+            if _up_pan:
+                # Read the doc-type check result cached by the prefetch
+                _p_doccheck = st.session_state.get(
+                    f"_idv_doccheck_pan_{_up_pan.size}", {}
+                )
+                _p_check_failed = _p_doccheck.get("ok") is False
+                pan_file = _up_pan if not _p_check_failed else None  # type: ignore[assignment]
+                # Always show the uploaded image first
+                st.image(_up_pan.getvalue(), caption="PAN card", use_container_width=True)
+                if _p_check_failed:
+                    # Wrong document type — stop here, no extraction to display
+                    st.error(f"\u26a0\ufe0f {_p_doccheck.get('reason', 'Wrong document type uploaded. Please upload a PAN card here.')}")
+                else:
+                    # Read the OCR + Gemma4 extraction result cached by the prefetch
+                    _pd = st.session_state.get(f"_idv_pan_{_up_pan.size}", {})
+                    _extracted_pan = _pd.get("pan_number", "")
+                    if _extracted_pan or _pd.get("full_name") or _pd.get("date_of_birth"):
+                        st.success("PAN decoded successfully")
+                    if _extracted_pan:
+                        _pv = _validate_pan(_extracted_pan)
+                        if _pv["valid"]:
+                            st.markdown(
+                                f"**PAN:** {_extracted_pan}  \n"
+                                f"**Entity type:** {_pv['entity_type']}"
+                            )
+                        else:
+                            st.warning(f"PAN read: `{_extracted_pan}` — {_pv.get('error', '')}")
+                    else:
+                        st.info("PAN number not detected. Enter it manually below if Gemma4 and OCR could not read it.")
+                    if _pd.get("full_name") or _pd.get("name"):
+                        st.markdown(f"**Full Name:** {_pd.get('full_name') or _pd.get('name')}")
+                    if _pd.get("father_name"):
+                        st.markdown(
+                            f"**Care of (typically Father or Husband's name): S/O:** "
+                            f"{_pd['father_name']}"
+                        )
+                    if _pd.get("date_of_birth"):
+                        st.markdown(f"**DOB/YOB::** {_pd['date_of_birth']}")
+                    # Read the signature crop bytes (None if crop failed or blocked)
+                    _sig_bytes = st.session_state.get(f"_idv_pan_sig_v3_{_up_pan.size}")
+                    if _sig_bytes:
+                        st.markdown("**✍️ Signature (extracted):**")
+                        # use_container_width=False preserves realistic signature size
+                        st.image(_sig_bytes, caption="PAN card signature", use_container_width=False)
+                    else:
+                        st.caption("Signature could not be extracted from this image.")
+
+        with col_s:
             if _up_selfie:
-                selfie_bytes = _up_selfie.getvalue()
-                selfie_name = _up_selfie.name
-                st.image(selfie_bytes, caption="Selfie", use_container_width=True)
+                # Read the doc-type check result cached by the prefetch
+                _s_doccheck = st.session_state.get(
+                    f"_idv_doccheck_selfie_{_up_selfie.size}", {}
+                )
+                _s_check_failed = _s_doccheck.get("ok") is False
+                # Always show what the user uploaded so they can confirm visually
+                st.image(_up_selfie.getvalue(), caption="Selfie", use_container_width=True)
+                if _s_check_failed:
+                    # Looks like an ID document, not a portrait — tell the user
+                    st.error(f"\u26a0\ufe0f {_s_doccheck.get('reason', 'Wrong document type uploaded. Please upload a selfie or portrait photo here.')}")
+                else:
+                    # Confirmed portrait photo — accept for face-matching
+                    selfie_bytes = _up_selfie.getvalue()
+                    selfie_name = _up_selfie.name
 
     # ---- Camera tab -------------------------------------------------------
     with tab_camera:
@@ -725,9 +1271,24 @@ def _page_identity_verification() -> None:
                     label_visibility="collapsed",
                 )
                 if _cam_a:
-                    st.session_state["idv_cam_a_bytes"] = _cam_a.getvalue()
+                    # New photo just taken — clear old doc check so it reruns for the new image
+                    _cam_a_new = _cam_a.getvalue()
+                    if st.session_state.get("idv_cam_a_bytes") != _cam_a_new:
+                        st.session_state.pop("idv_cam_a_doccheck", None)
+                    st.session_state["idv_cam_a_bytes"] = _cam_a_new
                 if st.session_state.get("idv_cam_a_bytes"):
-                    st.success("✅ Photo captured")
+                    # Run document type check once per captured image (cached in session state)
+                    if "idv_cam_a_doccheck" not in st.session_state:
+                        with st.spinner("Verifying document type..."):
+                            st.session_state["idv_cam_a_doccheck"] = _check_document_type(
+                                st.session_state["idv_cam_a_bytes"], "aadhaar"
+                            )
+                    _cam_a_check = st.session_state.get("idv_cam_a_doccheck", {})
+                    # Show error if we are confident this is the wrong document type
+                    if not _cam_a_check.get("ok") and not _cam_a_check.get("skipped"):
+                        st.error(f"⚠️ {_cam_a_check.get('reason', 'Wrong document type.')}")
+                    else:
+                        st.success("✅ Photo captured")
                     st.image(
                         st.session_state["idv_cam_a_bytes"],
                         caption="Aadhaar — captured",
@@ -741,6 +1302,10 @@ def _page_identity_verification() -> None:
                 not st.session_state.get("idv_cam_a_open")
                 and st.session_state.get("idv_cam_a_bytes")
             ):
+                _cam_a_check = st.session_state.get("idv_cam_a_doccheck", {})
+                # Show error banner if the captured image failed the document type check
+                if not _cam_a_check.get("ok") and not _cam_a_check.get("skipped"):
+                    st.error(f"⚠️ {_cam_a_check.get('reason', 'Wrong document type.')}")
                 st.image(
                     st.session_state["idv_cam_a_bytes"],
                     caption="Aadhaar — captured",
@@ -761,9 +1326,24 @@ def _page_identity_verification() -> None:
                     label_visibility="collapsed",
                 )
                 if _cam_p:
-                    st.session_state["idv_cam_p_bytes"] = _cam_p.getvalue()
+                    # New photo just taken — clear old doc check so it reruns for the new image
+                    _cam_p_new = _cam_p.getvalue()
+                    if st.session_state.get("idv_cam_p_bytes") != _cam_p_new:
+                        st.session_state.pop("idv_cam_p_doccheck", None)
+                    st.session_state["idv_cam_p_bytes"] = _cam_p_new
                 if st.session_state.get("idv_cam_p_bytes"):
-                    st.success("✅ Photo captured")
+                    # Run document type check once per captured image (cached in session state)
+                    if "idv_cam_p_doccheck" not in st.session_state:
+                        with st.spinner("Verifying document type..."):
+                            st.session_state["idv_cam_p_doccheck"] = _check_document_type(
+                                st.session_state["idv_cam_p_bytes"], "pan"
+                            )
+                    _cam_p_check = st.session_state.get("idv_cam_p_doccheck", {})
+                    # Show error if we are confident this is the wrong document type
+                    if not _cam_p_check.get("ok") and not _cam_p_check.get("skipped"):
+                        st.error(f"⚠️ {_cam_p_check.get('reason', 'Wrong document type.')}")
+                    else:
+                        st.success("✅ Photo captured")
                     st.image(
                         st.session_state["idv_cam_p_bytes"],
                         caption="PAN — captured",
@@ -776,6 +1356,10 @@ def _page_identity_verification() -> None:
                 not st.session_state.get("idv_cam_p_open")
                 and st.session_state.get("idv_cam_p_bytes")
             ):
+                _cam_p_check = st.session_state.get("idv_cam_p_doccheck", {})
+                # Show error banner if the captured image failed the document type check
+                if not _cam_p_check.get("ok") and not _cam_p_check.get("skipped"):
+                    st.error(f"⚠️ {_cam_p_check.get('reason', 'Wrong document type.')}")
                 st.image(
                     st.session_state["idv_cam_p_bytes"],
                     caption="PAN — captured",
@@ -796,9 +1380,24 @@ def _page_identity_verification() -> None:
                     label_visibility="collapsed",
                 )
                 if _cam_s:
-                    st.session_state["idv_cam_s_bytes"] = _cam_s.getvalue()
+                    # New photo just taken — clear old doc check so it reruns for the new image
+                    _cam_s_new = _cam_s.getvalue()
+                    if st.session_state.get("idv_cam_s_bytes") != _cam_s_new:
+                        st.session_state.pop("idv_cam_s_doccheck", None)
+                    st.session_state["idv_cam_s_bytes"] = _cam_s_new
                 if st.session_state.get("idv_cam_s_bytes"):
-                    st.success("✅ Selfie captured")
+                    # Run document type check once per captured image (cached in session state)
+                    if "idv_cam_s_doccheck" not in st.session_state:
+                        with st.spinner("Verifying document type..."):
+                            st.session_state["idv_cam_s_doccheck"] = _check_document_type(
+                                st.session_state["idv_cam_s_bytes"], "selfie"
+                            )
+                    _cam_s_check = st.session_state.get("idv_cam_s_doccheck", {})
+                    # Show error if we are confident this is the wrong document type
+                    if not _cam_s_check.get("ok") and not _cam_s_check.get("skipped"):
+                        st.error(f"⚠️ {_cam_s_check.get('reason', 'Wrong document type.')}")
+                    else:
+                        st.success("✅ Selfie captured")
                     st.image(
                         st.session_state["idv_cam_s_bytes"],
                         caption="Selfie — captured",
@@ -811,6 +1410,10 @@ def _page_identity_verification() -> None:
                 not st.session_state.get("idv_cam_s_open")
                 and st.session_state.get("idv_cam_s_bytes")
             ):
+                _cam_s_check = st.session_state.get("idv_cam_s_doccheck", {})
+                # Show error banner if the captured image failed the document type check
+                if not _cam_s_check.get("ok") and not _cam_s_check.get("skipped"):
+                    st.error(f"⚠️ {_cam_s_check.get('reason', 'Wrong document type.')}")
                 st.image(
                     st.session_state["idv_cam_s_bytes"],
                     caption="Selfie — captured",
@@ -818,17 +1421,30 @@ def _page_identity_verification() -> None:
                 )
 
     # ---- Resolve effective sources (uploaded files take priority) ---------
+    # For each camera slot, only use the captured bytes if the doc type check
+    # passed (or was skipped because Ollama was unreachable). If the check
+    # found the wrong document type with high confidence, we block the image
+    # so the face match and extraction steps don't receive garbage input.
     if aadhaar_file is None and st.session_state.get("idv_cam_a_bytes"):
-        aadhaar_file = _DocumentCapture(
-            st.session_state["idv_cam_a_bytes"], "aadhaar_camera.jpg"
-        )
+        _cam_a_check = st.session_state.get("idv_cam_a_doccheck", {})
+        # ok=True (correct doc or skipped) — allow through; ok=False — blocked
+        if _cam_a_check.get("ok", True) or _cam_a_check.get("skipped", False):
+            aadhaar_file = _DocumentCapture(
+                st.session_state["idv_cam_a_bytes"], "aadhaar_camera.jpg"
+            )
     if pan_file is None and st.session_state.get("idv_cam_p_bytes"):
-        pan_file = _DocumentCapture(
-            st.session_state["idv_cam_p_bytes"], "pan_camera.jpg"
-        )
+        _cam_p_check = st.session_state.get("idv_cam_p_doccheck", {})
+        # ok=True (correct doc or skipped) — allow through; ok=False — blocked
+        if _cam_p_check.get("ok", True) or _cam_p_check.get("skipped", False):
+            pan_file = _DocumentCapture(
+                st.session_state["idv_cam_p_bytes"], "pan_camera.jpg"
+            )
     if selfie_bytes is None and st.session_state.get("idv_cam_s_bytes"):
-        selfie_bytes = st.session_state["idv_cam_s_bytes"]
-        selfie_name = "camera_selfie.jpg"
+        _cam_s_check = st.session_state.get("idv_cam_s_doccheck", {})
+        # ok=True (correct doc or skipped) — allow through; ok=False — blocked
+        if _cam_s_check.get("ok", True) or _cam_s_check.get("skipped", False):
+            selfie_bytes = st.session_state["idv_cam_s_bytes"]
+            selfie_name = "camera_selfie.jpg"
 
     # ── Parse & validate documents ─────────────────────────────────────────
     aadhaar_qr: Dict[str, Any] = {}
@@ -870,10 +1486,15 @@ def _page_identity_verification() -> None:
             else:
                 st.success("QR decoded successfully")
             st.markdown(
-                f"**Name:** {aadhaar_qr.get('name', '—')}  \n"
+                f"**UID:** {aadhaar_qr.get('uid', '—')}  \n"
+                f"**Full Name:** {aadhaar_qr.get('name', '—')}  \n"
                 f"**DOB/YOB:** {aadhaar_qr.get('dob') or aadhaar_qr.get('yob', '—')}  \n"
                 f"**Gender:** {aadhaar_qr.get('gender', '—')}  \n"
-                f"**District:** {aadhaar_qr.get('dist', '—')}, {aadhaar_qr.get('state', '—')}"
+                f"**Care of (C/O):** {aadhaar_qr.get('co', '—')}  \n"
+                f"**VTC:** {aadhaar_qr.get('vtc', '—')}  \n"
+                f"**District:** {aadhaar_qr.get('dist', '—')}  \n"
+                f"**State:** {aadhaar_qr.get('state', '—')}  \n"
+                f"**PIN Code:** {aadhaar_qr.get('pc', '—')}"
             )
             st.caption("Aadhaar looks good")
         elif aadhaar_qr.get("qr_type") == "secure":
@@ -892,6 +1513,11 @@ def _page_identity_verification() -> None:
                 st.warning(f"PAN read: `{pan_data['pan_number']}` — {pan_validation.get('error', '')}")
         if pan_data.get("full_name") or pan_data.get("name"):
             st.markdown(f"**Full name on PAN:** {pan_data.get('full_name') or pan_data.get('name')}")
+        if pan_data.get("father_name"):
+            st.markdown(
+                f"**Care of (typically Father or Husband's name): S/O:** "
+                f"{pan_data['father_name']}"
+            )
         if pan_data.get("date_of_birth"):
             st.markdown(f"**Date of birth:** {pan_data['date_of_birth']}")
         elif any(pan_data.get(field) for field in ("full_name", "father_name", "date_of_birth")):
@@ -1178,6 +1804,14 @@ def _page_identity_verification() -> None:
             st.session_state["idv_face_extra_identity"] = extra_identity
             st.session_state["idv_face_pan_bytes"] = pan_file.getvalue() if pan_file else None
             st.session_state["idv_face_pan_name"] = getattr(pan_file, "name", "pan_card.jpg") if pan_file else ""
+            # Retrieve the already-computed signature crop from the cached session key.
+            # If the pan_file size matches a cached crop, reuse it; otherwise run the crop now.
+            _pan_sig_key = f"_idv_pan_sig_v3_{pan_file.size}" if pan_file else None
+            st.session_state["idv_face_pan_signature_bytes"] = (
+                st.session_state.get(_pan_sig_key)
+                if _pan_sig_key
+                else None
+            )
             st.session_state["idv_face_pan_data"] = {
                 key: pan_data.get(key)
                 for key in (
@@ -1372,6 +2006,7 @@ def _page_identity_verification() -> None:
 
                             _s_pan_name = st.session_state.get("idv_face_pan_name", "")
                             _s_pan_bytes = st.session_state.get("idv_face_pan_bytes")
+                            _s_pan_signature_bytes = st.session_state.get("idv_face_pan_signature_bytes")
 
                             saved = save_identity_check(
                                 check_type="face_match",
@@ -1385,6 +2020,7 @@ def _page_identity_verification() -> None:
                                 selfie_bytes=_s_selfie_bytes,
                                 pan_filename=_s_pan_name,
                                 pan_bytes=_s_pan_bytes,
+                                pan_signature_bytes=_s_pan_signature_bytes,
                             )
                             if saved:
                                 st.session_state["idv_face_saved"] = True

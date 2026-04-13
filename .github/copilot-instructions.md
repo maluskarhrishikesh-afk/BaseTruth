@@ -61,8 +61,9 @@ These rules exist because they have caused bugs in the past. **Do not violate th
 | `src/basetruth/api.py` | FastAPI routes + Video KYC WebSocket |
 | `src/basetruth/kyc/liveness.py` | Liveness challenge logic (`analyze_challenge`, `extract_features`) |
 | `src/basetruth/vision/face.py` | Face detection + `compare_faces()` + `_draw_face()` |
-| `src/basetruth/store.py` | All PostgreSQL + MinIO read/write functions |
+| `src/basetruth/store.py` | All PostgreSQL + MinIO read/write functions; `save_scan_to_db` handles both OCR (structured_summary) and Bulk (\_document\_extraction key present) paths |
 | `src/basetruth/db.py` | SQLAlchemy engine, models, `init_db()`, `db_available()` |
+| `src/basetruth/integrations/document_extract.py` | Gemma4-powered field extraction for bulk scans (payslips, marksheets, offer letters, etc.); called per-document in `bulk.py` after forensics; result stored in `document_extractions` |
 | `docs/ARCHITECTURE.md` | Architecture reference — keep updated |
 | `docs/FUNCTIONALITY.md` | Screen behaviour reference — keep updated |
 

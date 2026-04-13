@@ -15,45 +15,40 @@ Text extraction strategy (in priority order)
 3. pypdf
    - Pure Python fallback if pymupdf is not installed
    - Acceptable for text PDFs, returns empty for image-only PDFs
-4. pytesseract + pdf2image (Poppler)
-   - OCR tier for image-only PDFs (scanned Aadhaar, PAN cards)
-   - Requires: pip install pytesseract pdf2image
-   - Also requires: Tesseract OCR binary (tesseract.exe)
-     Download: https://github.com/UB-Mannheim/tesseract/wiki
-   - Also requires: Poppler binaries on PATH for pdf2image
-     Download: https://github.com/oschwartz10612/poppler-windows/releases
-   - Gives full field extraction for identity documents
+4. PaddleOCR via PyMuPDF rendering
+    - OCR tier for image-only PDFs (scanned Aadhaar, PAN cards)
+    - Uses the same PaddleOCR runtime as the marksheet pipeline
 5. Empty string
    - Returned when all extraction methods fail; metadata forensics still run
 
 How to get full scan for Aadhaar / PAN cards on Windows
 ---------------------------------------------------------
-  Option A (recommended): Install ImageMagick
-    https://imagemagick.org/script/download.php#windows
-    After install, restart the terminal and retry.
+    Option A (recommended): Install ImageMagick
+        https://imagemagick.org/script/download.php#windows
+        After install, restart the terminal and retry.
 
-  Option B: Install Tesseract + Poppler
-    1. Tesseract: https://github.com/UB-Mannheim/tesseract/wiki
-       Add install dir to system PATH (e.g. C:\\Program Files\\Tesseract-OCR)
-    2. Poppler:   https://github.com/oschwartz10612/poppler-windows/releases
-       Add poppler/bin to system PATH
-    3. pip install pytesseract pdf2image
+    Option B: Ensure PaddleOCR and PaddlePaddle are installed in the BaseTruth environment.
 
 Public API
 ----------
   extract_pdf_metadata(path)               -> Dict
   extract_text_from_pdf(path)              -> str
-  extract_text_via_ocr(path)               -> Tuple[str, str]  (text, engine)
-  build_liteparse_json_from_text(text, src) -> Dict
+    extract_text_via_ocr(path)               -> Tuple[str, str]  (text, engine)
+    ocr_image_bytes_directly(image_bytes)    -> Tuple[str, str]  (text, engine)
+    build_liteparse_json_from_text(text, src) -> Dict
 """
 
-import hashlib
 import logging
+import hashlib
+import io
+import os
 import re
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
 log = logging.getLogger(__name__)
+
+_paddle_ocr_engine: Any = None
 
 
 def _sha256_file(path: Path) -> str:
@@ -177,59 +172,35 @@ def extract_text_from_pdf(path: Path) -> str:
 
 def extract_text_via_ocr(path: Path) -> Tuple[str, str]:
     """
-    OCR a PDF using pytesseract + pdf2image (Poppler) to extract text from
-    image-only pages (scanned Aadhaar card, PAN card, photo-based PDFs).
+    OCR a PDF using PaddleOCR to extract text from image-only pages
+    (scanned Aadhaar card, PAN card, photo-based PDFs).
 
     Unlike extract_text_from_pdf(), this function can read PDF pages that contain
     no embedded text at all -- it rasterises each page to an image, then OCRs it.
 
-    Requirements (all optional -- function returns ('', 'unavailable') if missing):
-      pip install pytesseract pdf2image
-      Tesseract OCR binary: https://github.com/UB-Mannheim/tesseract/wiki
-      Poppler binaries:     https://github.com/oschwartz10612/poppler-windows/releases
-
     Returns
     -------
     (text, engine) where engine is one of:
-      'pytesseract'  -- OCR succeeded
-      'unavailable'  -- pytesseract or Tesseract binary not installed
+      'paddleocr'    -- OCR succeeded or ran but found no usable text
+      'unavailable'  -- PaddleOCR is not installed
       'error'        -- unexpected exception during OCR
     """
-    # --- pytesseract + pdf2image (Poppler) ---
     try:
-        import pytesseract  # type: ignore
-        from pdf2image import convert_from_path  # type: ignore
+        import fitz  # type: ignore
+        from PIL import Image  # type: ignore
 
-        # Convert PDF pages to PIL images.  Poppler must be on PATH.
-        images = convert_from_path(str(path), dpi=300)
+        doc = fitz.open(str(path))
         page_texts: list[str] = []
-
-        try:
-            from basetruth.analysis.preprocess import preprocess_pil_for_ocr as _preprocess
-        except Exception:  # noqa: BLE001
-            def _preprocess(im):  # type: ignore[misc]
-                return im
-
-        for img in images:
-            preprocessed = _preprocess(img)
-            # Try PaddleOCR first
-            paddle_text, paddle_conf = _ocr_with_paddle(preprocessed)
-            if paddle_text and paddle_conf >= 0.70:
+        for page in doc:
+            pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0))
+            img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+            paddle_text, _paddle_conf = _ocr_with_paddle(img)
+            if paddle_text.strip():
                 page_texts.append(paddle_text)
-                continue
-            # Fall back to pytesseract
-            try:
-                text = pytesseract.image_to_string(preprocessed, lang="eng+hin")
-            except pytesseract.TesseractError:
-                text = pytesseract.image_to_string(preprocessed, lang="eng")
-            page_texts.append(paddle_text or text or "")
-        return "\n".join(page_texts), "pytesseract"
+        doc.close()
+        return "\n".join(page_texts), "paddleocr"
 
     except ImportError:
-        # pytesseract or pdf2image not installed.
-        return "", "unavailable"
-    except pytesseract.TesseractNotFoundError:  # type: ignore[name-defined]
-        # Python packages present but Tesseract binary not on PATH.
         return "", "unavailable"
     except Exception:  # noqa: BLE001
         return "", "error"
@@ -299,7 +270,7 @@ def is_image_file(path: Path) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# PaddleOCR — better accuracy than Tesseract for ID cards
+# PaddleOCR — shared OCR engine for scanned images and PDFs
 # ---------------------------------------------------------------------------
 
 def _ocr_with_paddle(img_pil: Any) -> Tuple[str, float]:
@@ -308,27 +279,40 @@ def _ocr_with_paddle(img_pil: Any) -> Tuple[str, float]:
     Returns (text, mean_confidence) where confidence is 0.0–1.0.
     Returns ('', 0.0) if PaddleOCR is not installed.
     """
+    global _paddle_ocr_engine
     try:
         from paddleocr import PaddleOCR  # type: ignore
         import numpy as np  # type: ignore
 
-        ocr_engine = PaddleOCR(use_angle_cls=True, lang="en", show_log=False)
+        os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+        if _paddle_ocr_engine is None:
+            _paddle_ocr_engine = PaddleOCR(
+                lang="en",
+                ocr_version="PP-OCRv4",
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_textline_orientation=False,
+                enable_mkldnn=False,
+            )
+
         img_arr = np.array(img_pil.convert("RGB"))
-        result = ocr_engine.ocr(img_arr, cls=True)
+        result = _paddle_ocr_engine.predict(img_arr) or []
 
         texts: list[str] = []
         confidences: list[float] = []
 
-        if result:
-            for page in result:
-                if page:
-                    for line in page:
-                        # line is [[box], [text, confidence]]
-                        if line and len(line) >= 2:
-                            text_part = line[1]
-                            if isinstance(text_part, (list, tuple)) and len(text_part) >= 2:
-                                texts.append(str(text_part[0]))
-                                confidences.append(float(text_part[1]))
+        for page in result:
+            if isinstance(page, dict):
+                rec_texts = page.get("rec_texts") or []
+                rec_scores = page.get("rec_scores") or []
+                for index, text in enumerate(rec_texts):
+                    clean_text = str(text or "").strip()
+                    if not clean_text:
+                        continue
+                    texts.append(clean_text)
+                    if index < len(rec_scores):
+                        confidences.append(float(rec_scores[index]))
+                continue
 
         combined_text = "\n".join(texts)
         mean_conf = float(sum(confidences) / len(confidences)) if confidences else 0.0
@@ -339,6 +323,46 @@ def _ocr_with_paddle(img_pil: Any) -> Tuple[str, float]:
     except Exception as exc:  # noqa: BLE001
         log.debug("PaddleOCR failed: %s", exc)
         return "", 0.0
+
+
+def _run_shared_paddle_ocr(pil_img: Any, source_label: str) -> Tuple[str, str]:
+    """Run the shared PaddleOCR pipeline on one prepared image.
+
+    This keeps image-file OCR and uploaded-image OCR on the same engine and
+    preprocessing path, so operators see consistent OCR behaviour everywhere.
+    """
+    paddle_text, paddle_conf = _ocr_with_paddle(pil_img)
+    if paddle_text:
+        log.debug(
+            "PaddleOCR confidence=%.2f coherence=%.2f for %s",
+            paddle_conf,
+            _ocr_confidence_score(paddle_text),
+            source_label,
+        )
+    return paddle_text, "paddleocr"
+
+
+def ocr_image_bytes_directly(image_bytes: bytes) -> Tuple[str, str]:
+    """OCR uploaded image bytes using the shared PaddleOCR pipeline.
+
+    PAN-card extraction uses this helper so UI uploads follow the same OCR path
+    as saved image files and scanned PDFs.
+    """
+    from PIL import Image as _PILImage  # type: ignore
+
+    try:
+        from basetruth.analysis.preprocess import preprocess_pil_for_ocr
+
+        with _PILImage.open(io.BytesIO(image_bytes)) as raw_img:
+            pil_img = preprocess_pil_for_ocr(raw_img.copy())
+    except Exception:  # noqa: BLE001
+        try:
+            with _PILImage.open(io.BytesIO(image_bytes)) as raw_img:
+                pil_img = raw_img.copy()
+        except Exception:  # noqa: BLE001
+            return "", "error"
+
+    return _run_shared_paddle_ocr(pil_img, "memory-image")
 
 
 # ---------------------------------------------------------------------------
@@ -387,31 +411,25 @@ def _ocr_confidence_score(text: str) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Enhanced direct image OCR — PaddleOCR → Tesseract → VLM fallback
+# Direct image OCR — PaddleOCR only
 # ---------------------------------------------------------------------------
 
 def ocr_image_directly(path: Path) -> Tuple[str, str]:
-    """OCR a raw image file using a best-available engine with VLM fallback.
+    """OCR a raw image file using PaddleOCR only.
 
-    Pipeline (in order):
+    Pipeline:
       1. Preprocessing  — deskew + perspective correction + contrast enhance
-      2. PaddleOCR      — better than Tesseract for ID card fonts
-      3. pytesseract    — used if PaddleOCR unavailable OR confidence low
-      4. VLM (Gemma)    — called when no PAN/Aadhaar regex was found in OCR output
+      2. PaddleOCR      — the only OCR engine used in BaseTruth
 
     Returns
     -------
     (text, engine) where engine is one of:
-      'paddleocr'      -- PaddleOCR succeeded with good confidence
-      'pytesseract'    -- Tesseract OCR succeeded
-      'gemma_local'    -- Gemma local model used as fallback
-      'gemini_api'     -- Gemini API used as fallback
-      'unavailable'    -- no OCR engine found
+      'paddleocr'      -- PaddleOCR ran (text may still be empty if the scan is unreadable)
+      'unavailable'    -- PaddleOCR is not available
       'error'          -- unexpected exception
     """
     from PIL import Image as _PILImage  # type: ignore
 
-    # --- Step 1: Preprocessing ---
     try:
         from basetruth.analysis.preprocess import preprocess_pil_for_ocr
         with _PILImage.open(str(path)) as raw_img:
@@ -423,67 +441,7 @@ def ocr_image_directly(path: Path) -> Tuple[str, str]:
         except Exception:  # noqa: BLE001
             return "", "error"
 
-    # --- Step 2: PaddleOCR (best for ID documents) ---
-    paddle_text, paddle_conf = _ocr_with_paddle(pil_img)
-    # Use PaddleOCR result only when BOTH mean character confidence AND text
-    # coherence are acceptable.  A high per-character confidence does not
-    # guarantee good layout extraction for complex documents (multi-column
-    # tables, mixed Hindi/English, stamps, etc.). The coherence gate lets
-    # garbled results fall through to the VLM fallback below.
-    if paddle_text and paddle_conf >= 0.70 and _ocr_confidence_score(paddle_text) > 0.35:
-        log.debug(
-            "PaddleOCR confidence=%.2f coherence=%.2f for %s — using paddle result",
-            paddle_conf, _ocr_confidence_score(paddle_text), path.name,
-        )
-        return paddle_text, "paddleocr"
-
-    # --- Step 3: pytesseract (always available fallback) ---
-    tess_text = ""
-    try:
-        import pytesseract  # type: ignore
-
-        try:
-            tess_text = pytesseract.image_to_string(pil_img, lang="eng+hin") or ""
-        except pytesseract.TesseractError:
-            tess_text = pytesseract.image_to_string(pil_img, lang="eng") or ""
-
-        # Use Tesseract if it found a PAN/Aadhaar, or if PaddleOCR is unavailable
-        if tess_text and (
-            not paddle_text
-            or _ocr_confidence_score(tess_text) > _ocr_confidence_score(paddle_text)
-        ):
-            combined = tess_text
-        else:
-            combined = paddle_text or tess_text
-
-    except ImportError:
-        combined = paddle_text
-    except Exception as exc:  # noqa: BLE001
-        log.debug("pytesseract failed for %s: %s", path.name, exc)
-        combined = paddle_text
-
-    # --- Step 4: VLM fallback when no identity fields detected ---
-    if not combined or _ocr_confidence_score(combined) < 0.4:
-        log.debug(
-            "OCR confidence low for %s — trying VLM fallback", path.name
-        )
-        try:
-            from basetruth.integrations.gemma_vlm import extract_text_with_vlm
-            vlm_text, vlm_engine = extract_text_with_vlm(path)
-            if vlm_text:
-                log.debug(
-                    "VLM (%s) extracted %d chars for %s",
-                    vlm_engine, len(vlm_text), path.name,
-                )
-                return vlm_text, vlm_engine
-        except Exception as exc:  # noqa: BLE001
-            log.debug("VLM fallback failed for %s: %s", path.name, exc)
-
-    if combined:
-        engine = "paddleocr" if paddle_text and not tess_text else "pytesseract"
-        return combined, engine
-
-    return "", "unavailable"
+    return _run_shared_paddle_ocr(pil_img, path.name)
 
 
 def extract_image_file_metadata(path: Path) -> Dict[str, Any]:

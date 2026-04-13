@@ -22,7 +22,7 @@ from basetruth.ui.components import (
 _DB_TABLE_LABELS: dict[str, str] = {
     "entities": "Entities",
     "scans": "Scans",
-    "document_information": "Document Extractions",
+    "document_extractions": "Document Extractions",
     "identity_checks": "Identity Checks",
     "layered_analysis_entries": "Layered Analysis Entries",
     "cases": "Cases",
@@ -59,12 +59,14 @@ _TABLE_SCHEMA: dict[str, list[tuple[str, str, str]]] = {
         ("generated_at", "TIMESTAMPTZ", "Scan completion timestamp"),
         ("updated_at", "TIMESTAMPTZ", "Last update timestamp"),
     ],
-    "document_information": [
+    "document_extractions": [
         ("id", "SERIAL", "Primary key"),
         ("entity_id", "FK → entities.id", "Linked entity"),
-        ("scan_id", "FK → scans.id", "Linked scan"),
-        ("doc_type", "VARCHAR(100)", "Document type"),
-        ("extracted_data", "JSONB", "Structured extracted fields"),
+        ("scan_id", "FK → scans.id", "Linked scan (NULL for identity-verification extractions)"),
+        ("file_name", "VARCHAR(500)", "Uploaded filename used as the per-entity UPSERT key"),
+        ("document_type", "VARCHAR(100)", "Document type e.g. payslip, marksheet, pan_card, aadhaar"),
+        ("extracted_data", "JSONB", "Structured extracted fields from the document"),
+        ("source_screen", "VARCHAR(100)", "Screen that triggered extraction e.g. bulk_scan, identity_verification"),
         ("created_at", "TIMESTAMPTZ", "Insert timestamp"),
     ],
     "identity_checks": [
@@ -397,7 +399,7 @@ This screen gives you direct visibility into what is stored in the system.
         _INDIVIDUAL_TABLES: list[tuple[str, str]] = [
             ("Entities", "entities"),
             ("Scans", "scans"),
-            ("Document Extractions", "document_information"),
+            ("Document Extractions", "document_extractions"),
             ("Identity Checks", "identity_checks"),
             ("Layered Analysis Entries", "layered_analysis_entries"),
             ("Cases", "cases"),

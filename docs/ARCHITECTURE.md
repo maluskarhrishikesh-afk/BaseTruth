@@ -9,7 +9,7 @@ flowchart TD
   A[Input Document] --> B[PDF Metadata Inspector]
   A --> C[LiteParse Extraction]
   A --> IMG[Image File Branch]
-  IMG --> IMGOCR[Direct OCR pytesseract]
+  IMG --> IMGOCR[Direct OCR PaddleOCR]
   IMG --> ELA[ELA Error Level Analysis]
   IMG --> EXIF[EXIF Metadata Inspector]
   IMG --> NOISE[Noise Consistency Analysis]
@@ -59,6 +59,9 @@ flowchart TD
 - supports report review without requiring analysts to browse the filesystem manually
 - supports case-centric review by grouping related verification reports
 - separates clean operator workflows from auditor-facing explainability by using a dedicated Layered Analysis screen
+- Identity Verification screen runs Aadhaar QR decode, PAN OCR/Gemma4 extraction, and selfie document-type check concurrently via `concurrent.futures.ThreadPoolExecutor` — all three pipelines fire in parallel when multiple documents are uploaded at the same time; total wait equals the slowest pipeline, not the sequential sum
+- Bulk Scan runs one Gemma4 batch-classification call first, then dispatches each document's forensic scan plus field extraction to a separate worker process via `concurrent.futures.ProcessPoolExecutor`; total runtime is bounded by the slowest few documents instead of the full sequential batch
+- pre-flight document-type validation uses a lightweight Gemma4 classifier call (120 s timeout) before the expensive extraction pipelines; mismatched documents (e.g. Aadhaar card uploaded to PAN slot) are blocked with a red error banner when classifier confidence ≥ 0.65; Ollama unavailability or low confidence always allows the upload through to avoid blocking legitimate documents
 
 ### 1B. Connector Layer
 
@@ -71,7 +74,9 @@ flowchart TD
 
 - uses LiteParse when available for structure-preserving extraction
 - builds normalized label-value pairs and domain summaries
-- for raw image files: uses pytesseract OCR directly (no Poppler required) then feeds the same normalisation pipeline
+- for raw image files: uses PaddleOCR directly (no Poppler or Tesseract dependency) then feeds the same normalisation pipeline
+- for marksheets: always runs PaddleOCR for the OCR pass, writes a raw markdown artifact that preserves top-to-bottom row order plus approximate horizontal spacing, and validates printed totals generically against the visible subject rows without relying on SSC/HSC-specific prompt branches
+- Gemma4 document-extraction prompts and rule text are stored in `src/basetruth/integrations/document_extract_prompts.md` and loaded on demand by `document_extract.py` so prompt tuning stays separate from parser logic
 - is intentionally separate from fraud scoring so parsing can be reused elsewhere
 
 ### 3. Metadata Layer
@@ -167,11 +172,42 @@ A 11-layer forensic engine that runs automatically on every image or PDF scan at
 
 **Graceful degradation:** `_FORENSICS_AVAILABLE` flag prevents import errors when numpy/cv2/Pillow are absent.
 
-### 6.0 Legacy Image Forensics (`src/basetruth/analysis/image_forensics.py`)
+### 6.1 PDF Forensics Layer (`src/basetruth/analysis/pdf_forensics_detect.py`)
 
-An earlier 5-layer engine (EXIF, ELA, Noise, Timestamp, Risk Aggregation) retained for backward compatibility with existing Scan Document single-scan results. The new 11-layer engine replaces it in the Bulk Scan and save pipeline.
+A 11-layer forensic engine specifically designed for digitally-created structured PDFs (payslips, offer letters, bank statements, form16, etc.). Called by the Bulk Scan page when Gemma4 classifies an uploaded PDF as a structured/digital document (not a scanned image).
 
-### 6.1 Identity Verification Layer (`src/basetruth/vision/face.py`)
+**Public API:**
+- `run_pdf_forensics(pdf_path: str) -> Dict` — runs all 11 layers silently and returns the same `{scan_summary, layers}` shape as `run_forensics()` so the UI renders both engines identically.
+- `analyse_pdf(path: str, out_dir: str) -> Dict` — CLI-oriented orchestrator with console output; used by the standalone CLI tool.
+- `compute_score(result: dict, peer_result: dict | None) -> tuple[float, list[str]]` — scoring function; also used in two-file peer-comparison mode.
+
+**Forensic layers:**
+
+| Layer | Check | Signal |
+|---|---|---|
+| 1. Incremental Updates | %%EOF marker count — each additional EOF means the file was saved after creation | Strongest PDF tampering signal: 30 pts per update (max 45) |
+| 2. Metadata | Creator/Producer field fingerprinting — detects known PDF editing tools; date-gap analysis | 20 pts for editing tool; 10 pts per other flag |
+| 3. Font Consistency | Font embedding status; fonts that appear only on later pages (post-creation insertion) | 15 pts for post-creation fonts; 10 pts per other flag |
+| 4. Invisible Text | White or zero-size text spans — can hide original values under forged overlays | 25 pts |
+| 5. Suspicious Objects | JavaScript, embedded files, OpenAction, XFA forms, Launch actions | 40 pts for JS; 20 for embedded files; 15 for OpenAction; 12 for XFA |
+| 6. Content Consistency | Page count, sizes, blank pages, text-density variance | 12 pts per flag |
+| 7. Digital Signature | Signature field presence; coverage gaps (modified after signing) | 35 pts per coverage-gap flag |
+| 8. Page Render ELA | ELA on rasterized page 1 (detects pixel-level text replacement) | 20 pts if >5% suspicious blocks; 10 pts if >2% |
+| 9. Embedded Image Noise | Noise residual on images extracted from PDF streams | 10 pts if hotspot ratio >12% |
+| 10. File Entropy | Shannon entropy of raw PDF bytes | 8 pts if entropy < 7.0 bits/byte |
+| 11. Object/XRef Integrity | pikepdf object count vs. declared trailer size; ObjStm streams | 20 pts for mismatch; 8 pts per other flag |
+
+**Return structure:** Identical shape to `image_forensics_detect.py` — `scan_summary` + `layers` dict with `name`, `status`, `plain_english`, `metrics` per layer. The UI's `_render_forensics_detail()` renders both engines without modification.
+
+**Routing in Bulk Scan:**
+- Gemma4 confidence > 0.5 + `is_image_based = False` → `run_pdf_forensics()` (this engine)
+- Otherwise → `run_forensics_on_pdf()` (image engine rendering page 1)
+
+### 6.2 Legacy Image Forensics (`src/basetruth/analysis/image_forensics.py`)
+
+An earlier 5-layer engine (EXIF, ELA, Noise, Timestamp, Risk Aggregation) retained for backward compatibility with existing Scan Document single-scan results. The new 11-layer image engine and the PDF forensics engine replace it in the Bulk Scan pipeline.
+
+### 6.3 Identity Verification Layer (`src/basetruth/vision/face.py`)
 
 A standalone offline deep-learning engine dedicated to verifying the identity of individuals across multiple documents (e.g., Aadhaar card vs. Live Selfie) and running real-time liveness challenges over WebSocket.
 
@@ -181,6 +217,11 @@ A standalone offline deep-learning engine dedicated to verifying the identity of
 |---|---|---|
 | Docker / Python ≤ 3.12 | InsightFace (RetinaFace + ArcFace, ONNX) | Full identity embedding + face match |
 | Python 3.13+ (local dev) | **MediaPipe FaceLandmarker** | Liveness-only; face match skipped |
+
+The Docker image remains pinned to Python 3.12 because the production
+face-match stack still depends on InsightFace wheels that are not consistently
+published for Python 3.13 yet. Marksheet OCR now uses PaddleOCR in both Docker
+and local runs.
 
 | Component | Purpose |
 |---|---|
@@ -208,10 +249,13 @@ A standalone offline deep-learning engine dedicated to verifying the identity of
 |---|---|
 | `entities` | One row per verified person/organisation; searchable by name, PAN, Aadhaar, email, phone |
 | `scans` | One row per document scan; stores `report_json` (JSONB) + `pdf_report` (LargeBinary) + `layered_analysis_json` (JSONB, 11-layer forensics) + `approved` / `approved_by` / `approved_at` / `approval_comment` (HITL approval workflow) |
-| `document_information` | One row per saved scan; stores rich extracted JSON (document typing, extracted fields, parser context, authenticity checks, fraud signals) |
+| `document_extractions` | One row per document extraction; stores typed extracted fields (salary, marks, name, UID, etc.); `scan_id` is nullable (NULL for identity_verification rows); `file_name` stores the uploaded filename and is the per-entity UPSERT key; `source_screen` identifies which screen created the row (`scan_document`, `bulk_scan`, `identity_verification`). For bulk scans, the row is **always** written on save — deterministic OCR/layout parsers now run first for layout-heavy documents such as marksheets, while Gemma4 is kept as a normalisation/fallback layer when the OCR text is incomplete or the layout family is unknown. A forensics-summary stub (`_extraction_unavailable: true`) is still used when Ollama is offline and no deterministic parser can produce structured data. The `_has_gemma4_data` gate uses `bool(_bulk_ext)` not a key-count heuristic, so even all-null Gemma4 results are saved correctly. For identity_verification PAN card rows, `extracted_data` also includes `pan_signature_minio_key` (the MinIO object key for the cropped signature image) when signature extraction succeeds. |
 | `layered_analysis_entries` | One upserted row per `(entity, screen, section)` explainability snapshot; powers the Layered Analysis screen and final report |
 | `cases` | Case-management workflow record linked to an entity |
 | `case_notes` | Timestamped analyst notes on a case |
+
+**Local development fallback:**
+- When BaseTruth is started outside Docker and `DATABASE_URL` is not set in the shell, `src/basetruth/db.py` falls back to the Docker Compose PostgreSQL instance on `localhost:5432` using the default local credentials from `docker-compose.yml`.
 
 **`scans` approval state machine:**
 - `approved IS NULL` → Pending review (not visible in Document Intelligence)
@@ -287,7 +331,7 @@ The Identity Verification page (`pages/identity.py`) accepts documents in two mo
 
 | Tab | How it works |
 |---|---|
-| **📁 Upload Documents** | Three drag-and-drop uploaders — Aadhaar Card, PAN Card, Selfie. Aadhaar QR is decoded and Gemma4-assisted PAN extraction runs immediately on upload, with OCR fallback when needed; results are shown inline in the same column. |
+| **📁 Upload Documents** | Three drag-and-drop uploaders — Aadhaar Card, PAN Card, Selfie. Aadhaar QR is decoded and a single combined Gemma4 call extracts PAN fields (pan_number, full_name, father_name, date_of_birth) plus the signature bounding-box simultaneously, with OCR fallback when Ollama is offline; results — including "Care of (typically Father or Husband's name): S/O:" — are shown inline in the same column. |
 | **📷 Capture with Camera** | Per-document "Open Camera" buttons. Camera only opens on click. The native shutter button takes the photo. Photos are stored in session state and persist across re-renders. A tips banner guides the user to get a sharp, well-lit capture. |
 
 Camera captures are wrapped in a `_DocumentCapture` class that matches the `UploadedFile` API (`.size`, `.name`, `.getvalue()`) so all downstream processing is source-agnostic.
@@ -310,9 +354,13 @@ The function tries the following in order, stopping as soon as the QR code decod
 
 **PAN Card OCR (`_extract_pan_info`)**
 
-- Image resized to max **2 400 px wide** (raised from 1 200) and upscaled up to **2.5×** (raised from 1.5×) for small camera captures
-- Preprocessing variants: plain gray → denoised (`fastNlMeansDenoising`) → Otsu → CLAHE → sharpened → adaptive Gaussian threshold
-- Multiple Tesseract PSM modes tried; first one to return a valid PAN format wins
+- One **combined Gemma4 call** (`extract_pan_details_and_signature_with_ollama`) now returns both the PAN text fields (pan_number, full_name, father_name, date_of_birth) **and** the signature bounding-box in a single JSON response.  This eliminates the previous second Gemma4 round-trip that was needed for signature detection.
+- The extracted `sig_box` is forwarded to `_crop_pan_signature(precomputed_box=...)` so the signature crop can run entirely offline without a second Ollama request.
+- OCR fallback (`_extract_pan_info_ocr`) still runs after the Gemma4 call to fill any fields that Gemma4 left empty.
+- Image resized to max **2 400 px wide** (raised from 1 200) and upscaled up to **2.5×** (raised from 1.5×) for small camera captures.
+- Preprocessing variants: plain gray → denoised (`fastNlMeansDenoising`) → Otsu → CLAHE → sharpened → adaptive Gaussian threshold.
+- Multiple Tesseract PSM modes tried; first one to return a valid PAN format wins.
+- The cropped signature is resized to ≤ **300 px wide** before being stored or displayed, matching realistic human-signature proportions.
 
 **PDF report** — `render_identity_check_pdf()` embeds the ID document image and selfie as a Photo Evidence section alongside the match verdict and similarity scores.
 

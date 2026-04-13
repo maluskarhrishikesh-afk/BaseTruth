@@ -17,6 +17,11 @@ DEFAULT_OLLAMA_BASES = (
 OLLAMA_CONNECT_TIMEOUT_SEC = 5
 OLLAMA_READ_TIMEOUT_SEC = 600
 
+# Shorter timeout used only for the quick document-type classification call.
+# 45 s is enough for a small yes/no classification; the full extraction calls
+# keep their 600 s timeout because they return much more data.
+_DOC_CLASSIFY_READ_TIMEOUT_SEC = 45
+
 _EMPTY_FIELD_MARKERS = {"", "null", "none", "n/a", "na", "unknown", "not visible"}
 _PAN_FIELD_NAMES = ("pan_number", "pan", "pan_no", "pan_card_number", "panNumber")
 _NAME_FIELD_NAMES = ("full_name", "name", "cardholder_name", "holder_name", "applicant_name")
@@ -371,6 +376,315 @@ def extract_pan_details_with_ollama(
     parsed["base_url"] = resolved_base or ""
     parsed["raw_response"] = content
     return parsed
+
+
+# ---------------------------------------------------------------------------
+# Combined PAN extraction + signature bounding-box in one Gemma4 call
+# ---------------------------------------------------------------------------
+
+# Combined prompt asks Gemma4 to return both the PAN card fields AND the
+# normalised signature bounding box in a single JSON object.  Merging the two
+# previously separate Gemma4 calls (one for field extraction, one for the
+# signature crop region) into one reduces latency by ~50 % on PAN card upload.
+
+PAN_COMBINED_EXTRACTION_SYSTEM_PROMPT = (
+    "You extract structured fields and document layout information from Indian PAN card "
+    "images. Return strict JSON only. Do not add commentary or markdown."
+)
+
+PAN_COMBINED_EXTRACTION_PROMPT = """
+Read this Indian PAN card image and return a JSON object with exactly these keys:
+{
+  "pan_number": "",
+  "full_name": "",
+  "father_name": "",
+  "date_of_birth": "",
+  "signature_box": {
+    "x1": 0.0,
+    "y1": 0.0,
+    "x2": 0.0,
+    "y2": 0.0,
+    "confidence": 0.0
+  }
+}
+
+Rules for card text fields:
+- Preserve card text exactly as printed — letter by letter, no substitution.
+- CRITICAL: Copy full_name and father_name character-by-character.
+  Never replace visually similar characters ('Hr' → 'Har', 'H' → 'N', etc.).
+  Indian names may have unusual sequences — do not correct them.
+- PAN number: 5 letters, 4 digits, 1 letter format if visible.
+- Do not guess missing values; return empty string when a field is not visible.
+
+Rules for signature_box:
+- Locate the handwritten applicant signature -- cursive/handwritten ink strokes
+  appearing below the PAN number and above or beside the printed "Signature" label.
+- Return the normalised bounding box as fractions of the FULL image dimensions (0.0-1.0):
+  x1=left edge, y1=top edge, x2=right edge, y2=bottom edge.
+- x1 < x2 and y1 < y2.  All values must be between 0.0 and 1.0.
+- IMPORTANT: Signatures often start very close to the left margin.
+  Make sure x1 captures the very beginning of the LEFTMOST ink stroke.
+  When in doubt, bias x1 slightly to the left -- it is better to include
+  a few background pixels than to clip the start of the signature.
+- Use at most 3% padding around the strokes (tight fit).
+- If the signature is not visible set all four coordinates and confidence to 0.0.
+
+Output JSON only -- no extra text.
+""".strip()
+
+
+def extract_pan_details_and_signature_with_ollama(
+    image_bytes: bytes,
+    *,
+    model: str | None = None,
+    base_url: str | None = None,
+) -> Dict[str, Any]:
+    """Extract PAN card text fields AND the signature bounding-box in one Gemma4 call.
+
+    This replaces two separate Gemma4 calls (one for field extraction via
+    ``extract_pan_details_with_ollama`` and one for signature detection inside
+    ``_crop_pan_signature``) with a single vision call that returns both pieces
+    of information in one JSON response.
+
+    Returns a dict with the same PAN field keys as ``parse_pan_response_content``
+    PLUS a ``sig_box`` key containing ``{x1, y1, x2, y2}`` normalised fractions
+    when the signature region was confidently located.  Returns ``{}`` when
+    Ollama is unreachable or the response is unparseable.
+    """
+    if not image_bytes:
+        return {}
+
+    resolved_base = base_url
+    resolved_model = model
+    if not resolved_base:
+        resolved_base, models, _ = probe_ollama()
+        if not resolved_base:
+            return {}
+        resolved_model = resolved_model or select_ollama_model(models)
+    elif not resolved_model:
+        resolved_model = DEFAULT_OLLAMA_MODEL
+
+    payload = {
+        "model": resolved_model,
+        "messages": [
+            {"role": "system", "content": PAN_COMBINED_EXTRACTION_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": PAN_COMBINED_EXTRACTION_PROMPT,
+                "images": [base64.b64encode(image_bytes).decode("ascii")],
+            },
+        ],
+        "stream": False,
+        "options": {"temperature": 0},
+    }
+
+    try:
+        response = requests.post(
+            f"{resolved_base}/api/chat",
+            json=payload,
+            timeout=(OLLAMA_CONNECT_TIMEOUT_SEC, OLLAMA_READ_TIMEOUT_SEC),
+        )  # nosemgrep: basetruth-ssrf
+        response.raise_for_status()
+    except requests.RequestException:
+        return {}
+
+    content = str(response.json().get("message", {}).get("content", "")).strip()
+
+    # Parse PAN card text fields using the shared parser
+    parsed = parse_pan_response_content(content)
+
+    # Also extract the signature_box from the raw response JSON
+    json_text = _extract_json_object(content)
+    if json_text:
+        try:
+            raw_data = json.loads(json_text)
+            sig_box_raw = raw_data.get("signature_box", {})
+            if isinstance(sig_box_raw, dict):
+                # Parse and validate bounding-box coordinates
+                x1 = float(sig_box_raw.get("x1", 0))
+                y1 = float(sig_box_raw.get("y1", 0))
+                x2 = float(sig_box_raw.get("x2", 0))
+                y2 = float(sig_box_raw.get("y2", 0))
+                width_f = x2 - x1
+                height_f = y2 - y1
+                # Accept the box only when it is in-range, non-degenerate, and
+                # not suspiciously large (full-card-spanning bbox is noise)
+                if (
+                    0 <= x1 < x2 <= 1
+                    and 0 <= y1 < y2 <= 1
+                    and width_f >= 0.03
+                    and height_f >= 0.02
+                    and width_f <= 0.7
+                    and height_f <= 0.5
+                ):
+                    parsed["sig_box"] = {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass  # sig_box is optional — fall through to Gemma4-free crop path
+
+    if not parsed:
+        return {}
+
+    parsed["engine"] = "gemma4_ollama"
+    parsed["model"] = resolved_model or DEFAULT_OLLAMA_MODEL
+    parsed["base_url"] = resolved_base or ""
+    parsed["raw_response"] = content
+    return parsed
+
+
+# ---------------------------------------------------------------------------
+# Fast document-type classifier — used as a pre-flight check before extraction
+# ---------------------------------------------------------------------------
+
+# This short, focused prompt only asks "what is this document?" so Gemma4 can
+# answer quickly.  It is intentionally much smaller than the full extraction
+# prompts so the round-trip is fast (seconds, not tens of seconds).
+DOC_CLASSIFY_SYSTEM_PROMPT = (
+    "You are a document type classifier for Indian government and financial documents. "
+    "Return strict JSON only. Do not add commentary or markdown."
+)
+
+DOC_CLASSIFY_PROMPT = """\
+Look at this image and identify what type of document it is.
+
+Return ONLY a JSON object with these three keys:
+{
+  "document_type": "<see allowed values below>",
+  "confidence": <0.0–1.0>,
+  "reason": "<one short sentence explaining your answer>"
+}
+
+Allowed values for document_type:
+- "aadhaar_card"      → Indian Aadhaar identity card (has a printed card layout with
+                         "AADHAAR" or UIDAI branding, 12-digit UID number, QR code.)
+- "pan_card"          → Indian PAN card (has a printed card layout with
+                         "INCOME TAX DEPARTMENT" text, a 10-character PAN like ABCDE1234F.)
+- "photograph_selfie" → A PLAIN portrait or selfie photo of a person's face with NO card
+                         layout, NO printed government text, NO logos, NO card border.
+                         IMPORTANT: An Aadhaar or PAN card that happens to have a
+                         person's photo printed on it is still "aadhaar_card" / "pan_card",
+                         NOT "photograph_selfie".
+- "other"             → Anything else (payslip, bank statement, utility bill, etc.)
+
+Key rule: if the image looks like a government-issued identity card (even if a face
+photo is visible on it), always use "aadhaar_card" or "pan_card". Only use
+"photograph_selfie" for a standalone photo that is NOT an ID card.
+Use "other" when the image does not clearly match one of the three specific types above.
+Output JSON only — no extra text.\
+"""
+
+
+def classify_document_type_with_ollama(
+    image_bytes: bytes,
+    *,
+    model: str | None = None,
+    base_url: str | None = None,
+) -> Dict[str, Any]:
+    """Ask Gemma4 what type of document an image is.
+
+    This is a lightweight, fast call used as a pre-flight check before running
+    the full QR decode or OCR extraction.  It catches the most common user
+    mistake: uploading a document into the wrong slot (e.g. a PAN card in the
+    Aadhaar section).
+
+    Uses a shorter read timeout (_DOC_CLASSIFY_READ_TIMEOUT_SEC = 45 s) than
+    full extraction calls (600 s) because the response is tiny.
+
+    Parameters
+    ----------
+    image_bytes : raw bytes of the image to classify.
+    model / base_url : override the auto-detected Ollama endpoint when needed.
+
+    Returns
+    -------
+    Dict with keys:
+        ``available``     — True when Ollama was reachable; False otherwise.
+        ``document_type`` — one of "aadhaar_card", "pan_card",
+                            "photograph_selfie", or "other".
+        ``confidence``    — float 0.0–1.0 (how certain Gemma4 is).
+        ``reason``        — one-sentence plain-English explanation.
+
+    Returns ``{"available": False}`` when Ollama is completely unreachable so
+    callers can gracefully skip the check rather than blocking the upload.
+    """
+    if not image_bytes:
+        return {}
+
+    resolved_base = base_url
+    resolved_model = model
+    if not resolved_base:
+        resolved_base, models, _ = probe_ollama()
+        if not resolved_base:
+            # Ollama is not running — signal to caller that check was skipped
+            return {"available": False}
+        resolved_model = resolved_model or select_ollama_model(models)
+    elif not resolved_model:
+        resolved_model = DEFAULT_OLLAMA_MODEL
+
+    payload = {
+        "model": resolved_model,
+        "messages": [
+            {"role": "system", "content": DOC_CLASSIFY_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": DOC_CLASSIFY_PROMPT,
+                "images": [base64.b64encode(image_bytes).decode("ascii")],
+            },
+        ],
+        "stream": False,
+        "options": {"temperature": 0},
+    }
+
+    try:
+        response = requests.post(
+            f"{resolved_base}/api/chat",
+            json=payload,
+            # Use the shorter timeout — this is a quick yes/no classification
+            timeout=(OLLAMA_CONNECT_TIMEOUT_SEC, _DOC_CLASSIFY_READ_TIMEOUT_SEC),
+        )  # nosemgrep: basetruth-ssrf
+        response.raise_for_status()
+    except requests.RequestException:
+        return {"available": False}
+
+    content = str(response.json().get("message", {}).get("content", "")).strip()
+    json_text = _extract_json_object(content)
+    if not json_text:
+        # Could not parse the response — treat as inconclusive
+        return {
+            "available": True,
+            "document_type": "other",
+            "confidence": 0.0,
+            "reason": "Could not parse classification response.",
+        }
+
+    try:
+        result = json.loads(json_text)
+    except json.JSONDecodeError:
+        return {
+            "available": True,
+            "document_type": "other",
+            "confidence": 0.0,
+            "reason": "Could not parse classification response.",
+        }
+
+    if not isinstance(result, dict):
+        return {
+            "available": True,
+            "document_type": "other",
+            "confidence": 0.0,
+            "reason": "Unexpected response format.",
+        }
+
+    # Pull out the three fields; clamp confidence to the valid 0–1 range
+    doc_type   = str(result.get("document_type", "other")).lower().strip()
+    confidence = max(0.0, min(1.0, float(result.get("confidence", 0.0))))
+    reason     = str(result.get("reason", "")).strip()
+
+    return {
+        "available":     True,
+        "document_type": doc_type,
+        "confidence":    confidence,
+        "reason":        reason,
+    }
 
 
 # ---------------------------------------------------------------------------

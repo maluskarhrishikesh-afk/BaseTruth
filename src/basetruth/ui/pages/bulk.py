@@ -1,13 +1,27 @@
 ﻿"""Bulk scan page — forensics-only, no OCR pipeline.
 
-Each uploaded document is analysed through the 11-layer forensic engine
-(image_forensics_detect.py). Results are shown immediately after scanning
-and saved to the database on request.
+Each uploaded document is first classified by Gemma4 (via Ollama) to determine
+its type and whether it is a scanned image or a digitally-created PDF. Then:
+
+- Image files (.jpg, .png, …) and scanned PDFs:
+    Analysed by the 11-layer image forensic engine (image_forensics_detect.py).
+
+- Structured/digital PDFs (payslips, offer letters, bank statements, etc.):
+    Analysed by the 11-layer PDF forensic engine (pdf_forensics_detect.py)
+    which applies incremental-update detection, metadata analysis, font
+    consistency checking, hidden-text detection, suspicious-object detection,
+    content structure analysis, digital-signature integrity, page-render ELA,
+    embedded-image noise, file entropy, and object/xref integrity.
+
+Results are shown immediately after scanning and saved to the database on request.
 """
 from __future__ import annotations
 
+import concurrent.futures as _cf
 import hashlib
 import json
+import multiprocessing as _mp
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -121,6 +135,98 @@ def _cleanup_bulk_temp_dir(temp_dir_str: str) -> None:
     shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def _resolve_bulk_doc_type(path: Path, classification: Dict[str, Any]) -> str:
+    """Choose the best document type label for one bulk-uploaded file.
+
+    Gemma4 classification is preferred when confidence is good enough. When the
+    model is unavailable or uncertain, we fall back to filename heuristics so the
+    rest of the pipeline can continue without blocking the operator.
+    """
+    ai_doc_type = str(classification.get("document_type") or "").strip()
+    confidence = float(classification.get("confidence") or 0.0)
+    if ai_doc_type and ai_doc_type != "unknown" and confidence > 0.4:
+        return ai_doc_type
+    return _guess_doc_type(path.name)
+
+
+def _process_bulk_document(path_str: str, classification: Dict[str, Any]) -> Dict[str, Any]:
+    """Run one document's forensics and extraction inside a worker process.
+
+    Keeping each document in a separate worker process prevents heavy OCR/CV
+    libraries from sharing mutable state across files and lets multiple uploads
+    run at the same time after the batch classification step finishes.
+    """
+    path = Path(path_str)
+    final_doc_type = _resolve_bulk_doc_type(path, classification)
+    is_image_based = bool(classification.get("is_image_based", True))
+    classify_confidence = float(classification.get("confidence") or 0.0)
+
+    try:
+        from basetruth.analysis.image_forensics_detect import (  # noqa: PLC0415
+            run_forensics,
+            run_forensics_on_pdf,
+        )
+        from basetruth.analysis.pdf_forensics_detect import (  # noqa: PLC0415
+            run_pdf_forensics,
+        )
+
+        if path.suffix.lower() in _IMAGE_EXTS:
+            forensics_result = run_forensics(str(path))
+        elif path.suffix.lower() == ".pdf" and not is_image_based and classify_confidence > 0.5:
+            log.info(
+                "Bulk scan worker: structured PDF — running PDF forensics pipeline",
+                extra={
+                    "file": path.name,
+                    "doc_type": final_doc_type,
+                    "confidence": classify_confidence,
+                },
+            )
+            forensics_result = run_pdf_forensics(str(path))
+        else:
+            forensics_result = run_forensics_on_pdf(str(path))
+
+        no_extract_types = {
+            "photograph", "signature", "cancelled_cheque", "document", "unknown",
+        }
+        doc_extraction: Dict[str, Any] = {}
+        if final_doc_type not in no_extract_types:
+            try:
+                from basetruth.integrations.document_extract import (  # noqa: PLC0415
+                    extract_document_fields,
+                )
+
+                doc_extraction = extract_document_fields(
+                    str(path),
+                    doc_type=final_doc_type,
+                    filename=path.name,
+                )
+            except Exception as ext_exc:  # noqa: BLE001
+                log.warning(
+                    "Bulk scan worker: field extraction failed (non-fatal)",
+                    extra={"file": path.name, "error": str(ext_exc)},
+                )
+
+        report: Dict[str, Any] = {
+            "source": {
+                "name": path.name,
+                "path": str(path),
+                "sha256": _sha256_of_file(path),
+            },
+            "document_type": final_doc_type,
+            "_layered_forensics": forensics_result,
+            "_gemma4_classification": classification or None,
+            "_document_extraction": doc_extraction,
+        }
+        return {"ok": True, "path": str(path), "report": report}
+    except Exception as exc:  # noqa: BLE001
+        log.error(
+            "Bulk scan worker failed",
+            extra={"path": str(path), "error": str(exc)},
+            exc_info=True,
+        )
+        return {"ok": False, "path": str(path), "error": str(exc), "file_name": path.name}
+
+
 # ---------------------------------------------------------------------------
 # Forensics card rendering
 # ---------------------------------------------------------------------------
@@ -204,7 +310,7 @@ def _page_bulk(_service: Any = None) -> None:
     - Image files (.jpg, .png, …) → 11-layer image forensics via run_forensics().
     - PDFs identified as scanned/image-based → run_forensics_on_pdf().
     - PDFs identified as structured/digital (payslip, offer letter, etc.) →
-      placeholder result (structured-PDF forensics coming in a future release).
+      11-layer PDF forensics via run_pdf_forensics() from pdf_forensics_detect.py.
 
     When Ollama is unavailable Gemma4 classification is skipped and the legacy
     filename-based document type guessing is used as fallback.
@@ -224,8 +330,11 @@ def _page_bulk(_service: Any = None) -> None:
    - **Image files** and **scanned PDFs** are checked for tampering using: ELA, metadata,
      noise, DCT, clone detection, colour anomaly, edge analysis, saturation, font consistency,
      AI artefact detection, and file entropy.
-   - **Digital PDFs** (payslips, offer letters, form16, etc.) are flagged with a placeholder —
-     structured-PDF forensic analysis will be available in a future release.
+   - **Digital PDFs** (payslips, offer letters, form16, bank statements, etc.) are analysed
+     using the 11-layer PDF forensic pipeline: incremental-update detection, metadata
+     fingerprinting, font consistency, hidden-text detection, suspicious-object detection,
+     content structure, digital-signature integrity, page-render ELA, embedded-image noise,
+     file entropy, and object/xref integrity.
 4. Review the forensic verdict for each file, then click **Save to Database** to persist.
 """
         )
@@ -333,112 +442,77 @@ def _page_bulk(_service: Any = None) -> None:
             )
         _classification_info.empty()
 
-        # ── Phase 2: Per-file forensic analysis ──────────────────────────────
-        for i, p in enumerate(paths):
-            # Retrieve Gemma4 classification for this file (may be absent if Ollama is down)
-            _clsf = _classify_map.get(p.name, {})
-            _ai_doc_type = _clsf.get("document_type", "") or ""
-            _is_image_based: bool = _clsf.get("is_image_based", True)
-            _classify_confidence: float = float(_clsf.get("confidence", 0.0))
+        # ── Phase 2: Per-file worker processes ─────────────────────────────
+        _scan_status.info(
+            f"⚙️ Processing {len(paths)} document(s) in parallel worker process(es)…"
+        )
+        _reports_by_path: Dict[str, Dict[str, Any]] = {}
+        _worker_count = min(len(paths), max(1, os.cpu_count() or 1))
+        _mp_context = _mp.get_context("spawn")
 
-            # Use Gemma4's document_type when it is confident; otherwise fall
-            # back to guessing from the filename (original behaviour).
-            _final_doc_type = (
-                _ai_doc_type
-                if _ai_doc_type and _ai_doc_type != "unknown" and _classify_confidence > 0.4
-                else _guess_doc_type(p.name)
-            )
+        with _cf.ProcessPoolExecutor(
+            max_workers=_worker_count,
+            mp_context=_mp_context,
+            max_tasks_per_child=1,
+        ) as _pool:
+            _future_map = {
+                _pool.submit(_process_bulk_document, str(p), _classify_map.get(p.name, {})): p
+                for p in paths
+            }
+            for i, _future in enumerate(_cf.as_completed(_future_map), start=1):
+                p = _future_map[_future]
+                try:
+                    _result = _future.result()
+                except Exception as exc:  # noqa: BLE001
+                    log.error(
+                        "Bulk scan document failed",
+                        extra={"path": str(p), "error": str(exc)},
+                        exc_info=True,
+                    )
+                    _new_errors.append(f"{p.name}: {exc}")
+                    _scan_status.error(f"❌ {i}/{len(paths)}: {p.name} — {exc}")
+                    _prog.progress(i / len(paths))
+                    continue
 
-            _scan_status.info(f"🔬 Forensic scan {i + 1}/{len(paths)}: **{p.name}**…")
-            try:
-                # Import the forensic engine lazily to avoid a heavy top-level import
-                from basetruth.analysis.image_forensics_detect import (  # noqa: PLC0415
-                    run_forensics,
-                    run_forensics_on_pdf,
-                )
-
-                if p.suffix.lower() in _IMAGE_EXTS:
-                    # Raw image file — always run image forensics directly
-                    forensics_result = run_forensics(str(p))
-
-                elif p.suffix.lower() == ".pdf" and not _is_image_based and _classify_confidence > 0.5:
-                    # PDF classified as a digitally-created structured document
-                    # (payslip, offer letter, form16, etc.) by Gemma4.
-                    # Deep forensic analysis for structured PDFs is not yet implemented —
-                    # record a placeholder so the scan is saved and visible without crashing.
+                if _result.get("ok"):
+                    _report = _result["report"]
+                    _reports_by_path[_result["path"]] = _report
+                    _fsummary = (_report.get("_layered_forensics") or {}).get("scan_summary", {})
+                    _doc_extraction = _report.get("_document_extraction") or {}
                     log.info(
-                        "Bulk scan: structured PDF — forensics placeholder",
+                        "Bulk scan: worker completed",
                         extra={
                             "file": p.name,
-                            "doc_type": _final_doc_type,
-                            "confidence": _classify_confidence,
+                            "verdict": _fsummary.get("forensic_verdict", ""),
+                            "score": _fsummary.get("forgery_score_0_100", 0),
+                            "doc_type": _report.get("document_type", "document"),
+                            "unavailable": _doc_extraction.get("_unavailable", False),
+                            "error": _doc_extraction.get("error", ""),
                         },
                     )
-                    forensics_result = {
-                        "scan_summary": {
-                            "forensic_verdict": "N/A",
-                            "forgery_score_0_100": 0,
-                            "overall_explanation": (
-                                f"Structured PDF analysis is not yet available for "
-                                f"'{_final_doc_type}' documents. Deep forensic "
-                                "inspection of digitally-created PDFs will be added "
-                                "in a future release."
-                            ),
-                            "format": "PDF (structured / digital)",
-                            "evidence": [
-                                "Gemma4 classified this document as a digitally-created PDF.",
-                                "Image-layer forensics (ELA, clone, noise) are not applicable "
-                                "to digitally-created PDFs and will be skipped.",
-                            ],
-                        },
-                        "layers": {},
-                        "_placeholder": True,
-                    }
-
+                    _scan_status.info(f"✅ Completed {i}/{len(paths)}: **{p.name}**")
                 else:
-                    # PDF (scanned/image-based, or Gemma4 was not confident enough) —
-                    # render page 1 and run the full 11-layer image forensic pipeline.
-                    forensics_result = run_forensics_on_pdf(str(p))
+                    _error_text = str(_result.get("error") or "unknown error")
+                    _new_errors.append(f"{p.name}: {_error_text}")
+                    _scan_status.error(f"❌ {i}/{len(paths)}: {p.name} — {_error_text}")
 
-                _fsummary = forensics_result.get("scan_summary", {})
-                log.info(
-                    "Bulk scan: forensics complete",
-                    extra={
-                        "file": p.name,
-                        "verdict": _fsummary.get("forensic_verdict", ""),
-                        "score": _fsummary.get("forgery_score_0_100", 0),
-                        "doc_type": _final_doc_type,
-                        "is_image_based": _is_image_based,
-                    },
-                )
-                # Build the minimal report dict that save_scan_to_db expects.
-                # source → file identity; document_type → Gemma4 classification or
-                # filename guess; _layered_forensics → full 11-layer result.
-                report: Dict[str, Any] = {
-                    "source": {
-                        "name": p.name,
-                        "path": str(p),
-                        "sha256": _sha256_of_file(p),
-                    },
-                    "document_type": _final_doc_type,
-                    "_layered_forensics": forensics_result,
-                    "_gemma4_classification": _clsf or None,
-                }
-                _new_reports.append(report)
+                _prog.progress(i / len(paths))
 
-            except Exception as exc:  # noqa: BLE001
-                log.error("Bulk scan document failed", extra={"path": str(p), "error": str(exc)}, exc_info=True)
-                _new_errors.append(f"{p.name}: {exc}")
-                _scan_status.error(f"❌ {i + 1}/{len(paths)}: {p.name} — {exc}")
-
-            _prog.progress((i + 1) / len(paths))
+        _new_reports = [
+            _reports_by_path[str(p)]
+            for p in paths
+            if str(p) in _reports_by_path
+        ]
 
         _scan_status.empty()
         _prog.empty()
 
         st.session_state["bt_bulk_reports"] = _new_reports
         st.session_state["bt_bulk_errors"] = _new_errors
-        st.session_state["bt_bulk_source_paths"] = [str(p) for p in paths]
+        st.session_state["bt_bulk_source_paths"] = [
+            str((report.get("source") or {}).get("path") or "")
+            for report in _new_reports
+        ]
         st.session_state["bt_bulk_forced_ref"] = bulk_forced_ref
         st.session_state["bt_bulk_extra_identity"] = bulk_extra_identity
         st.session_state["bt_bulk_saved"] = False
@@ -487,6 +561,50 @@ def _page_bulk(_service: Any = None) -> None:
                 _render_forensics_detail(forensics, fname)
             else:
                 st.warning("No forensics data for this file.")
+
+            # ── Field extraction status ───────────────────────────────────
+            # Show the operator whether Gemma4 successfully extracted document
+            # fields, or whether extraction was skipped/failed.
+            _ext = r.get("_document_extraction") or {}
+            _raw_ocr_markdown_path = str(_ext.get("_raw_ocr_markdown_path") or "")
+            if _raw_ocr_markdown_path:
+                st.caption(f"Raw marksheet OCR markdown: {_raw_ocr_markdown_path}")
+            if not _ext:
+                # Empty dict — an exception prevented extraction from running at all
+                st.warning(
+                    "📋 Field extraction did not run for this document. "
+                    "Check the Logs screen for details.",
+                    icon="⚠️",
+                )
+            elif _ext.get("_unavailable"):
+                # Ollama was offline when extraction was attempted
+                st.info(
+                        "📋 Field extraction skipped — Gemma4 (Ollama) is not running. "
+                    "Start Ollama and re-scan to extract structured fields.",
+                    icon="ℹ️",
+                )
+            elif _ext.get("error"):
+                # Extraction ran but returned a hard error
+                st.warning(
+                    f"📋 Field extraction failed: {_ext.get('error', 'unknown error')}",
+                    icon="⚠️",
+                )
+            else:
+                # Gemma4 returned actual data — show a summary of extracted fields
+                _ext_display = {
+                    k: v for k, v in _ext.items()
+                    if not k.startswith("_") and v not in (None, "", [], {})
+                }
+                if _ext_display:
+                    with st.expander("📋 Extracted Fields (Gemma4)", expanded=False):
+                        st.json(_ext_display)
+                else:
+                    # Gemma4 ran but all fields came back null/empty
+                    st.info(
+                        "📋 Gemma4 ran but could not read clear field values from this document "
+                        "(image may be low-resolution or text is not machine-readable).",
+                        icon="ℹ️",
+                    )
 
     # ── Save to Database ──────────────────────────────────────────────────────
     st.divider()

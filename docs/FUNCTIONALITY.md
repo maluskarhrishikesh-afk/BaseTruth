@@ -53,12 +53,17 @@
 
 ### Step 1 & 2 — Upload or Capture Documents
 
+**Parallel processing:** When the user uploads documents in all three slots simultaneously, the page fires all analysis pipelines (document-type check, QR decode, PAN OCR, signature crop) concurrently in a thread pool. A single "Analysing documents…" spinner is shown; the total wait equals the slowest pipeline, not the sum of all three.
+
+**Document-type validation:** Each slot only accepts the matching document type. If the wrong document is uploaded (e.g. Aadhaar card in the PAN slot) and Gemma4 is confident about the mismatch, a red error banner is shown and the extraction for that slot is skipped. If Ollama is unavailable or Gemma4 is uncertain, the upload is always allowed through so legitimate documents are never blocked.
+
 | Element | Action | Expected Result |
 |---|---|---|
-| Upload Aadhaar card | Drag-and-drop or file picker | QR decoded automatically; success message shows Name, DOB/YOB, Gender, District, and "Aadhaar looks good" |
-| Upload PAN card | Drag-and-drop or file picker | Gemma4 extracts PAN number, full name, father's name, and DOB; success message shows PAN, entity type, full name, DOB, and "PAN looks good" |
-| Upload Selfie | Drag-and-drop or file picker | Selfie stored for face-match; face detection preview shown |
-| "Capture with Camera" tab | Switch tab | Camera opens per-document; shutter button takes the photo |
+| Upload Aadhaar card | Drag-and-drop or file picker | Doc-type check runs first; if passed, QR decoded automatically; success message shows Name, DOB/YOB, Gender, District, and "Aadhaar looks good"; uploading a PAN or other document here shows a red error banner |
+| Upload PAN card | Drag-and-drop or file picker | Doc-type check runs first; if passed, a **single** Gemma4 call extracts PAN number, full name, father's name, and DOB **and** returns the signature bounding-box in one response; success message shows PAN, entity type, full name, "Care of (typically Father or Husband's name): S/O:" label with father's name, DOB; signature strip is cropped from the card using the precomputed box and shown as a small preview at ≤ 300 px wide; uploading Aadhaar or other document here shows a red error banner |
+| Upload Selfie | Drag-and-drop or file picker | Doc-type check runs first; if passed, selfie stored for face-match; face detection preview shown; uploading an ID document here shows a red error banner |
+| Upload all three at once | Drop files into all three slots | All three pipelines run in parallel in background threads; all results appear after a single combined spinner |
+| "Capture with Camera" tab | Switch tab | Camera opens per-document; shutter button takes the photo; doc-type check runs immediately after capture and shows error if wrong document |
 
 ### Step 3 — Applicant Details
 
@@ -72,7 +77,7 @@
 | Element | Action | Expected Result |
 |---|---|---|
 | "Run Identity Verification 🔍" button | Click | Runs deterministic checks for first-name/last-name match, DOB match, PAN format, and photo match; then shows annotated images, confidence score, and MATCH/MISMATCH verdict |
-| "💾 Save to Database" button | Click after a successful run | Saves the current face-match result to `identity_checks`; uploads the Aadhaar image + selfie to MinIO under the entity reference; PDF report download becomes available |
+| "💾 Save to Database" button | Click after a successful run | Saves the current face-match result to `identity_checks`; saves Aadhaar QR fields and PAN extracted fields as separate rows in `document_extractions` with their uploaded `file_name`; uploads the Aadhaar image + selfie + PAN image + PAN signature (if successfully cropped) to MinIO under the entity reference; stores the MinIO key of the signature image in the `pan_card` `document_extractions` row under `pan_signature_minio_key`; PDF report download becomes available |
 | | If save fails (DB error) | Red error message: "Result could not be saved to the database. Check the Logs screen." |
 | | If DB is offline | Warning: "Database is offline — connect PostgreSQL to save results." |
 | Previous checks table | Auto-renders after save / for linked entity | Shows all previous face-match records for the linked entity |
@@ -80,6 +85,8 @@
 **Stored evidence captured on save:**
 - Aadhaar QR extraction payload
 - PAN extraction payload, including Gemma4/OCR extraction source
+- Two `document_extractions` rows when both documents are available: one `aadhaar` row and one `pan_card` row, each keyed by the uploaded `file_name`
+- `pan_card` row includes `pan_signature_minio_key` pointing to the cropped signature image in MinIO (when signature extraction succeeds)
 - Exact first-name/last-name comparison result
 - DOB comparison result
 - PAN format and entity-type interpretation
@@ -189,21 +196,28 @@
 **Purpose:** Scan many documents at once from a folder or a file list. Captures two things per document: (1) tamper assessment — truth score and risk level; (2) rich document analysis — document type, extracted fields, fraud signals, and authenticity verdict.
 
 > **Extraction Architecture:**
-> - **Gemma4 (free-form batch classification):** At the start of each bulk scan, Gemma4 receives all document images in a **single LLM call**. It identifies each document type by observing visual content, layout, headings, and structure — **without a fixed list to pick from**, so it can classify any document type correctly. It also determines whether each file is image-based or text-based. This is the only Gemma4 call in a bulk scan.
+> - **Gemma4 (free-form batch classification):** At the start of each bulk scan, Gemma4 receives all document images in a **single LLM call**. It identifies each document type by observing visual content, layout, headings, and structure — **without a fixed list to pick from**, so it can classify any document type correctly. It also determines whether each file is image-based or text-based.
+> - **Per-document worker processes after classification:** Once Gemma4 returns the classification list, each document's forensics and field extraction run in a separate worker process. This keeps heavy OCR/CV state isolated per file and lets the batch finish close to the slowest few documents instead of the full serial sum.
+> - **OCR + layout-family extraction (per-document field extraction):** After forensics, `src/basetruth/integrations/document_extract.py` runs PaddleOCR, reconstructs the document in top-to-bottom and left-to-right order, classifies the document layout family, and uses deterministic parsers for layouts that are table-heavy and stable. Maharashtra HSC transposed marksheets and BE/B.Tech `MAX / MIN / OBT` marksheets are now read this way. For marksheets, PaddleOCR is mandatory for the OCR pass and the raw OCR output is written to `artifacts/<source_stem>/<source_stem>_ocr_scan.md` with one detected row per line plus approximate horizontal spacing so operators can inspect the sheet structure before any LLM interpretation. The active marksheet prompt is generic across all marksheet families: it anchors on reliable fields first, rebuilds rows and columns from OCR structure, and treats printed-total mismatches as generic quality checks rather than SSC/HSC-specific rules. Gemma4 is still used after PaddleOCR only as a normalisation layer when the OCR text is incomplete or the layout family is unknown. Skipped for photographs, signatures, cancelled cheques. When Ollama is offline, deterministic extraction still runs where possible; otherwise a forensics-summary fallback row (document type, source name, forensic verdict, forgery score) is saved to `document_extractions` so the table is never empty after a save.
+> - **Entity auto-creation from Gemma4 extraction:** When a bulk scan is saved without an explicit entity link, Gemma4-extracted name fields (e.g. `employee_name`, `candidate_name`) are used to auto-create or match an entity record. PAN numbers and email addresses extracted by Gemma4 are also used for deduplication.
 > - **LiteParse (text-based PDFs / Word / Excel):** For digitally-created structured documents, LiteParse (Node.js) extracts named fields, tables, and metadata accurately and feeds the tamper pipeline.
-> - **pytesseract / PaddleOCR (image-based files):** For scanned/photographed documents (JPEG, PNG, TIFF, scanned PDF), OCR extracts raw text which LiteParse then structures.
+> - **PaddleOCR row reconstruction (image-based files):** For scanned/photographed documents (JPEG, PNG, TIFF, scanned PDF), PaddleOCR extracts row-aware text before field extraction. Marksheets use this OCR text to classify the layout family and route to a deterministic parser when the table is stable. Each OCR row is written on a separate line in the markdown artifact and keeps approximate column spacing so later review can see the original sheet structure directly.
 > - **Document Intelligence data:** When no per-doc Gemma4 analysis exists, a synthetic analysis is automatically produced from LiteParse key_fields + tamper_assessment signals so Document Intelligence always shows rich data.
 > - **Target accuracy:** ≥ 95% document type classification accuracy by letting Gemma4 use its own knowledge rather than constraining it to a fixed list.
+
+> **Forensic Pipeline (per file type):**
+> - **Image files (.jpg, .png, .tiff, …) and scanned PDFs:** 11-layer *image* forensic engine (`image_forensics_detect.py`) — ELA, metadata, noise, DCT, clone detection, colour anomaly, edge analysis, saturation, font consistency, AI-artefact detection, file entropy.
+> - **Digitally-created PDFs (payslip, offer letter, bank statement, form16, etc.):** 11-layer *PDF* forensic engine (`pdf_forensics_detect.py`) — incremental-update detection, metadata fingerprinting, font consistency, hidden-text detection, suspicious-object detection (JavaScript/XFA/OpenAction), content-structure analysis, digital-signature integrity, page-render ELA, embedded-image noise, file entropy, and object/xref integrity. Each forensic layer shows a plain-English explanation of what was found and why it matters.
+> - **Routing logic:** Gemma4 classification determines which pipeline runs. If Gemma4 is unavailable or the confidence < 0.5 for structured-PDF classification, the image pipeline is used as a safe fallback.
 
 | Element | Action | Expected Result |
 |---|---|---|
 | File uploader or folder path | Upload files or enter path | Files queued for scanning; any results from a previous scan are cleared immediately |
 | Entity link widget | Fill in PAN / email / phone | Links every document in the batch to the same applicant profile |
-| "Run bulk scan →" button | Click | Shows live status: (1) "🔍 Classifying documents with Gemma4…" → "✅ Gemma4 classified N docs: payslip, bank_statement…"; (2) per-document "📄 Scanning X/N: filename (type) with LiteParse/PaddleOCR…" with a progress bar |
+| "Run bulk scan →" button | Click | Shows live status: (1) "🧠 Classifying N document(s) with Gemma4…"; (2) "⚙️ Processing N document(s) in parallel worker process(es)…"; (3) completion updates like "✅ Completed X/N: filename" with a progress bar |
 | Unsaved-changes navigation guard | Click another page before saving | Shows a modal asking the operator to continue editing or discard the current batch; discard clears uploaded files, results, and the temporary batch workspace |
-| Document Results section | After scan | Expandable card per file showing tamper verdict (score + risk) and forensic detail |
-| Classifier diagnostics | Expand | Developer-facing diagnostics: parse method, text-extraction length, classification confidence |
-| "💾 Save to Database" button | Click after batch completes | Saves each report to `scans`; runs 11-layer forensic analysis on images/PDFs and stores results in `scans.layered_analysis_json`; upserts `document_information` with analysis data; uploads source documents to MinIO; sets scan `approved` to NULL (pending review); shows success or visible failure |
+| Document Results section | After scan | Expandable card per file showing: (1) forensic verdict and 11-layer breakdown; (2) field extraction status — either a "📋 Extracted Fields (Gemma4)" sub-expander with the extracted data, or an info/warning message explaining why extraction was skipped/failed (Ollama offline, exception, all-null result). For marksheets, the card also shows the path to the raw OCR markdown artifact written during extraction. |
+| "💾 Save to Database" button | Click after batch completes | Saves each forensic result to `scans`; upserts extracted fields to `document_extractions` using `(entity_id, file_name)`; uploads source documents to MinIO; sets scan `approved` to NULL (pending review); shows success or visible failure |
 
 **Important rules:**
 - Uploading a new set of files immediately clears all previous scan results from the UI. The previously saved database records are never affected.
@@ -211,11 +225,9 @@
 - No summary table is shown. The Document Results section (expandable cards) is the only result view.
 - Bulk Scan does **not** auto-save to PostgreSQL during the scan run; results remain review-only until the operator clicks **Save to Database**.
 - Saving a batch must always show a clear success, warning, or error outcome.
-- `document_information.extracted_data` must be stored as rich JSON, not just sparse key fields.
-- Bulk saves use the same operational UPSERT behavior as single-document saves.
-- If Ollama is unavailable during classification, batch classification falls back gracefully (type="unknown") and the scan continues — no hard failure.
-- The entire scan report dict is deep-sanitized through `_json_ready()` before insertion, stripping null bytes (U+0000) and lone surrogates from ALL fields (including EXIF metadata from image files) to prevent PostgreSQL `UntranslatableCharacter` errors.
-- OCR quality is guarded by a coherence gate: PaddleOCR results with > 15% isolated single-character tokens are treated as garbled and the VLM fallback (Gemma4) is invoked instead — important for complex Indian documents such as board marksheets.
+- If Ollama is unavailable during classification or extraction, both fall back gracefully — no hard failure. When Ollama is offline, `document_extractions` still receives a forensics-summary stub row (document type, source name, forensic verdict, forgery score, `_extraction_unavailable: true`) so bulk saves always produce a record per document. The UI card for that document shows an info message: "Field extraction skipped — Gemma4 (Ollama) is not running."
+- The `_has_gemma4_data` logic in `save_scan_to_db` uses `bool(_bulk_ext)` (non-empty AND no error/unavailable) — never a key-count heuristic — so that even Gemma4 results with mostly-null fields are correctly identified as real extractions and saved as-is.
+- `_extraction_unavailable` in the `document_extractions` fallback row is **always `true`** — it is never `false` in the fallback path. A `false` value would be a bug indicator (empty dict arrived from bulk.py's silent exception handler).
 - All saved scans start with `approved = NULL` (pending). They only appear in Document Intelligence after being approved on the **🔬 Scans** screen.
 
 **Fraud signals in Document Intelligence**: Only tamper signals that **failed** the check (`passed == False`) are shown as fraud signals. Passed checks (no issue found) are suppressed. Signal fields map from `models.Signal`: `name` → type, `summary` → description.
@@ -354,6 +366,9 @@
 | Severity filter | Select | Filters to ERROR, WARNING, INFO, DEBUG, or ALL |
 | "Refresh" button | Click | Reloads the log file |
 
+**Marksheet OCR logging:**
+- When a deterministic marksheet OCR parser runs, INFO logs include one `marksheet_ocr_structure` JSON payload showing the exact OCR-derived table structure used by the parser. The payload includes the detected layout family and the parsed rows or numeric arrays, so operators can inspect marksheet extraction decisions directly in Log Analyzer.
+
 ---
 
 ## 🗄️ Database Viewer
@@ -369,7 +384,7 @@
 | Metrics row | Auto-renders (cached) | Shows row counts for Entities, Scans, Document Extractions, Identity Checks, Layered Analysis Entries, Cases, and Case Notes |
 | "🔄 Refresh" button | Click | Clears the page's cached DB/MinIO data queries and reloads the latest counts / object list |
 | Table selector | Select | Loads up to 500 rows from the chosen table, including `identity_checks` and `layered_analysis_entries` |
-| Data table | Auto-renders | Shows all table columns in a wide dataframe, including JSON and binary fields rendered into readable summaries |
+| Data table | Auto-renders | Shows table columns in a wide dataframe. Large JSON fields are rendered into readable summaries, and large binary fields like `identity_checks.pdf_report` are excluded from the cached table query so the page stays serializable and fast |
 | Row inspector | Select a row | Shows the full selected row payload below the dataframe so JSON-heavy tables such as `layered_analysis_entries` remain readable |
 
 ### MinIO Storage Tab

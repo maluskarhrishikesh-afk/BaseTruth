@@ -1,11 +1,9 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # BaseTruth — Platform-agnostic container
 #
-# Includes ALL external binaries:
-#   • Tesseract OCR   (pytesseract, ocrmypdf)
+# Includes the external binaries BaseTruth still needs at runtime:
 #   • Poppler         (pdf2image)
 #   • ExifTool        (pyexiftool)
-#   • Ghostscript     (ocrmypdf PDF/A)
 #   • qpdf            (optional signature workflows)
 #
 # Build:
@@ -26,7 +24,9 @@
 # Stage 1 — Python dependency builder
 # Builds wheels so the final image never needs build tools at runtime.
 # ──────────────────────────────────────────────────────────────────────────────
-FROM python:3.13-slim AS builder
+# Docker stays on Python 3.12 because the production OCR/KYC stack still
+# depends on wheels that are not published consistently for Python 3.13.
+FROM python:3.12-slim AS builder
 
 # Build-time system libraries needed to compile C extensions
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -66,28 +66,22 @@ RUN pip install --no-cache-dir --prefix=/install --no-deps "."
 # Stage 2 — Runtime image
 # Slim Debian base; all binaries installed from official distro packages.
 # ──────────────────────────────────────────────────────────────────────────────
-FROM python:3.13-slim AS runtime
+FROM python:3.12-slim AS runtime
 
 LABEL org.opencontainers.image.title="BaseTruth"
 LABEL org.opencontainers.image.description="Document integrity and fraud detection pipeline"
 LABEL org.opencontainers.image.source="https://github.com/maluskarhrishikesh-afk/BaseTruth"
 
 # ── System binaries ────────────────────────────────────────────────────────────
-# tesseract-ocr    → pytesseract + ocrmypdf
 # poppler-utils    → pdf2image (pdftoppm, pdfinfo)
 # libimage-exiftool-perl → pyexiftool (the `exiftool` binary is in this package)
-# ghostscript      → ocrmypdf PDF/A output
 # qpdf             → standalone signature extraction (pikepdf bundles libqpdf, this is the CLI)
 # libgl1           → opencv headless runtime needs libGL
 # libglib2.0-0     → opencv runtime dep
 # imagemagick      → @llamaindex/liteparse image-PDF conversion
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        tesseract-ocr \
-        tesseract-ocr-eng \
-        tesseract-ocr-hin \
         poppler-utils \
         libimage-exiftool-perl \
-        ghostscript \
         qpdf \
         imagemagick \
         libgl1 \
@@ -117,10 +111,10 @@ COPY README.md ./
 RUN pip install --no-cache-dir --no-deps -e .
 
 # ── Runtime configuration ─────────────────────────────────────────────────────
-# Tell pytesseract where Tesseract lives (matches Debian install path)
-ENV TESSERACT_CMD=/usr/bin/tesseract
 # Tell pyexiftool where exiftool lives (Debian puts it at /usr/bin/exiftool)
 ENV EXIFTOOL_PATH=/usr/bin/exiftool
+ENV HOME=/home/basetruth
+ENV XDG_CACHE_HOME=/home/basetruth/.cache
 # Poppler pdftoppm is on PATH via poppler-utils; no extra env needed
 # Ghostscript binary is `gs` on PATH
 
@@ -128,9 +122,11 @@ ENV EXIFTOOL_PATH=/usr/bin/exiftool
 ENV BASETRUTH_ARTIFACT_ROOT=/app/artifacts
 RUN mkdir -p /app/artifacts /app/your_data
 
-# Non-root user for security
-RUN groupadd -r basetruth && useradd -r -g basetruth basetruth \
- && chown -R basetruth:basetruth /app
+# Non-root user for security. PaddleX writes model/cache state under HOME,
+# so the runtime user must have a real writable home directory.
+RUN groupadd -r basetruth && useradd -r -m -d /home/basetruth -g basetruth basetruth \
+ && mkdir -p /home/basetruth/.cache /home/basetruth/.paddlex \
+ && chown -R basetruth:basetruth /app /home/basetruth
 USER basetruth
 
 # ── Healthcheck ───────────────────────────────────────────────────────────────

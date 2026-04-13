@@ -5,7 +5,7 @@ runtime via environment variables, without changing any code.
 
 Environment variables
 ---------------------
-  BASETRUTH_OCR_ENGINE    : 'paddleocr' | 'pytesseract' | 'auto' (default: 'auto')
+    BASETRUTH_OCR_ENGINE    : 'paddleocr' | 'auto' (default: 'auto')
   BASETRUTH_FACE_ENGINE   : 'insightface' | 'mediapipe' | 'auto' (default: 'auto')
   BASETRUTH_VLM_ENGINE    : 'gemma_local' | 'gemini_api' | 'none' (default: 'auto')
   BASETRUTH_OCR_CONF_THRESHOLD : float 0–1 (default: 0.70)
@@ -52,21 +52,33 @@ def _make_paddle_ocr() -> Callable:
     from paddleocr import PaddleOCR  # type: ignore
     import numpy as np  # type: ignore
 
-    _engine = PaddleOCR(use_angle_cls=True, lang="en", show_log=False)
+    os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+
+    _engine = PaddleOCR(
+        lang="en",
+        ocr_version="PP-OCRv4",
+        use_doc_orientation_classify=False,
+        use_doc_unwarping=False,
+        use_textline_orientation=False,
+        enable_mkldnn=False,
+    )
 
     def _run(pil_img: Any) -> Tuple[str, float]:
         img_arr = np.array(pil_img.convert("RGB"))
-        result = _engine.ocr(img_arr, cls=True)
+        result = _engine.predict(img_arr) or []
         texts, confs = [], []
-        if result:
-            for page in result:
-                if page:
-                    for line in page:
-                        if line and len(line) >= 2:
-                            t = line[1]
-                            if isinstance(t, (list, tuple)) and len(t) >= 2:
-                                texts.append(str(t[0]))
-                                confs.append(float(t[1]))
+        for page in result:
+            if not isinstance(page, dict):
+                continue
+            rec_texts = page.get("rec_texts") or []
+            rec_scores = page.get("rec_scores") or []
+            for index, text in enumerate(rec_texts):
+                clean_text = str(text or "").strip()
+                if not clean_text:
+                    continue
+                texts.append(clean_text)
+                if index < len(rec_scores):
+                    confs.append(float(rec_scores[index]))
         combined = "\n".join(texts)
         mean_conf = float(sum(confs) / len(confs)) if confs else 0.0
         return combined, mean_conf
@@ -74,25 +86,8 @@ def _make_paddle_ocr() -> Callable:
     return _run
 
 
-def _make_tesseract_ocr() -> Callable:
-    """Factory: pytesseract engine returning (text, confidence)."""
-    import pytesseract  # type: ignore
-
-    def _run(pil_img: Any) -> Tuple[str, float]:
-        try:
-            text = pytesseract.image_to_string(pil_img, lang="eng+hin") or ""
-        except pytesseract.TesseractError:
-            text = pytesseract.image_to_string(pil_img, lang="eng") or ""
-        # Tesseract doesn't give a single confidence figure easily;
-        # estimate from output density
-        conf = 0.6 if len(text.strip()) > 20 else 0.2
-        return text, conf
-
-    return _run
-
-
 def get_ocr_engine() -> Callable:
-    """Return the best available OCR callable based on BASETRUTH_OCR_ENGINE.
+    """Return the PaddleOCR callable based on BASETRUTH_OCR_ENGINE.
 
     The returned callable has signature: (pil_image) -> (text: str, confidence: float)
     """
@@ -107,25 +102,15 @@ def get_ocr_engine() -> Callable:
             _ocr_instance = engine
             return engine
         except ImportError:
-            if OCR_ENGINE == "paddleocr":
-                log.warning(
-                    "BASETRUTH_OCR_ENGINE=paddleocr but paddleocr is not installed; "
-                    "falling back to pytesseract."
-                )
-
-    try:
-        engine = _make_tesseract_ocr()
-        log.debug("OCR engine: pytesseract")
-        _ocr_instance = engine
-        return engine
-    except ImportError:
-        pass
+            log.warning("PaddleOCR is not installed in the current environment.")
+    elif OCR_ENGINE:
+        log.warning("Unsupported OCR engine '%s'. BaseTruth now supports only PaddleOCR.", OCR_ENGINE)
 
     # Last-resort stub
     def _noop(pil_img: Any) -> Tuple[str, float]:
         return "", 0.0
 
-    log.warning("No OCR engine available (install paddleocr or pytesseract).")
+    log.warning("No OCR engine available (install paddleocr and paddlepaddle).")
     _ocr_instance = _noop
     return _noop
 
@@ -232,13 +217,6 @@ def registry_status() -> dict:
         status["paddleocr_available"] = True
     except ImportError:
         status["paddleocr_available"] = False
-
-    try:
-        import pytesseract  # type: ignore
-        pytesseract.get_tesseract_version()
-        status["pytesseract_available"] = True
-    except Exception:  # noqa: BLE001
-        status["pytesseract_available"] = False
 
     # Probe VLM
     import os as _os

@@ -13,7 +13,7 @@ Public API
 
   preprocess_pil_for_ocr(img: PIL.Image) -> PIL.Image
       Same pipeline, accepts and returns a PIL Image.
-      Useful for drop-in replacement of the current pytesseract call sites.
+      Useful for drop-in replacement of the current direct PaddleOCR call sites.
 
 Design notes
 ------------

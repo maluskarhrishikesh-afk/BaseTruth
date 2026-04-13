@@ -33,12 +33,12 @@ def get_schema_summary() -> str:
     return """
 TABLE entities (id, entity_ref, first_name, last_name, email, phone, pan_number, aadhar_number, created_at)
   - Tip: For names, always use ILIKE '%name%' to handle middle names or partial matches (e.g. first_name ILIKE '%Hrishikesh%').
-TABLE scans (id, entity_id FK->entities, source_name, document_type, truth_score, risk_level, verdict, generated_at)
+TABLE scans (id, entity_id FK->entities, source_name, source_sha256, document_type, layered_analysis_json JSONB, approved, first_level_approval, second_level_approval, generated_at, updated_at)
 TABLE identity_checks (id, entity_id FK->entities, check_type, status, verdict, cosine_similarity, doc_filename, created_at)
   - 'check_type' is either 'face_match' or 'video_kyc'.
 TABLE cases (id, case_key, entity_id FK->entities, status, disposition, priority, max_risk_level, document_count, created_at)
 TABLE case_notes (id, case_id FK->cases, author, text, created_at)
-TABLE document_information (id, entity_id FK->entities, scan_id FK->scans, document_type, extracted_data JSONB, created_at)
+TABLE document_extractions (id, entity_id FK->entities, scan_id FK->scans nullable, file_name, document_type, extracted_data JSONB, source_screen, created_at)
 TABLE layered_analysis_entries (id, entity_id FK->entities, screen_name, section_name, details_captured_json JSONB, updated_at)
   - This table contains detailed breakdown of all the scans and verifications that took place.
 """

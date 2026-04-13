@@ -18,10 +18,8 @@ binaries — no manual PATH setup needed on any OS (Linux, macOS, Windows/WSL2).
 
 | Binary | Package | Debian package |
 |---|---|---|
-| `tesseract` | `tesseract-ocr` | `pytesseract`, `ocrmypdf` |
 | `pdftoppm` / `pdfinfo` | `poppler-utils` | `pdf2image` |
 | `exiftool` | `libimage-exiftool-perl` | `pyexiftool` |
-| `gs` (Ghostscript) | `ghostscript` | `ocrmypdf` PDF/A |
 | `qpdf` | `qpdf` | standalone signature workflows |
 | `node` / `npx` | NodeSource 22.x | `@llamaindex/liteparse` |
 | `convert` / `magick` | `imagemagick` | `@llamaindex/liteparse` image-PDF conversion |
@@ -51,7 +49,6 @@ Results are written to `./artifacts/` on your host machine via the bind mount.
 | Variable | Default | Purpose (Simple English) |
 |---|---|---|
 | `BASETRUTH_ARTIFACT_ROOT` | `/app/artifacts` | The folder where the system saves its final generated reports and files |
-| `TESSERACT_CMD` | `/usr/bin/tesseract` | Tells the system where the OCR reading tool is installed on your computer |
 | `EXIFTOOL_PATH` | `/usr/bin/exiftool` | Tells the system where the deep photo checker tool is installed |
 | `API_PORT` | `8000` | The web address port where you can talk to the application (e.g. localhost:8000) |
 
@@ -99,8 +96,8 @@ All packages below are installed in the project venv and importable.
 
 | Package | Version | Purpose (Simple English) | pip extra |
 |---|---|---|---|
-| `pytesseract` | 0.3.13 | Reads text out of standard images or scanned photos (like reading an Aadhaar or PAN card photo) | `ocr` |
-| `ocrmypdf` | 17.4.0 | Takes a flat scanned document and makes the text selectable and searchable | `ocr` |
+| `paddleocr` | 3.3.0+ | Reads text from scanned PDFs and uploaded document photos using the same OCR engine across the app | `ocr` |
+| `paddlepaddle` | 3.2.0+ | Runtime needed by PaddleOCR so the OCR models can run locally | `ocr` |
 | `pdf2image` | 1.17.0 | Converts a PDF file into standard image files (like JPGs or PNGs) | `ocr` |
 
 ### Metadata and EXIF
@@ -132,11 +129,6 @@ All packages below are installed in the project venv and importable.
 
 When running outside Docker, these Python packages need a system binary on `PATH`.
 
-### Tesseract OCR
-- Used by: `pytesseract`, `ocrmypdf`
-- Windows installer: https://github.com/UB-Mannheim/tesseract/wiki
-- After install, set `pytesseract.pytesseract.tesseract_cmd` or add to PATH
-
 ### Poppler
 - Used by: `pdf2image`
 - Windows binaries: https://github.com/oschwartz10612/poppler-windows/releases
@@ -146,10 +138,6 @@ When running outside Docker, these Python packages need a system binary on `PATH
 - Used by: `pyexiftool`
 - Download: https://exiftool.org/
 - Place `exiftool.exe` (Windows) on PATH
-
-### Ghostscript
-- Used by: `ocrmypdf` (for PDF/A compliance and scan normalisation)
-- Download: https://www.ghostscript.com/download.html
 
 ### qpdf binary (optional)
 - Used standalone for signature extraction workflows

@@ -42,7 +42,27 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Session, relationship, sessionmaker
 from sqlalchemy.sql import func
 
-DATABASE_URL: str = os.environ.get("DATABASE_URL", "")
+
+def _resolve_database_url() -> str:
+    """Return the PostgreSQL URL for the current runtime.
+
+    Resolution order is intentionally simple:
+    1. Respect an explicit DATABASE_URL from the environment.
+    2. For local Windows/macOS/Linux runs outside Docker, fall back to the
+       Docker Compose PostgreSQL service exposed on localhost:5432.
+
+    This keeps local `streamlit run ...` sessions working even when the user
+    starts PostgreSQL via Docker Compose but forgets to export DATABASE_URL in
+    the shell first. Inside Docker, the container already receives DATABASE_URL,
+    so this fallback is never used.
+    """
+    env_url = os.environ.get("DATABASE_URL", "").strip()
+    if env_url:
+        return env_url
+    return "postgresql://basetruth:basetruth_secret@localhost:5432/basetruth"
+
+
+DATABASE_URL: str = _resolve_database_url()
 
 _engine = None
 _SessionLocal = None
@@ -160,7 +180,7 @@ class Entity(Base):
 
     scans = relationship("Scan", back_populates="entity", cascade="all, delete-orphan")
     cases = relationship("Case", back_populates="entity")
-    extracted_info = relationship("DocumentInformation", back_populates="entity", cascade="all, delete-orphan")
+    extracted_info = relationship("DocumentExtraction", back_populates="entity", cascade="all, delete-orphan")
     identity_checks = relationship("IdentityCheck", back_populates="entity", cascade="all, delete-orphan")
     layered_analysis_entries = relationship(
         "LayeredAnalysisEntry",
@@ -208,7 +228,7 @@ class Scan(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     entity = relationship("Entity", back_populates="scans")
-    extracted_info = relationship("DocumentInformation", back_populates="scan", cascade="all, delete-orphan")
+    extracted_info = relationship("DocumentExtraction", back_populates="scan", cascade="all, delete-orphan")
 
 
 class Case(Base):
@@ -257,16 +277,37 @@ class CaseNote(Base):
     case = relationship("Case", back_populates="notes")
 
 
-class DocumentInformation(Base):
-    """Rich extracted metadata parsed from document scans."""
+class DocumentExtraction(Base):
+    """Structured fields extracted from document scans and identity verifications.
 
-    __tablename__ = "document_information"
+    Each row holds the key-value data pulled out of one document
+    (e.g. candidate name + marks from a marksheet, salary + employer from a payslip,
+    or PAN number + name from a PAN card).  Linked to the entity and, where
+    applicable, the scan that produced the extraction.
+    """
+
+    # This table was previously called 'document_information'.
+    # It was renamed to 'document_extractions' to better describe its purpose.
+    __tablename__ = "document_extractions"
+    __table_args__ = (
+        UniqueConstraint(
+            "entity_id",
+            "file_name",
+            name="uq_document_extractions_entity_file_name",
+        ),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     entity_id = Column(Integer, ForeignKey("entities.id", ondelete="CASCADE"), nullable=False)
-    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False)
+    # scan_id is optional — identity-verification extractions have no scan row
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=True)
+    # file_name is the natural key for document extractions within one entity.
+    # This lets the latest extraction replace the earlier one for the same file.
+    file_name = Column(String(500), nullable=False, default="")
     document_type = Column(String(100), default="generic")
     extracted_data = Column(JSONB, nullable=False)
+    # Source screen that triggered the extraction — e.g. 'bulk_scan', 'identity_verification'
+    source_screen = Column(String(100), default="")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     entity = relationship("Entity", back_populates="extracted_info")
@@ -443,6 +484,65 @@ def init_db() -> bool:
             ))
             conn.execute(text(
                 "ALTER TABLE scans ADD COLUMN IF NOT EXISTS second_level_approval_comment TEXT"
+            ))
+            # Migrate old table name document_information → document_extractions.
+            # We check if the old table exists and the new one doesn't, then rename.
+            # This handles existing databases created before the rename.
+            conn.execute(text(
+                "DO $$ BEGIN "
+                "IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'document_information') "
+                "AND NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'document_extractions') "
+                "THEN ALTER TABLE document_information RENAME TO document_extractions; "
+                "END IF; END $$"
+            ))
+            # Add the new source_screen column if it was not there before the rename.
+            conn.execute(text(
+                "ALTER TABLE document_extractions "
+                "ADD COLUMN IF NOT EXISTS source_screen VARCHAR(100) DEFAULT ''"
+            ))
+            conn.execute(text(
+                "ALTER TABLE document_extractions "
+                "ADD COLUMN IF NOT EXISTS file_name VARCHAR(500) DEFAULT ''"
+            ))
+            # scan_id was NOT NULL in the old schema — relax it so identity extractions
+            # (which have no scan row) can also be stored here.
+            conn.execute(text(
+                "ALTER TABLE document_extractions "
+                "ALTER COLUMN scan_id DROP NOT NULL"
+            ))
+            # Backfill file_name from the linked scan row where possible.
+            conn.execute(text(
+                "UPDATE document_extractions AS de "
+                "SET file_name = s.source_name "
+                "FROM scans AS s "
+                "WHERE de.scan_id = s.id "
+                "AND COALESCE(de.file_name, '') = ''"
+            ))
+            # Older identity rows have no scan row, so use a deterministic synthetic
+            # file name based on the screen and document type to keep them addressable.
+            conn.execute(text(
+                "UPDATE document_extractions "
+                "SET file_name = CONCAT(source_screen, '_', document_type) "
+                "WHERE COALESCE(file_name, '') = ''"
+            ))
+            # Keep the newest row for each (entity_id, file_name) pair before adding
+            # the uniqueness guarantee used by the new UPSERT path.
+            conn.execute(text(
+                "WITH ranked AS ("
+                "  SELECT id, ROW_NUMBER() OVER ("
+                "    PARTITION BY entity_id, file_name "
+                "    ORDER BY created_at DESC NULLS LAST, id DESC"
+                "  ) AS rn "
+                "  FROM document_extractions"
+                ") "
+                "DELETE FROM document_extractions AS de "
+                "USING ranked "
+                "WHERE de.id = ranked.id AND ranked.rn > 1"
+            ))
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "ux_document_extractions_entity_file_name "
+                "ON document_extractions (entity_id, file_name)"
             ))
         log.info("DB schema ready")
         return True

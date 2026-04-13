@@ -12,7 +12,7 @@ The pipeline runs locally without making any external API calls, ensuring high p
 | **MediaPipe FaceLandmarker** | Face Detection (primary) | Google's on-device model that detects 468 facial landmarks and outputs blendshape scores (e.g. `eyeBlinkLeft`, `eyeBlinkRight`). Used as the default face detector on Python 3.13+. Model file: `your_data/models/face_landmarker.task` (auto-downloaded on first run). |
 | **InsightFace (RetinaFace + ArcFace)** | Face Detection + Identity Recognition (optional) | Deep learning models that detect faces and produce 512-dimensional identity embeddings. Required for face-match scoring. Installs cleanly on Linux (Docker) or Windows with Python ≤ 3.12. |
 | **ONNX Runtime** | Inference Engine | Executes InsightFace models locally on the CPU using the `buffalo_l` model pack. Required only when InsightFace is available. |
-| **pytesseract** | OCR | Extracts text from PAN card images to read the PAN number and cardholder name for cross-document verification. |
+| **PaddleOCR** | OCR | Extracts recovery text from PAN card images when Gemma4 misses a field, so PAN validation stays on the same OCR engine used elsewhere in BaseTruth. |
 | **Gemma4 via Ollama** | Vision extraction | Extracts PAN number, full name, father's name, and DOB from PAN images; used as the primary PAN extraction path. |
 
 ## Workflow
@@ -29,7 +29,7 @@ The primary identity verification flow mandates **three document inputs**:
    - If a new secure QR (2018+) is found, the system notes it is present but cannot reveal the encrypted payload offline.
 2. **PAN Card Upload** — The operator uploads a photo of the applicant's PAN card.
    - Gemma4 (via Ollama) extracts the PAN number, cardholder full name, father's name, and date of birth from the card image.
-   - pytesseract OCR remains as a fallback when Ollama or Gemma4 is unavailable, or when a field needs recovery from a weak model response.
+   - PaddleOCR supplies recovery text when Gemma4 misses a field, so PAN extraction stays on the same OCR stack used for marksheets and scanned documents.
    - The PAN number is validated against the standard format (`ABCDE1234F`).
    - The 4th character is decoded to identify the entity type (Individual / Company / HUF etc.).
    - The extracted PAN full name is compared to the Aadhaar QR name using exact first-name and last-name matching with middle-name tolerance.
@@ -41,7 +41,7 @@ The primary identity verification flow mandates **three document inputs**:
    - **PAN Format & Entity Type** — Regex validation plus entity-type decoding from the 4th PAN character.
 5. **Face Match** — ArcFace cosine similarity between the face on the Aadhaar card and the selfie (threshold > 0.40).
 6. **Auto-fill Entity Form** — Extracted PAN name is used as a fallback when Aadhaar QR name is unavailable. PAN number and masked Aadhaar UID are pre-populated in the "Applicant Details" form, while father's name and DOB remain visible for operator review. The operator only needs to enter phone and email manually.
-7. **Persistence** — Results are stored in the `identity_checks` database table, linked to the entity. In parallel, the save flow upserts section-level evidence into `layered_analysis_entries` for:
+7. **Persistence** — Results are stored in the `identity_checks` database table, linked to the entity. The same save also writes document fields into `document_extractions` as separate rows for Aadhaar and PAN when those payloads are available. In parallel, the save flow upserts section-level evidence into `layered_analysis_entries` for:
    - `Identity Verification` / `Aadhaar`
    - `Identity Verification` / `PAN Card`
    - `Identity Verification` / `Photo Upload`
@@ -113,6 +113,11 @@ Customer's browser ──WS /kyc/ws/{session_id}──► FastAPI server
 | Windows Python ≤ 3.12 | InsightFace (RetinaFace) | EAR from MediaPipe landmarks | ArcFace cosine similarity |
 | Windows Python 3.13+ | **MediaPipe FaceLandmarker** | EAR via blendshapes | Skipped (liveness-only) |
 
+The Docker deployment is intentionally pinned to Python 3.12 so the production
+face-match stack can keep using the published InsightFace wheel builds.
+Python 3.13 remains supported for local development through the MediaPipe
+fallback path, while PaddleOCR handles marksheet OCR in both environments.
+
 On Python 3.13+, `insightface` cannot be installed (native extension build fails). The server automatically falls back to MediaPipe — all liveness challenges work fully, and the face-match step is skipped with a clear message instead of failing silently.
 
 ## Cross-Document Checks
@@ -139,6 +144,15 @@ All identity verification results are now persisted in the `identity_checks` Pos
 | `verdict` | Overall PASS/FAIL |
 | `report_json` | Full result payload |
 | `pdf_report` | Generated PDF audit report |
+
+The same save also writes structured document fields to `document_extractions`:
+
+| Document Type | Stored Fields |
+| --- | --- |
+| `aadhaar` | name, UID, DOB/YOB, gender, district, state, QR type |
+| `pan_card` | PAN number, full name, father's name, DOB, extraction source, engine |
+
+Both rows use `source_screen = 'identity_verification'` and `scan_id = NULL` because Identity Verification does not create a scan row.
 
 Results are viewable in the **Records** page under each entity's detail panel, alongside document scan history.
 The same verification event also updates `layered_analysis_entries`, which is the dedicated source used by the **Layered Analysis** screen to show extracted fields, deterministic checks, model metrics, and raw evidence for audit review.

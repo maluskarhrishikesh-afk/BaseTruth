@@ -1,6 +1,6 @@
 """Gemma / Gemini VLM integration for OCR fallback.
 
-When classical OCR (PaddleOCR / Tesseract) returns low-confidence text — or
+When PaddleOCR returns low-confidence text — or
 fails to find a PAN regex — this module calls a Vision-Language Model (VLM)
 to extract structured information directly from the image.
 
@@ -11,8 +11,8 @@ Two backends are supported (tried in order):
      ``GEMINI_API_KEY`` environment variable to be set).
 
 Both backends degrade gracefully: if neither is available the function
-returns ('', 'unavailable') and the pipeline falls back to plain Tesseract
-text without crashing.
+returns ('', 'unavailable') and the pipeline falls back to the existing
+PaddleOCR text without crashing.
 
 Public API
 ----------

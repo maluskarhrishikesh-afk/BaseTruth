@@ -272,16 +272,20 @@ class BaseTruthService:
         elif is_image_file(path):
             # ── Raw image file branch (JPEG, PNG, TIFF, BMP, WebP) ──────────
             log.info("scan_document: detected raw image file — running direct OCR", extra={"path": str(path)})
-            # 1. OCR the image directly with pytesseract (no Poppler needed)
+            # 1. OCR the image directly with PaddleOCR.
             ocr_text, ocr_engine = ocr_image_directly(path)
-            if ocr_engine == "pytesseract":
-                parse_method = "ocr_pytesseract_direct"
-                log.info("scan_document: OCR succeeded via pytesseract", extra={"chars": len(ocr_text or "")})
+            if ocr_text.strip():
+                parse_method = f"ocr_{ocr_engine or 'paddleocr'}_direct"
+                log.info(
+                    "scan_document: OCR succeeded via %s",
+                    ocr_engine or "paddleocr",
+                    extra={"chars": len(ocr_text or "")},
+                )
             else:
                 parse_method = "no_text_extracted"
                 parse_fallback = True
                 parse_fallback_reason = (
-                    "Direct image OCR unavailable (install pytesseract + Tesseract binary). "
+                    "Direct image OCR produced no usable text via PaddleOCR. "
                     "Image forensics signals will still be generated."
                 )
                 log.warning("scan_document: OCR unavailable for image file", extra={"ocr_engine": ocr_engine})
@@ -297,8 +301,8 @@ class BaseTruthService:
             if parse_fallback:
                 structured_summary["parse_fallback"] = True
                 structured_summary["parse_fallback_reason"] = parse_fallback_reason
-            if ocr_engine == "pytesseract":
-                structured_summary["ocr_engine"] = "pytesseract"
+            if ocr_engine:
+                structured_summary["ocr_engine"] = ocr_engine
             structured_path.write_text(
                 json.dumps(structured_summary, indent=2, ensure_ascii=False), encoding="utf-8"
             )
@@ -368,12 +372,12 @@ class BaseTruthService:
                         ocr_text, ocr_engine = extract_text_via_ocr(path)
                         if ocr_text.strip():
                             extracted_text = ocr_text
-                            parse_fallback_reason += " | OCR via pytesseract succeeded."
-                            parse_method = "ocr_pytesseract"
+                            parse_fallback_reason += f" | OCR via {ocr_engine or 'paddleocr'} succeeded."
+                            parse_method = f"ocr_{ocr_engine or 'paddleocr'}"
                             log.info("scan_document: OCR succeeded", extra={"chars": len(ocr_text)})
                         else:
                             if ocr_engine == "unavailable":
-                                parse_fallback_reason += " | OCR unavailable (install Tesseract + pdf2image)."
+                                parse_fallback_reason += " | OCR unavailable (install PaddleOCR and PaddlePaddle)."
                             elif ocr_engine == "error":
                                 parse_fallback_reason += " | OCR attempt failed."
                             else:
@@ -400,8 +404,8 @@ class BaseTruthService:
                 structured_summary["parse_fallback_reason"] = parse_fallback_reason
                 if image_only_pdf:
                     structured_summary["is_image_only_pdf"] = True
-                if ocr_engine == "pytesseract":
-                    structured_summary["ocr_engine"] = "pytesseract"
+                if ocr_engine:
+                    structured_summary["ocr_engine"] = ocr_engine
             structured_path.write_text(json.dumps(structured_summary, indent=2, ensure_ascii=False), encoding="utf-8")
             pdf_metadata = extract_pdf_metadata(source_path) if source_path.suffix.lower() == ".pdf" else {}
             raw_parse_written = str(raw_parse_path)

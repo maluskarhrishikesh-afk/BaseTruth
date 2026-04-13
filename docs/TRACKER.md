@@ -94,7 +94,7 @@
   - `analyse_image()` — combined entry point returning signals + forensics summary
 - [x] `integrations/pdf.py` extended with image helpers:
   - `is_image_file()` — extension check
-  - `ocr_image_directly()` — pytesseract OCR on raw images (no Poppler dependency)
+  - `ocr_image_directly()` — PaddleOCR on raw images (no Poppler or Tesseract dependency)
   - `extract_image_file_metadata()` — dimensions, format, SHA-256 for raw images
 - [x] `service.scan_document()` — new `elif is_image_file(path):` branch for `.jpg/.png/.tiff` etc.
   - OCR → structured summary → image forensics → tamper assessment → PDF report → DB persist
@@ -142,7 +142,7 @@
 - [x] **Sidebar emoji icon fix** — emojis (📊 Reports, 🗄️ Database, 📋 Logs) were rendering as dark blue boxes due to `font-family: 'Inter'` overriding the system colour-emoji font. Fix: added `'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji'` to both the global `html, body` rule and the sidebar button font-family in `_CSS`.
 - [x] **Identity Verification page redesigned** — three dedicated upload sections: Aadhaar Card, PAN Card, Selfie.
   - Aadhaar QR parsing via `cv2.QRCodeDetector` — extracts full name, DOB/YOB, gender, district, state from the XML QR payload (older Aadhaar). Secure QR (2018+) is detected and noted.
-  - PAN card OCR via pytesseract — extracts PAN number and cardholder name.
+  - PAN card recovery OCR via PaddleOCR — extracts PAN number and cardholder name when Gemma4 misses a field.
   - PAN format validation (`[A-Z]{5}[0-9]{4}[A-Z]`) with entity-type and surname-initial decoding.
   - Name cross-check: Aadhaar QR name vs PAN OCR name (word-level Jaccard similarity ≥ 50%).
   - PAN surname-initial check: PAN[4] must match first letter of Aadhaar surname.

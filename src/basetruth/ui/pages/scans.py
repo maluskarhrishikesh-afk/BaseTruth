@@ -184,17 +184,43 @@ def _render_scan_row(scan: dict, show_approve_buttons: bool = True, key_prefix: 
         score_str = f"{score:.1f}/100" if score is not None else "—"
         h4.markdown(f"**Score:** {score_str}  \n🕐 {generated_at}")
 
-        # ── Original image preview ──────────────────────────────────────────
-        # Try to load the source document image from MinIO (key = entity_ref/source_name).
-        # We only attempt this when MinIO is available to avoid freezing the UI.
+        # ── Original document preview ───────────────────────────────────────
+        # Try to load the source document from MinIO (key = entity_ref/source_name)
+        # so the reviewer can see the actual document while deciding to approve or reject.
+        # For image files we show them directly; for PDFs we render page 1 as an image.
+        # We only attempt MinIO access when MinIO is confirmed available (cached flag)
+        # to avoid freezing the page on a network timeout.
         _image_exts = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp"}
         _src_ext = ("." + source_name.rsplit(".", 1)[-1]).lower() if "." in source_name else ""
-        if entity_ref and entity_ref != "—" and _src_ext in _image_exts and _minio_available_cached():
+        _is_pdf = _src_ext == ".pdf"
+        _is_img = _src_ext in _image_exts
+
+        if entity_ref and entity_ref != "—" and (_is_img or _is_pdf) and _minio_available_cached():
             _minio_key = f"{entity_ref}/{source_name}"
-            _img_bytes = minio_get_object(_minio_key)
-            if _img_bytes:
+            _doc_bytes = minio_get_object(_minio_key)
+            if _doc_bytes:
                 with st.expander("🖼️ Original Document", expanded=False):
-                    st.image(_img_bytes, caption=source_name, use_container_width=True)
+                    if _is_img:
+                        # Direct image — display as-is
+                        st.image(_doc_bytes, caption=source_name, use_container_width=True)
+                    else:
+                        # PDF — render page 1 to a JPEG so the reviewer can see the document
+                        # without needing a PDF viewer plugin in the browser.
+                        try:
+                            import fitz  # PyMuPDF — already a hard dependency
+                            import io as _io
+                            _pdf_doc = fitz.open(stream=_doc_bytes, filetype="pdf")
+                            _page = _pdf_doc[0]
+                            # 150 DPI is enough for a preview (keeps download size small)
+                            _mat = fitz.Matrix(150 / 72, 150 / 72)
+                            _pix = _page.get_pixmap(matrix=_mat)
+                            _png_bytes = _io.BytesIO(_pix.tobytes("png"))
+                            _pdf_doc.close()
+                            st.image(_png_bytes, caption=f"{source_name} (page 1 preview)", use_container_width=True)
+                            st.caption("📄 Full PDF stored in MinIO — page 1 preview shown above.")
+                        except Exception as _pdf_err:
+                            log.warning("Scans: could not render PDF preview for %s: %s", source_name, _pdf_err)
+                            st.caption(f"📄 PDF document stored in MinIO — preview unavailable ({_pdf_err})")
 
         with st.expander("🔬 Forensic Details", expanded=False):
             _render_forensics_card(scan)

@@ -128,10 +128,10 @@ def _page_scan(service: BaseTruthService) -> None:
                 or summary.get("parse_fallback_reason", "")
             ).split("|")[0].strip()
 
-            if is_image_only and ocr_engine == "pytesseract":
+            if is_image_only and ocr_engine == "paddleocr":
                 st.info(
                     "**Image-only PDF detected** -- LiteParse required ImageMagick which is "
-                    "not installed. BaseTruth used **Tesseract OCR** as a fallback and "
+                    "not installed. BaseTruth used **PaddleOCR** for the OCR pass and "
                     "successfully extracted text from the document.  "
                     "Field extraction quality may differ from a full LiteParse scan."
                 )
@@ -145,14 +145,10 @@ def _page_scan(service: BaseTruthService) -> None:
                     "**Option A (recommended) -- Install ImageMagick:**  \n"
                     "Download from https://imagemagick.org/script/download.php#windows  \n"
                     "Restart the terminal after install, then re-scan.\n\n"
-                    "**Option B -- Install Tesseract + Poppler:**  \n"
-                    "1. Tesseract: https://github.com/UB-Mannheim/tesseract/wiki  \n"
-                    "   Add its folder to your system PATH  \n"
-                    "2. Poppler: https://github.com/oschwartz10612/poppler-windows/releases  \n"
-                    "   Add poppler/bin to your system PATH  \n"
-                    "3. In the BaseTruth folder run:  \n"
-                    "   `.venv\\Scripts\\pip install pytesseract pdf2image`  \n"
-                    "4. Re-scan the document."
+                    "**Option B -- Install PaddleOCR runtime:**  \n"
+                    "1. In the BaseTruth folder run:  \n"
+                    "   `.venv\\Scripts\\pip install paddleocr paddlepaddle`  \n"
+                    "2. Re-scan the document."
                 )
             elif is_image_only:
                 st.warning(

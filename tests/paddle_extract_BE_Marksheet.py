@@ -1,21 +1,4 @@
-﻿"""
-PaddleOCR extraction of BE-Marksheet.pdf â€” runs inside Docker.
-
-Engine: RapidOCR (rapidocr-onnxruntime)
--------
-PaddleOCR 3.4.0 + PaddlePaddle 3.3.1 have a hard upstream C++ bug:
-  oneDNN PIR executor ConvertPirAttribute2RuntimeAttribute does not support
-  pir::ArrayAttribute<pir::DoubleAttribute>.
-
-  oneDNN is NOT a separate package â€” it is compiled INTO PaddlePaddle. It
-  cannot be uninstalled independently. The bug is at the C++ layer and
-  cannot be bypassed from Python (env flags, source patches and monkey-patches
-  were all tried and failed because the model files load PIR ops at the
-  C++ level before any Python code can intercept them).
-
-  RapidOCR uses the exact same PP-OCRv4 models as PaddleOCR but runs inference
-  via ONNX Runtime, completely bypassing PaddlePaddle. Results are identical
-  in terms of model architecture and accuracy.
+﻿"""PaddleOCR extraction of BE-Marksheet.pdf — runs inside Docker.
 
 Usage (inside Docker):
     python /tmp/paddle_extract_BE_Marksheet.py
@@ -50,28 +33,35 @@ img_path = "/tmp/be_marksheet_page1.jpg"
 pil_img.save(img_path, format="JPEG", quality=95)
 print(f"  Page saved: {pil_img.width}x{pil_img.height}px")
 
-# â”€â”€ Step 2: Run RapidOCR (PP-OCRv4 models via ONNX Runtime) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-print("\nRunning RapidOCR (PP-OCRv4 via ONNX Runtime â€” same models as PaddleOCR) ...")
-from rapidocr_onnxruntime import RapidOCR
+# â”€â”€ Step 2: Run PaddleOCR â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+print("\nRunning PaddleOCR ...")
+from paddleocr import PaddleOCR
 
-ocr = RapidOCR()
-result, elapse = ocr(img_path)
-total_elapse = sum(elapse) if isinstance(elapse, (list, tuple)) else float(elapse)
+ocr = PaddleOCR(lang="en", use_angle_cls=False, show_log=False)
+result = ocr.ocr(img_path, cls=False) or []
+total_elapse = 0.0
 print(f"  Inference time: {total_elapse:.2f}s")
 
-# result is a list of [bounding_box, text, confidence] or None
-if result is None:
-    result = []
+# result is a list of pages, each page is a list of [bounding_box, [text, confidence]]
+flat_result: list[list] = []
+for page_result in result:
+    for item in page_result or []:
+        flat_result.append(item)
 
-print(f"  Extracted {len(result)} text regions")
+print(f"  Extracted {len(flat_result)} text regions")
 
 # â”€â”€ Step 3: Build line list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 lines: list[dict] = []
-for item in result:
+for item in flat_result:
     if len(item) >= 2:
         box = item[0].tolist() if hasattr(item[0], "tolist") else item[0]
-        text = str(item[1]).strip()
-        conf = float(item[2]) if len(item) > 2 else 0.0
+        payload = item[1]
+        if isinstance(payload, (list, tuple)) and len(payload) >= 2:
+            text = str(payload[0]).strip()
+            conf = float(payload[1])
+        else:
+            text = str(payload).strip()
+            conf = 0.0
         if text:
             lines.append({"text": text, "confidence": round(conf, 4), "box": box})
 
@@ -178,8 +168,8 @@ parsed_subjects = parse_marks_table(line_texts)
 
 # â”€â”€ Step 5: Build output JSON â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 output = {
-    "method": "rapidocr_onnxruntime_pp-ocrv4",
-    "engine_note": "PP-OCRv4 models via ONNX Runtime (same models as PaddleOCR, bypasses PaddlePaddle oneDNN PIR bug)",
+    "method": "paddleocr",
+    "engine_note": "PaddleOCR row-aware extraction for BE marksheets",
     "document_type": "Marksheet",
     "candidate_name": candidate_name or None,
     "board_or_university_name": university or None,
@@ -207,7 +197,7 @@ OUT_PATH.write_text(json.dumps(output, indent=2, ensure_ascii=False), encoding="
 print(f"\nâœ“ Written â†’ {OUT_PATH}")
 
 print("\nâ”€â”€ Quick Summary â”€â”€")
-print(f"  Method    : RapidOCR (PP-OCRv4 via ONNX Runtime)")
+print(f"  Method    : PaddleOCR")
 print(f"  Candidate : {output['candidate_name']}")
 print(f"  Seat No   : {output['enrollment_or_seat_number']}")
 print(f"  University: {output['board_or_university_name']}")

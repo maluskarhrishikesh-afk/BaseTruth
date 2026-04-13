@@ -26,7 +26,6 @@ services:
       - ./artifacts:/app/artifacts
       - ./your_data:/app/your_data
     environment:
-      TESSERACT_CMD: /usr/bin/tesseract
       EXIFTOOL_PATH: /usr/bin/exiftool
       BASETRUTH_ARTIFACT_ROOT: /app/artifacts
     # Override at `docker compose run` time:
@@ -54,7 +53,6 @@ services:
       - ./src:/app/src
       - ./logs:/app/logs
     environment:
-      TESSERACT_CMD: /usr/bin/tesseract
       EXIFTOOL_PATH: /usr/bin/exiftool
       BASETRUTH_ARTIFACT_ROOT: /app/artifacts
       # Prepend /app/src so the live source files take precedence over the
@@ -111,7 +109,6 @@ services:
       - ./src:/app/src
       - ./logs:/app/logs
     environment:
-      TESSERACT_CMD: /usr/bin/tesseract
       EXIFTOOL_PATH: /usr/bin/exiftool
       BASETRUTH_ARTIFACT_ROOT: /app/artifacts
       PYTHONPATH: /app/src

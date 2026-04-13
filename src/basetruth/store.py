@@ -6,6 +6,7 @@ the application continues to work in file-only mode.
 """
 from __future__ import annotations
 
+import os as _os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,7 +23,7 @@ from basetruth.analysis.upload_authenticity import (
 from basetruth.db import (
     Case,
     CaseNote,
-    DocumentInformation,
+    DocumentExtraction,
     Entity,
     IdentityCheck,
     LayeredAnalysisEntry,
@@ -53,6 +54,97 @@ def _next_entity_ref(session: Session) -> str:
 def _clean(value: Any) -> str:
     """Return a non-None, stripped string."""
     return str(value).strip() if value else ""
+
+
+def _normalise_document_file_name(file_name: str, *, fallback: str = "") -> str:
+    """Return a safe basename for document_extractions.file_name.
+
+    We store only the leaf filename because the UPSERT key is meant to identify
+    one uploaded document for one entity, regardless of the temp folder or local
+    machine path used during processing.
+    """
+    candidate = _clean(file_name)
+    if candidate:
+        return Path(candidate).name
+    fallback_name = _clean(fallback)
+    return Path(fallback_name).name if fallback_name else ""
+
+
+def _upsert_document_extraction(
+    session: Session,
+    *,
+    entity_id: int,
+    file_name: str,
+    document_type: str,
+    extracted_data: Dict[str, Any],
+    source_screen: str,
+    scan_id: Optional[int],
+    fallback_file_name: str = "",
+) -> DocumentExtraction:
+    """Create or update one extraction row keyed by (entity_id, file_name).
+
+    A document can be rescanned or reclassified later, but operators still think
+    of it as the same uploaded file. Using the entity + file name pair as the
+    natural key keeps the latest extraction in one stable row.
+    """
+    clean_file_name = _normalise_document_file_name(file_name, fallback=fallback_file_name)
+    if not clean_file_name:
+        raise ValueError("document extraction requires a file_name")
+
+    existing_ext = (
+        session.query(DocumentExtraction)
+        .filter(
+            DocumentExtraction.entity_id == entity_id,
+            DocumentExtraction.file_name == clean_file_name,
+        )
+        .first()
+    )
+    payload = _json_ready(extracted_data)
+
+    if existing_ext is None:
+        existing_ext = DocumentExtraction(
+            entity_id=entity_id,
+            scan_id=scan_id,
+            file_name=clean_file_name,
+            document_type=document_type,
+            extracted_data=payload,
+            source_screen=source_screen,
+        )
+        session.add(existing_ext)
+    else:
+        existing_ext.scan_id = scan_id
+        existing_ext.file_name = clean_file_name
+        existing_ext.document_type = document_type
+        existing_ext.extracted_data = payload
+        existing_ext.source_screen = source_screen
+
+    return existing_ext
+
+
+def _upsert_identity_document_extraction(
+    session: Session,
+    *,
+    entity_id: int,
+    file_name: str,
+    document_type: str,
+    extracted_data: Dict[str, Any],
+) -> None:
+    """Create or update one identity-verification extraction row.
+
+    Identity Verification can produce two different document payloads in one run:
+    Aadhaar details and PAN details. We store them as two separate rows so the
+    Database Viewer and downstream screens can show both documents clearly.
+    """
+    _upsert_document_extraction(
+        session,
+        entity_id=entity_id,
+        scan_id=None,
+        file_name=file_name,
+        fallback_file_name=f"identity_verification_{document_type}",
+        document_type=document_type,
+        extracted_data=extracted_data,
+        source_screen="identity_verification",
+    )
 
 
 def extract_identity_fields(report: Dict[str, Any]) -> Dict[str, str]:
@@ -143,6 +235,35 @@ def extract_identity_fields(report: Dict[str, Any]) -> Dict[str, str]:
                 if m:
                     email = m.group()
                     break
+
+    # ── Also try _document_extraction (Gemma4 bulk scan fields) ──────────
+    # Bulk scan reports don't have structured_summary — identity fields like
+    # employee_name, pan_number, and email come from the Gemma4 extraction
+    # payload attached by bulk.py.  We only fall back to this when the
+    # structured_summary path returned nothing useful.
+    _de = report.get("_document_extraction") or {}
+    if _de and not _de.get("_unavailable") and not _de.get("error"):
+        if not first_name:
+            # Try all common name field variants that Gemma4 might use
+            _de_name = (
+                _de.get("employee_name") or _de.get("candidate_name")
+                or _de.get("account_holder_name") or _de.get("donor_name")
+                or _de.get("recipient_name") or ""
+            )
+            if _de_name:
+                _parts = str(_de_name).split(maxsplit=1)
+                first_name = _parts[0] if _parts else ""
+                last_name = _parts[1] if len(_parts) > 1 else ""
+        if not pan:
+            _de_pan = str(_de.get("pan_number") or "").strip()
+            if _de_pan:
+                pan = _de_pan.upper()[:20]
+        if not email:
+            email = str(_de.get("email") or _de.get("email_id") or "").strip()
+        if not phone:
+            _de_ph = str(_de.get("phone") or _de.get("mobile") or "").strip()
+            if _de_ph:
+                phone = re.sub(r"[^\d+]", "", _de_ph)[:20]
 
     return {
         "first_name": first_name,
@@ -803,44 +924,44 @@ def save_scan_to_db(
                 "entity_ref": entity.entity_ref if entity else None,
             }
 
-            # ── Persist DocumentInformation ────────────────────────────────
-            # Only create DocumentInformation when the report contains structured_summary
-            # (i.e. from the single Scan Document screen with OCR).  Forensics-only
-            # reports from Bulk Scan do not have OCR payload to store here.
+            # ── Persist DocumentExtraction ────────────────────────────────
+            # Two paths to create a DocumentExtraction row:
+            #
+            # Path A — Single Scan Document screen (OCR): the report has a
+            #   'structured_summary' key with the full OCR payload.
+            #
+            # Path B — Bulk Scan (Gemma4 extraction): the report has a
+            #   '_document_extraction' key with fields pulled by Gemma4.
+            #   We only save this if the extraction is non-empty and did not
+            #   fail (no 'error' key and not '_unavailable').
             if entity and report.get("structured_summary"):
                 _doc_info_payload = _build_document_information_payload(report)
                 _doc_type = ss.get("document", {}).get("type", "generic")
                 try:
-                    doc_info = (
-                        session.query(DocumentInformation)
-                        .filter(DocumentInformation.scan_id == scan.id)
-                        .first()
+                    doc_info = _upsert_document_extraction(
+                        session,
+                        entity_id=entity.id,
+                        scan_id=scan.id,
+                        file_name=report.get("source", {}).get("name", ""),
+                        document_type=_doc_type,
+                        extracted_data=_doc_info_payload,
+                        source_screen="scan_document",
+                        fallback_file_name=f"scan_document_{_doc_type}",
                     )
-                    if doc_info is None:
-                        doc_info = DocumentInformation(
-                            entity_id=entity.id,
-                            scan_id=scan.id,
-                            document_type=_doc_type,
-                            extracted_data=_doc_info_payload,
-                        )
-                        session.add(doc_info)
-                    else:
-                        doc_info.entity_id = entity.id
-                        doc_info.document_type = _doc_type
-                        doc_info.extracted_data = _doc_info_payload
                     session.flush()
                     log.info(
-                        "save_scan_to_db: DocumentInformation created",
+                        "save_scan_to_db: DocumentExtraction upserted (OCR path)",
                         extra={
                             "doc_info_id": doc_info.id,
                             "entity_ref": entity.entity_ref,
+                            "file_name": doc_info.file_name,
                             "document_type": _doc_type,
                             "key_field_count": len(ss.get("key_fields") or {}),
                         },
                     )
                 except Exception as di_exc:
                     log.error(
-                        "save_scan_to_db: DocumentInformation creation FAILED",
+                        "save_scan_to_db: DocumentExtraction creation FAILED",
                         extra={"error": str(di_exc), "entity_id": entity.id, "scan_id": scan.id},
                         exc_info=True,
                     )
@@ -858,8 +979,97 @@ def save_scan_to_db(
                         extra={"error": str(la_exc), "entity_id": entity.id, "scan_id": scan.id},
                         exc_info=True,
                     )
+            elif entity and "_document_extraction" in report:
+                # Bulk Scan path: always save a document_extractions row so operators
+                # can see extracted fields in Document Intelligence even when Gemma4/Ollama
+                # is offline.  When extraction succeeded we use the Gemma4 payload;
+                # when it failed we fall back to a minimal forensics-summary payload.
+                _bulk_ext: Dict = report.get("_document_extraction") or {}
+                # _has_error is True when Gemma4 explicitly flagged Ollama as offline or returned
+                # a hard error.  These are the only cases where extraction genuinely failed.
+                _has_error = bool(_bulk_ext.get("error") or _bulk_ext.get("_unavailable"))
+                # Gemma4 data is usable when there is no error flag AND the dict is non-empty.
+                # We do NOT gate on key count — even a result with all-null fields (e.g. the model
+                # could not read the document) is still valid Gemma4 output and must be saved.
+                # An empty dict {} means an exception was silently caught in bulk.py before the
+                # extraction call completed; treat that the same as "unavailable".
+                _has_gemma4_data = not _has_error and bool(_bulk_ext)
+
+                if _has_gemma4_data:
+                    # Gemma4 ran and returned a result — save it directly.
+                    # Includes cases where _validation_errors is set (partial extraction).
+                    _extraction_payload: Dict[str, Any] = _bulk_ext
+                else:
+                    # Gemma4 was unreachable, returned an error, or bulk.py's try/except
+                    # caught an exception before the extraction completed (leaving an empty
+                    # dict).  Save a forensics-summary stub so the row is never empty.
+                    _fsummary = (report.get("_layered_forensics") or {}).get("scan_summary", {})
+                    _extraction_payload = {
+                        "document_type": report.get("document_type", "generic"),
+                        "source_name": (report.get("source") or {}).get("name", ""),
+                        "forensic_verdict": _fsummary.get("forensic_verdict", ""),
+                        "forgery_score_0_100": _fsummary.get("forgery_score_0_100"),
+                        # Always True here — this branch only runs when no Gemma4 data is available
+                        "_extraction_unavailable": True,
+                    }
+                    log.warning(
+                        "save_scan_to_db: using forensics fallback for DocumentExtraction "
+                        "(Gemma4 extraction unavailable or produced an empty result)",
+                        extra={
+                            "source": _src_name,
+                            "has_error": _has_error,
+                            "bulk_ext_keys": list(_bulk_ext.keys()),
+                        },
+                    )
+
+                _bulk_doc_type = report.get("document_type", "generic")
+                try:
+                    doc_info = _upsert_document_extraction(
+                        session,
+                        entity_id=entity.id,
+                        scan_id=scan.id,
+                        file_name=report.get("source", {}).get("name", ""),
+                        document_type=_bulk_doc_type,
+                        extracted_data=_extraction_payload,
+                        source_screen="bulk_scan",
+                        fallback_file_name=f"bulk_scan_{_bulk_doc_type}",
+                    )
+                    session.flush()
+                    log.info(
+                        "save_scan_to_db: DocumentExtraction upserted (bulk Gemma4 path)",
+                        extra={
+                            "doc_info_id": doc_info.id,
+                            "entity_ref": entity.entity_ref,
+                            "file_name": doc_info.file_name,
+                            "document_type": _bulk_doc_type,
+                            "has_gemma4_data": _has_gemma4_data,
+                        },
+                    )
+                except Exception as di_exc2:
+                    log.error(
+                        "save_scan_to_db: DocumentExtraction (bulk) creation FAILED",
+                        extra={"error": str(di_exc2), "entity_id": entity.id, "scan_id": scan.id},
+                        exc_info=True,
+                    )
+
+                # Persist layered analysis entry for bulk scans so the Layered Analysis
+                # screen shows this document alongside single-scan documents.
+                try:
+                    _persist_scan_layered_analysis(
+                        session,
+                        entity=entity,
+                        scan=scan,
+                        report=report,
+                        screen_name=layered_screen_name,
+                    )
+                except Exception as la_exc:
+                    log.error(
+                        "save_scan_to_db: layered analysis upsert FAILED",
+                        extra={"error": str(la_exc), "entity_id": entity.id, "scan_id": scan.id},
+                        exc_info=True,
+                    )
             else:
-                log.debug("save_scan_to_db: skipping DocumentInformation — no entity")
+                log.debug("save_scan_to_db: skipping DocumentExtraction — no entity or unknown report format")
 
         # ── Upload PDF to MinIO (non-fatal) ────────────────────────────────
         entity_ref_for_minio = result.get("entity_ref")
@@ -1029,9 +1239,9 @@ def get_entity_document_information(entity_ref: str) -> List[Dict[str, Any]]:
             if not entity:
                 return []
             rows = (
-                session.query(DocumentInformation)
-                .filter(DocumentInformation.entity_id == entity.id)
-                .order_by(DocumentInformation.created_at.desc())
+                session.query(DocumentExtraction)
+                .filter(DocumentExtraction.entity_id == entity.id)
+                .order_by(DocumentExtraction.created_at.desc())
                 .all()
             )
             result = []
@@ -1043,8 +1253,9 @@ def get_entity_document_information(entity_ref: str) -> List[Dict[str, Any]]:
                     {
                         "id": row.id,
                         "scan_id": row.scan_id,
+                        "file_name": row.file_name or (scan.source_name if scan else ""),
                         "document_type": row.document_type or "generic",
-                        "source_name": scan.source_name if scan else "",
+                        "source_name": row.file_name or (scan.source_name if scan else ""),
                         "scan_generated_at": (
                             scan.generated_at.isoformat()
                             if scan and scan.generated_at
@@ -1582,17 +1793,23 @@ def save_identity_check(
     selfie_bytes: Optional[bytes] = None,
     pan_filename: str = "",
     pan_bytes: Optional[bytes] = None,
+    pan_signature_bytes: Optional[bytes] = None,
 ) -> Optional[Dict[str, Any]]:
     """Persist a face-match or Video KYC result to the DB.
 
     Parameters
     ----------
-    check_type:      'face_match' or 'video_kyc'
-    result:          The result dict from compare_faces() or the KYC processor.
-    entity_ref:      Link to an existing entity (BT-XXXXXX). If None, unlinked.
-    doc_filename:    Original ID document filename.
-    selfie_filename: Selfie filename (face_match only).
-    pdf_bytes:       Generated PDF report bytes.
+    check_type:          'face_match' or 'video_kyc'
+    result:              The result dict from compare_faces() or the KYC processor.
+    entity_ref:          Link to an existing entity (BT-XXXXXX). If None, unlinked.
+    doc_filename:        Original ID document filename.
+    selfie_filename:     Selfie filename (face_match only).
+    pdf_bytes:           Generated PDF report bytes.
+    pan_signature_bytes: JPEG bytes of the cropped PAN card signature strip. When
+                         provided, the image is uploaded to MinIO as
+                         ``{entity_ref}/pan_signature.jpg`` and its key is stored
+                         inside the ``pan_card`` ``document_extractions`` row as
+                         ``pan_signature_minio_key`` for downstream signature analysis.
     """
     try:
         with db_session() as session:
@@ -1735,6 +1952,98 @@ def save_identity_check(
                         "save_identity_check: layered analysis upsert FAILED",
                         extra={"error": str(la_exc), "entity_id": entity.id, "check_id": row.id},
                         exc_info=True,
+                    )
+
+            # ── Save extracted identity fields to document_extractions ───
+            # The Identity Verification page stores Aadhaar fields under
+            # result['aadhaar_qr'] and PAN fields under result['pan_extraction'].
+            # Save both as separate rows so both documents are visible later.
+            if entity is not None and check_type == "face_match":
+                aadhaar_data = result.get("aadhaar_qr") or {}
+                pan_data = result.get("pan_extraction") or {}
+
+                # Older payloads stored these fields at the top level.
+                # Keep that fallback so old saves still work.
+                if not aadhaar_data:
+                    aadhaar_data = {
+                        key: result.get(key)
+                        for key in (
+                            "uid",
+                            "aadhaar_number",
+                            "name",
+                            "dob",
+                            "address",
+                            "gender",
+                            "yob",
+                            "dist",
+                            "state",
+                            "qr_type",
+                        )
+                        if result.get(key)
+                    }
+                if not pan_data:
+                    pan_data = {
+                        key: result.get(key)
+                        for key in (
+                            "pan_number",
+                            "full_name",
+                            "father_name",
+                            "date_of_birth",
+                            "extraction_source",
+                            "engine",
+                        )
+                        if result.get(key)
+                    }
+
+                try:
+                    if aadhaar_data:
+                        _upsert_identity_document_extraction(
+                            session,
+                            entity_id=entity.id,
+                            file_name=doc_filename,
+                            document_type="aadhaar",
+                            extracted_data=aadhaar_data,
+                        )
+                        log.info(
+                            "save_identity_check: DocumentExtraction saved for aadhaar",
+                            extra={"entity_id": entity.id, "doc_type": "aadhaar"},
+                        )
+                    if pan_data:
+                        # ── Upload signature to MinIO before writing the row ──
+                        # This allows us to store the MinIO key inside the
+                        # document_extractions row so downstream screens can
+                        # load the image directly without an additional lookup.
+                        if entity_ref and pan_signature_bytes:
+                            try:
+                                _sig_minio_key = f"{entity_ref}/pan_signature.jpg"
+                                minio_upload(_sig_minio_key, pan_signature_bytes, "image/jpeg")
+                                pan_data["pan_signature_minio_key"] = _sig_minio_key
+                                log.info(
+                                    "save_identity_check: PAN signature uploaded to MinIO",
+                                    extra={"entity_id": entity.id, "key": _sig_minio_key},
+                                )
+                            except Exception:
+                                log.warning(
+                                    "save_identity_check: PAN signature upload failed (non-fatal)",
+                                    exc_info=True,
+                                )
+                        _upsert_identity_document_extraction(
+                            session,
+                            entity_id=entity.id,
+                            file_name=pan_filename,
+                            document_type="pan_card",
+                            extracted_data=pan_data,
+                        )
+                        log.info(
+                            "save_identity_check: DocumentExtraction saved for pan_card",
+                            extra={"entity_id": entity.id, "doc_type": "pan_card"},
+                        )
+                    if aadhaar_data or pan_data:
+                        session.flush()
+                except Exception as ext_exc:
+                    log.warning(
+                        "save_identity_check: DocumentExtraction save failed (non-fatal)",
+                        extra={"error": str(ext_exc), "entity_id": entity.id},
                     )
 
             saved = {
@@ -1905,12 +2214,20 @@ def get_entity_identity_checks(entity_ref: str) -> List[Dict[str, Any]]:
         return []
 
 
-_DB_VIEWER_TABLES = {"entities", "scans", "document_information", "cases", "case_notes", "identity_checks", "layered_analysis_entries"}
+_DB_VIEWER_TABLES = {"entities", "scans", "document_extractions", "cases", "case_notes", "identity_checks", "layered_analysis_entries"}
 
 
 def db_table_counts() -> Dict[str, int]:
     """Return row counts for all application tables."""
-    _ALL_TABLES = ("entities", "scans", "document_information", "cases", "case_notes", "identity_checks", "layered_analysis_entries")
+    _ALL_TABLES = (
+        "entities",
+        "scans",
+        "document_extractions",
+        "cases",
+        "case_notes",
+        "identity_checks",
+        "layered_analysis_entries",
+    )
     counts: Dict[str, int] = {}
     try:
         with db_session() as session:
@@ -1934,27 +2251,36 @@ def db_table_rows(table: str, limit: int = 500) -> tuple[List[Dict[str, Any]], i
         with db_session() as session:
             total: int = session.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar() or 0  # noqa: S608
             if table == "scans":
-                # Exclude pdf_report (large binary blob) but include all other columns
+                # Select all columns except layered_analysis_json (can be a very large JSONB blob)
+                # so the Database Viewer loads quickly and does not time out.
                 rows_raw = session.execute(
                     text(
                         "SELECT id, entity_id, source_name, source_sha256, document_type, "
-                        "truth_score, risk_level, verdict, parse_method, report_json, generated_at "
+                        "approved, approved_by, approved_at, approval_comment, "
+                        "first_level_approval, first_level_approved_by, "
+                        "first_level_approved_at, first_level_approval_comment, "
+                        "second_level_approval, second_level_approved_by, "
+                        "second_level_approved_at, second_level_approval_comment, "
+                        "generated_at, updated_at "
                         "FROM scans ORDER BY generated_at DESC LIMIT :lim"
                     ),
                     {"lim": limit},
                 ).mappings().all()
-            elif table == "document_information":
+            elif table == "document_extractions":
                 rows_raw = session.execute(
                     text(
-                        "SELECT * "
-                        "FROM document_information ORDER BY id DESC LIMIT :lim"
+                            "SELECT id, entity_id, scan_id, file_name, document_type, source_screen, created_at, extracted_data "
+                        "FROM document_extractions ORDER BY id DESC LIMIT :lim"
                     ),
                     {"lim": limit},
                 ).mappings().all()
             elif table == "identity_checks":
                 rows_raw = session.execute(
                     text(
-                        "SELECT * "
+                        "SELECT id, entity_id, check_type, status, cosine_similarity, "
+                        "display_score, threshold, is_match, liveness_state, "
+                        "liveness_passed, verdict, doc_filename, selfie_filename, "
+                        "report_json, created_at "
                         "FROM identity_checks ORDER BY created_at DESC LIMIT :lim"
                     ),
                     {"lim": limit},
@@ -1987,7 +2313,7 @@ def reset_db() -> bool:
         with db_session() as session:
             session.execute(
                 text(
-                    "TRUNCATE TABLE layered_analysis_entries, case_notes, cases, document_information, identity_checks, scans, entities "
+                    "TRUNCATE TABLE layered_analysis_entries, case_notes, cases, document_extractions, identity_checks, scans, entities "
                     "RESTART IDENTITY CASCADE"
                 )
             )
@@ -2003,7 +2329,7 @@ def reset_db() -> bool:
 _TRUNCATABLE_TABLES = frozenset({
     "entities",
     "scans",
-    "document_information",
+    "document_extractions",
     "identity_checks",
     "layered_analysis_entries",
     "cases",
@@ -2012,63 +2338,51 @@ _TRUNCATABLE_TABLES = frozenset({
 
 
 def truncate_table(table_name: str) -> bool:
-    """Truncate a single named table and restart its identity sequence.
-
-    Only tables listed in _TRUNCATABLE_TABLES are permitted — any other name
-    is rejected immediately so a caller cannot inject arbitrary SQL.  Truncation
-    uses CASCADE so dependent rows in child tables are also removed, keeping
-    foreign-key constraints satisfied.
-
-    Returns True on success, False on any error.
-    """
-    # Validate against the allowlist before touching the database
+    """Truncate a single table after verifying it is in the allowlist."""
     if table_name not in _TRUNCATABLE_TABLES:
-        log.error("truncate_table: rejected unknown or disallowed table '%s'", table_name)
+        log.error("truncate_table: table %s is not in the allowlist", table_name)
         return False
     try:
         with db_session() as session:
-            # Table name is taken from a controlled allowlist, so string interpolation is safe
-            session.execute(
-                text(f"TRUNCATE TABLE {table_name} RESTART IDENTITY CASCADE")  # noqa: S608
-            )
-        log.warning("truncate_table: table '%s' truncated by user request", table_name)
+            # We use CASCADE to drop any linked rows (e.g. document extractions linked to a scan)
+            session.execute(text(f"TRUNCATE TABLE {table_name} CASCADE"))
+        log.warning("truncate_table: table %s truncated by user request", table_name)
         return True
     except Exception as exc:
-        log.error("truncate_table('%s') failed: %s", table_name, exc)
+        log.error("truncate_table failed for %s: %s", table_name, exc)
         return False
 
 
-# ---------------------------------------------------------------------------
-# MinIO / S3 object-storage helpers
-# ---------------------------------------------------------------------------
+_s3_client: Optional[Any] = None
 
-import os as _os
-
-
-def _get_minio_s3_client():
-    """Return a boto3 S3 client pointed at the MinIO endpoint, or None."""
+def _get_minio_s3_client() -> Optional[Any]:
+    global _s3_client
+    if _s3_client is not None:
+        return _s3_client
+    endpoint = _os.environ.get("MINIO_ENDPOINT", "localhost:9000")
+    access_key = _os.environ.get("MINIO_ACCESS_KEY", "minioadmin")
+    secret_key = _os.environ.get("MINIO_SECRET_KEY", "minioadmin")
+    
+    if not endpoint.startswith("http://") and not endpoint.startswith("https://"):
+        endpoint = f"http://{endpoint}"
+        
+    if not (endpoint and access_key and secret_key):
+        return None
     try:
-        import boto3  # type: ignore
-        from botocore.config import Config  # type: ignore
-        endpoint = _os.environ.get("MINIO_ENDPOINT", "")
-        if not endpoint:
-            return None
-        # Ensure the scheme is present
-        if not endpoint.startswith("http"):
-            endpoint = f"http://{endpoint}"
-        if not Path("/.dockerenv").exists() and endpoint.startswith("http://minio:"):
-            endpoint = endpoint.replace("http://minio:", "http://localhost:", 1)
-        client = boto3.client(
+        import boto3
+        from botocore.config import Config
+        _s3_client = boto3.client(
             "s3",
             endpoint_url=endpoint,
-            aws_access_key_id=_os.environ.get("MINIO_ACCESS_KEY", "minioadmin"),
-            aws_secret_access_key=_os.environ.get("MINIO_SECRET_KEY", "minioadmin"),
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
             config=Config(signature_version="s3v4"),
-            region_name="us-east-1",
         )
-        return client
+        return _s3_client
+    except ImportError:
+        return None
     except Exception as exc:
-        log.debug("_get_minio_s3_client: unavailable — %s", exc)
+        log.warning("_get_minio_s3_client failed: %s", exc)
         return None
 
 
