@@ -29,3 +29,4 @@ logs/
 *.rar
 *.7z
 *.pdf
+tests/sample/

@@ -1,0 +1,19 @@
+[32m[INFO][0m 06:48:30  integrations.document_extract:978  document_extract: starting extraction
+[32m[INFO][0m 06:48:32  integrations.document_extract:991  document_extract: using model=gemma4:latest at http://localhost:11434 for doc_type=marksheet
+Downloading detection model, please wait. This may take several minutes depending upon your network connection.
+Downloading recognition model, please wait. This may take several minutes depending upon your network connection.
+[32m[INFO][0m 06:49:15  integrations.document_extract:541  document_extract: EasyOCR reader initialised (CPU, English)
+C:\Hrishikesh\BaseTruth\.venv\Lib\site-packages\torch\utils\data\dataloader.py:775: UserWarning: 'pin_memory' argument is set as true but no accelerator is found, then device pinned memory won't be used.
+  super().__init__(loader)
+[32m[INFO][0m 06:51:41  integrations.document_extract:625  document_extract: EasyOCR extracted 39 rows, 100 words
+[32m[INFO][0m 06:51:41  integrations.document_extract:1024  document_extract: EasyOCR produced 1022 chars of layout-aware text for scanned doc
+[33m[WARN][0m 07:01:43  integrations.document_extract:1122  document_extract: attempt 1 failed: HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=600)
+[33m[WARN][0m 07:11:45  integrations.document_extract:1122  document_extract: attempt 2 failed: HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=600)
+Traceback (most recent call last):
+  File "C:\Hrishikesh\BaseTruth\tests\_run_extract.py", line 27, in <module>
+    print(f"[extract] Done: {pdf_path.name} -> {out_path}")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\malus\AppData\Local\Programs\Python\Python313\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 34: character maps to <undefined>

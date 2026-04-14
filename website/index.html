@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BaseTruth | Advanced Document Intelligence</title>
+    <meta name="description" content="BaseTruth is a premier Document Intelligence platform offering pinpoint AI-driven extraction, identity verification, and deep forensics detection.">
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <!-- Background Elements -->
+    <div class="ambient-glow glow-1"></div>
+    <div class="ambient-glow glow-2"></div>
+
+    <nav class="navbar">
+        <div class="container nav-content">
+            <div class="logo">
+                <span class="logo-icon">&#x2B22;</span>
+                <span class="logo-text">BaseTruth</span>
+            </div>
+            <div class="nav-links">
+                <a href="#features">Features</a>
+                <a href="#solutions">Solutions</a>
+                <a href="#forensics">Forensics</a>
+                <button class="btn btn-primary">Get API Access</button>
+            </div>
+        </div>
+    </nav>
+
+    <header class="hero">
+        <div class="container hero-content">
+            <div class="hero-text">
+                <div class="badge">DOCUMENT INTELLIGENCE V3.0</div>
+                <h1>Truth at the core<br>of every <span>document</span>.</h1>
+                <p>BaseTruth harnesses local and cloud-based AI to provide pinpoint data extraction, identity verification, and deep spectral forensics. Process PAN cards, academic degrees, and enterprise documents with zero doubt.</p>
+                <div class="hero-actions">
+                    <button class="btn btn-primary btn-large">Start Extracting</button>
+                    <button class="btn btn-secondary btn-large">View Documentation</button>
+                </div>
+            </div>
+            <div class="hero-visual">
+                <div class="glass-card scanner-card">
+                    <div class="scanner-header">
+                        <div class="dot red"></div>
+                        <div class="dot yellow"></div>
+                        <div class="dot green"></div>
+                        <span class="doc-name">identity_verification.pdf</span>
+                    </div>
+                    <div class="scanner-body">
+                        <div class="scan-line"></div>
+                        <div class="data-row skeleton"></div>
+                        <div class="data-row skeleton short"></div>
+                        <div class="data-row highlight">
+                            <span class="label">Authenticity:</span>
+                            <span class="value valid">VERIFIED (99.8%)</span>
+                        </div>
+                        <div class="data-row highlight border-top">
+                            <span class="label">Spectral FFT:</span>
+                            <span class="value valid">CLEAN</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <section id="features" class="features section">
+        <div class="container">
+            <div class="section-header">
+                <h2>Beyond Simple OCR</h2>
+                <p>A unified pipeline designed for precision, security, and velocity.</p>
+            </div>
+            <div class="grid feature-grid">
+                <!-- Feature 1 -->
+                <div class="glass-card feature-card">
+                    <div class="feature-icon">&#x26A1;</div>
+                    <h3>Smart Extraction</h3>
+                    <p>Powered by Gemma4 and state-of-the-art layout engines to parse complex nested tables and handwritten text dynamically.</p>
+                </div>
+                <!-- Feature 2 -->
+                <div class="glass-card feature-card">
+                    <div class="feature-icon">&#x1F50D;</div>
+                    <h3>Deep Forensics</h3>
+                    <p>Detect AI generation artifacts using mathematical FFT spectral analysis. Spot color anomalies, spliced layers, and metadata tampering.</p>
+                </div>
+                <!-- Feature 3 -->
+                <div class="glass-card feature-card">
+                    <div class="feature-icon">&#x1F6E1;</div>
+                    <h3>Identity Persistence</h3>
+                    <p>Robust PostgreSQL-backed KYC verification ensuring applicant identities are correctly maintained as ground truth for all entity records.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="demo" class="demo section dark-section">
+        <div class="container">
+            <div class="demo-layout">
+                <div class="demo-info">
+                    <h2>Advanced Automation</h2>
+                    <p>Replace generic bounding boxes and rigid pipelines with adaptive AI. Watch BaseTruth intelligently locate precisely cropped signature strokes and structured degree data without manual intervention.</p>
+                    <ul class="check-list">
+                        <li>&#x2713; Dynamic Bounding Box Detection</li>
+                        <li>&#x2713; OpenCV Noise Reduction</li>
+                        <li>&#x2713; Full offline capabilities</li>
+                    </ul>
+                </div>
+                <div class="demo-code">
+                    <div class="code-window glass-card">
+                        <div class="code-header">
+                            <span class="tab active">extract_document_v3.py</span>
+                        </div>
+                        <pre><code>import basetruth
+                        
+# Initialize Document Extract pipeline
+engine = basetruth.DocumentIntelligence(model="gemma4")
+                        
+# Process Marksheet
+result = engine.extract(
+    "ssc_marksheet.pdf",
+    tasks=["grades", "signatures", "forensics_fft"]
+)
+                        
+print(result.authenticity_score) # 0.998
+print(result.extracted_data.cgpa) # 9.8</code></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <footer class="footer">
+        <div class="container footer-content">
+            <div class="footer-brand">
+                <div class="logo">
+                    <span class="logo-icon">&#x2B22;</span>
+                    <span class="logo-text">BaseTruth</span>
+                </div>
+                <p>The definitive Document Intelligence platform.</p>
+            </div>
+            <div class="footer-links">
+                <a href="#">Privacy</a>
+                <a href="#">Terms</a>
+                <a href="#">GitHub Repository</a>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Scripts -->
+    <script src="js/script.js"></script>
+</body>
+</html>

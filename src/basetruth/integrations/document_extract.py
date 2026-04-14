@@ -244,6 +244,7 @@ _LAYOUT_HSC_TRANSPOSED = "hsc_transposed"
 _LAYOUT_BE_MAX_MIN_OBT = "be_max_min_obt"
 _LAYOUT_TWO_ROW_SUBJECT_TABLE = "two_row_subject_table"
 _LAYOUT_GENERIC_ROW_TABLE = "generic_row_table"
+_LAYOUT_IGNOU_OPEN_UNIVERSITY = "ignou_open_university"  # IGNOU multi-term, multi-component marksheets
 _LAYOUT_UNKNOWN = "unknown"
 
 _BE_COMPONENT_CODES: frozenset[str] = frozenset({"PP", "TW", "OR", "PR"})
@@ -757,8 +758,11 @@ def _reformat_hsc_ocr_table(ocr_text: str) -> str:
 
     # Also extract subject codes from the code line (2-char alphanumeric codes)
     def extract_codes(line: str) -> List[str]:
-        # Subject codes like "01", "40", "54", "55", "AZ", "Az"
-        return re.findall(r"\bA[Zz]\b|\b[0-9]{2}\b", line)
+        # Subject codes like "01", "40", "54", "55", "AZ", "Az", "A2".
+        # The vocational slot can appear as "AZ", "Az", OR "A2" depending on
+        # the scan year / board variant — so we match A followed by any
+        # letter or digit.
+        return re.findall(r"\bA[A-Za-z0-9]\b|\b[0-9]{2}\b", line)
 
     max_nums = extract_numbers(max_line)
     obt_nums = extract_numbers(obt_line)
@@ -801,8 +805,8 @@ def _reformat_hsc_ocr_table(ocr_text: str) -> str:
         "-" * 50,
     ]
     for code, ob in pairs:
-        # Assign standard max marks: AZ/Az = 200, all others = 100
-        std_max = 200 if re.match(r"[Aa][Zz]", code) else 100
+        # Assign standard max marks: AZ/Az/A2 (vocational) = 200, all others = 100
+        std_max = 200 if re.match(r"[Aa][A-Za-z0-9]", code) else 100
         rows_table.append(f"{code:<15} {std_max:<12} {ob}")
     rows_table.append("-" * 50)
     rows_table.append(f"*** GRAND TOTAL ROW (NOT a subject) *** printed_grand_total={obt_total}")
@@ -873,8 +877,10 @@ def _parse_hsc_ocr_directly(ocr_text: str) -> Optional[Dict[str, Any]]:
     # ── Extract subject codes ────────────────────────────────────────────────
     code_list: List[str] = []
     if code_line:
-        # Match two-digit numeric codes and AZ variant
-        code_list = re.findall(r"\bA[Zz]\b|\b[0-9]{2}\b", code_line)
+        # Match two-digit numeric codes and vocational codes (AZ, Az, A2, A3 etc.).
+        # The vocational column uses different code notation across exam years;
+        # matching A followed by any letter or digit covers all known variants.
+        code_list = re.findall(r"\bA[A-Za-z0-9]\b|\b[0-9]{2}\b", code_line)
 
     if not code_list:
         code_list = [str(i + 1) for i in range(len(obt_subjects_raw))]
@@ -883,8 +889,8 @@ def _parse_hsc_ocr_directly(ocr_text: str) -> Optional[Dict[str, Any]]:
     # zip stops at the shorter of the two lists
     subjects: List[Dict[str, Any]] = []
     for code, ob_str in zip(code_list, obt_subjects_raw):
-        # Standardised max_marks: AZ/Az = 200, all numeric codes = 100
-        std_max = 200 if re.match(r"[Aa][Zz]", code) else 100
+        # Standardised max_marks: AZ/Az/A2 (vocational) = 200, all numeric codes = 100
+        std_max = 200 if re.match(r"[Aa][A-Za-z0-9]", code) else 100
         try:
             ob_int = int(ob_str)
         except ValueError:
@@ -919,9 +925,18 @@ def _parse_hsc_ocr_directly(ocr_text: str) -> Optional[Dict[str, Any]]:
             candidate_name = stripped
             break
 
-    # Seat number: 6 digits on the marksheet
-    seat_match = re.search(r"\b(\d{6})\b", ocr_text)
-    seat_number = seat_match.group(1) if seat_match else ""
+    # Seat number: prefer alphanumeric codes that start with a letter (e.g. "B006795").
+    # HSC seat numbers typically have a letter prefix followed by 6 digits.
+    # Pure 6-digit patterns (\d{6}) would also match the SR.NO.OF STATEMENT
+    # field (e.g. "005392") which appears on the same header row — so we
+    # check for the letter-prefix variant first and fall back only if not found.
+    seat_letter_match = re.search(r"\b([A-Z]\d{5,7})\b", ocr_text)
+    if seat_letter_match:
+        seat_number = seat_letter_match.group(1)
+    else:
+        # Fallback for boards that use purely numeric seat numbers
+        seat_plain_match = re.search(r"\b(\d{6})\b", ocr_text)
+        seat_number = seat_plain_match.group(1) if seat_plain_match else ""
 
     # Month/year: pattern like "FEB-2001", "MAR 2000", "OCT-1999"
     my_match = re.search(
@@ -945,9 +960,14 @@ def _parse_hsc_ocr_directly(ocr_text: str) -> Optional[Dict[str, Any]]:
         percentage = pct_match2.group(1) if pct_match2 else ""
 
     # Result: PASS / FAIL / ATKT / DISTINCTION
+    # Search only the first 40 OCR lines (the marks/result section).
+    # The footer grade chart (typically after line 45) contains "Distinction"
+    # as a grade label — searching the full text would produce a false positive
+    # for students who actually PASSED but did not receive Distinction.
+    result_search_upper = "\n".join(lines[:40]).upper()
     result = ""
-    for result_word in ("DISTINCTION", "ATKT", "PASS", "FAIL"):
-        if result_word in upper:
+    for result_word in ("ATKT", "DISTINCTION", "PASS", "FAIL"):
+        if result_word in result_search_upper:
             result = result_word.capitalize()
             break
 
@@ -1429,7 +1449,12 @@ def _parse_two_row_marksheet_ocr_directly(ocr_text: str) -> Optional[Dict[str, A
     }
 
 
-def _build_marksheet_structure_hint(ocr_text: str, layout_family: str) -> str:
+def _build_marksheet_structure_hint(
+    ocr_text: str,
+    layout_family: str,
+    *,
+    ignou_liteparse_header: Optional[Dict[str, str]] = None,
+) -> str:
     """Build a compact structural summary for Gemma4 fallback extraction.
 
     This is the clean document-intelligence handoff: Python detects the table
@@ -1550,6 +1575,56 @@ def _build_marksheet_structure_hint(ocr_text: str, layout_family: str) -> str:
             lines.append(f"grand_total_match: {parsed.get('computed_total') == parsed.get('printed_grand_total')}")
         return "\n".join(lines)
 
+    if layout_family == _LAYOUT_IGNOU_OPEN_UNIVERSITY:
+        parsed = _parse_ignou_ocr_directly(ocr_text)
+        # The generic anchor_lines may contain a wrong detected_percentage (e.g. an
+        # assignment mark like 19.50 instead of the actual aggregate 68.42).  Drop
+        # that entry so only the IGNOU-parser-confirmed percentage appears below.
+        anchor_lines_clean = [ln for ln in anchor_lines if not ln.startswith("detected_percentage:")]
+        lines = list(anchor_lines_clean)
+        lines.extend([
+            # Tell Gemma4 how to read IGNOU-specific fields correctly from the image.
+            # IGNOU documents have two number fields that look similar: the CERTIFICATE NO
+            # (6 digits, a serial number) and the ENROLMENT NO (10 digits, the student ID).
+            # Without this hint Gemma4 consistently picks CERTIFICATE NO for enrollment.
+            "IGNOU_FIELD_GUIDANCE: The document header contains two numbered fields:",
+            "  - CERTIFICATE NO (6 digits) is a document serial number - NOT the enrollment ID.",
+            "  - ENROLMENT NO (10 digits) is the student enrollment identifier - use this for enrollment_or_seat_number.",
+            # IGNOU marksheets have the INDIRA GANDHI NATIONAL OPEN UNIVERSITY watermark
+            # repeating as background text throughout the marks table.  OCR picks this up
+            # as noise tokens like GANDHINA, GANDHENATIONALC, OHAL, COARDRENA, etc.
+            # Gemma4 must not use any of these watermark fragments as the candidate name.
+            "IGNOU_WATERMARK_WARNING: The marks table cells contain background noise from the",
+            "  INDIRA GANDHI NATIONAL OPEN UNIVERSITY watermark (fragments: GANDHI, NATIONAL,",
+            "  INDIRA, GANDHINA, GANDHENATIONALC, OHAL, COARDRENA). These are NOT the candidate",
+            "  name. The actual student name is in the header section of the document only.",
+        ])
+        # If the liteparse artifact successfully decoded the document header
+        # (pypdf text extraction can read it even when PaddleOCR can't due to
+        # Devanagari fonts and watermark density), supply the verified values
+        # directly so Gemma4 copies them rather than attempting OCR of the
+        # noisy header region.
+        if ignou_liteparse_header:
+            if ignou_liteparse_header.get("enrollment"):
+                lines.append(
+                    f"IGNOU_VERIFIED_ENROLLMENT: {ignou_liteparse_header['enrollment']} "
+                    "(10-digit IGNOU enrollment number — copy this exactly into enrollment_or_seat_number)."
+                )
+            if ignou_liteparse_header.get("name"):
+                lines.append(
+                    f"IGNOU_VERIFIED_NAME: {ignou_liteparse_header['name']} "
+                    "(student name from document header — copy this exactly into candidate_name)."
+                )
+        if parsed is not None:
+            lines.extend([
+                f"detected_examination_name: {parsed.get('examination_name', '')}",
+                f"detected_percentage: {parsed.get('percentage_or_cgpa', '')}",
+                f"detected_result: {parsed.get('result', '')}",
+                f"detected_total_max_marks: {parsed.get('total_max_marks')}",
+                f"ignou_subject_rows: {parsed.get('subjects', [])}",
+            ])
+        return "\n".join(lines)
+
     return "\n".join(anchor_lines)
 
 
@@ -1628,7 +1703,8 @@ def _extract_uppercase_name(lines: List[str]) -> str:
     is found, which is better than labelling a header as the candidate.
     """
     skip_words = re.compile(
-        r"UNIVERSITY|BOARD|EXAM|RESULT|CLASS|TOTAL|COLLEGE|INSTITUTE|MARKS|STATEM|CERTIF|DIVISION|SUBJECT|GRADE|IMPORTANT|INSTRUCT|SCHOOL|FIRST|SECOND|THIRD|LANGUAGE|SOCIAL|SCIENCE|GRAND",
+        r"UNIVERSITY|BOARD|EXAM|RESULT|CLASS|TOTAL|COLLEGE|INSTITUTE|MARKS|STATEM|CERTIF|DIVISION|SUBJECT|GRADE|IMPORTANT|INSTRUCT|SCHOOL|FIRST|SECOND|THIRD|LANGUAGE|SOCIAL|SCIENCE|GRAND"
+        r"|GANDHI|NATIONAL|INDIRA|COARDRENA|OHAL|GANDHIN",  # IGNOU watermark noise fragments
         re.I,
     )
     best_name = ""
@@ -1829,6 +1905,252 @@ def _parse_be_ocr_directly(ocr_text: str) -> Optional[Dict[str, Any]]:
     }
 
 
+def _parse_ignou_ocr_directly(ocr_text: str) -> Optional[Dict[str, Any]]:
+    """Parse an IGNOU open-university marksheet directly from PaddleOCR text.
+
+    IGNOU marksheets (e.g. MAPC, MBA, BA) use a multi-row, multi-column table
+    where each course spans one or more OCR rows and each row contains marks
+    from multiple assessment sittings plus a final "out of 100" column.
+
+    Key structural facts about IGNOU marksheets:
+    - Each subject row ends with the pattern `100 [final_marks] SC [mmyy]`
+      where `100` is the max marks for the TEE (Term-End Exam) component and
+      `final_marks` is the marks obtained (this can be a decimal like 71.30).
+    - The grand total printed at the bottom (e.g. `1300 889.40`) reflects the
+      credit-weighted combination of assignment + TEE marks across ALL courses.
+      It is NOT the sum of the per-subject `100`-column values.
+    - Because printed_grand_total (e.g. 889) ≠ sum(per-subject TEE marks)
+      (typically ~470–530), we deliberately omit printed_grand_total from the
+      returned dict to prevent the mismatch guard from firing.  total_max_marks
+      IS filled from the TOTAL line because it is accurate.
+
+    Returns None if the OCR text does not contain enough IGNOU markers.
+    """
+    upper = ocr_text.upper()
+
+    # Require both the completion summary line AND at least 2 IGNOU course codes
+    has_completed = "SUCCESSFULLY COMPLETEDWITH" in upper or "SUCCESSFULLY COMPLETED WITH" in upper
+    ignou_codes = re.findall(r"\bMPC[EL]?\d{2,3}\b|\bMPC[EL]?[O0]\d{1,2}\b", upper)  # allow OCR 'O' vs '0' swap
+    if not has_completed or len(ignou_codes) < 2:
+        return None
+
+    lines = ocr_text.split("\n")
+
+    # ── Extract examination name, percentage, result from summary line ──────
+    # The summary line looks like:
+    #   "MA IN PSYCHOLOGY SUCCESSFULLY COMPLETEDWITH 68.42 %(FIRST DIVISION)"
+    examination_name = ""
+    percentage = ""
+    result = ""
+    for line in lines:
+        ul = line.upper()
+        if "SUCCESSFULLY COMPLETED" not in ul:
+            continue
+        # Capture programme name (text before SUCCESSFULLY)
+        prog_match = re.match(r"\s*(.+?)\s+SUCCESSFULLY\s+COMPLETED", line.strip(), re.IGNORECASE)
+        if prog_match:
+            examination_name = prog_match.group(1).strip()
+        # Capture percentage (decimal number before the % sign)
+        pct_match = re.search(r"(\d{2,3}\.\d{2})\s*%", line)
+        if pct_match:
+            percentage = pct_match.group(1)
+        # Capture result label inside parentheses after %
+        res_match = re.search(r"%\s*\(([A-Z\s]+?)\)", line.upper())
+        if res_match:
+            result = res_match.group(1).strip()
+        break
+
+    # ── Extract total_max_marks from the TOTAL line ──────────────────────────
+    # The TOTAL line may span two OCR rows because the summary numbers appear
+    # at the far right margin.  We search lines near the TOTAL: marker for
+    # any pair of 3-4 digit numbers (e.g. "1300 889.40").  We do NOT anchor
+    # to end-of-line because the completed-summary line often follows on the
+    # same joined search block.
+    total_max_marks: Optional[int] = None
+    for i, line in enumerate(lines):
+        if "TOTAL" not in line.upper():
+            continue
+        # Join this line and up to 2 following lines so the numbers found
+        # on the continuation row are included in the search.
+        search_block = " ".join(lines[i: min(i + 3, len(lines))])
+        # findall returns all 3-4 digit number occurrences (including decimals
+        # like 889.40).  We pick the pair with the highest value as the
+        # total_max_marks/printed_total pair.
+        large_nums = re.findall(r"\b(\d{3,4})(?:\.\d{1,2})?\b", search_block)
+        if len(large_nums) >= 2:
+            values = [int(v) for v in large_nums if int(v) >= 100]
+            if len(values) >= 2:
+                # The larger value is the max marks (e.g. 1300); the smaller
+                # is the obtained total (e.g. 889).
+                values.sort(reverse=True)
+                total_max_marks = values[0]
+        if total_max_marks is not None:
+            break
+
+    # ── Extract per-subject rows using course-code anchor ────────────────────
+    # Each row that starts with an IGNOU course code is one subject entry.
+    # The final marks appear right before "SC [mmyy]" at the end of the row.
+    # Pattern: `...100  [marks]  SC`  where 100 = TEE max marks.
+    subjects: List[Dict[str, Any]] = []
+    seen_codes: set[str] = set()
+    # pending_codes keeps run-codes that were seen but whose marks landed on a
+    # separate continuation OCR row (their SC column was overwritten by noise).
+    # It is a list so we can pop the MOST RECENT pending code when an orphan
+    # continuation row is found.
+    pending_codes: List[str] = []
+    pending_titles: Dict[str, str] = {}  # code → title extracted from its code line
+
+    # IGNOU rows have the format:
+    #   MPCE012    PSYCHODIAGNOSTICS   ... # watermark noise # ...  100  74.30  SC  0623
+    # The IGNOU background watermark is printed in the marks table, producing
+    # '#' tokens and scattered uppercase fragments.
+    # We strip these before extracting the title so the regex sees only the
+    # clean "MPCE012    PSYCHODIAGNOSTICS" portion.
+    #
+    # Subject names in IGNOU OCR are all-letter words — isolating them stops
+    # numeric credit/attempt columns (e.g. "6 2") from bleeding into the title.
+    def _extract_ignou_title(raw_line: str, code: str) -> str:
+        """Extract the human-readable subject title from a single IGNOU OCR row.
+
+        1. Strips everything from the first '#' character (IGNOU watermark noise).
+        2. Captures consecutive letter-only word tokens immediately after the
+           course code, stopping each word at only 1-2 spaces between (IGNOU
+           uses 3+ spaces as column separators), so digit-only tokens and wide
+           column gaps correctly terminate the title.
+        3. Allows 'O' as OCR substitute for '0' in the course code (e.g. MPCEO11).
+        Returns the code string itself when no title can be parsed.
+        """
+        clean = re.sub(r"\s*#.*$", "", raw_line)  # strip '#' watermark separator and all text after
+        # Match letter-only words separated by at most 2 spaces.
+        # Three or more consecutive spaces signals an IGNOU column boundary, so we
+        # stop there even if more text follows.
+        # Allow OCR O→0 substitution in the numeric part of the course code.
+        tm = re.search(
+            r"^\s*MPC[EL]?[O0\d]{2,3}\s+([A-Za-z][A-Za-z:&',./\-]*(?:\s{1,2}[A-Za-z][A-Za-z:&',./\-]*)*)",
+            clean,
+            re.IGNORECASE,
+        )
+        return tm.group(1).strip().title() if tm else code
+
+    for i, line in enumerate(lines):
+        ul = line.upper()
+
+        # ── Case A: line starts with an IGNOU course code ────────────────
+        code_match = re.match(r"\s*(MPC[EL]?[O0\d]{2,3})\b", ul)
+        if code_match is not None:
+            code = code_match.group(1).strip().replace("O", "0").replace("o", "0")  # normalise OCR O→0
+            if code in seen_codes:
+                # Second-attempt row for the same code — ignore (already recorded)
+                continue
+
+            # Always capture the title from the code line so we have it ready
+            # even if marks appear on a later continuation row.
+            title = _extract_ignou_title(line, code)
+
+            # Extract the final marks from the `100 [marks] SC` pattern.
+            # 100 is always the TEE component scale on IGNOU marksheets.
+            tee_match = re.search(r"\b100\s+(\d{1,3}(?:\.\d{1,2})?)\s*(?:SC\b|$)", line)
+            if tee_match is None:
+                # Marks not on this line — queue the code for the continuation row.
+                pending_codes.append(code)
+                pending_titles[code] = title
+                continue  # marks will be picked up by Case B below
+
+            try:
+                marks_f = float(tee_match.group(1))
+                marks_int = round(marks_f)  # round 71.30 → 71
+            except (ValueError, TypeError):
+                pending_codes.append(code)
+                pending_titles[code] = title
+                continue
+
+            seen_codes.add(code)
+            subjects.append({
+                "subject_name": title or code,
+                "marks_obtained": marks_int,
+                "max_marks": 100,   # TEE component is always out of 100 for IGNOU
+            })
+            continue
+
+        # ── Case B: continuation row — no code prefix ─────────────────────
+        # Some IGNOU courses span two OCR rows.  The first row has the code and
+        # title but the watermark overwrites the SC column; the continuation row
+        # carries `100  [marks]  SC  mmyy`.
+        # Associate the marks with the MOST RECENTLY seen pending code.
+        if pending_codes:
+            tee_match = re.search(r"\b100\s+(\d{1,3}(?:\.\d{1,2})?)\s*SC\b", line)
+            if tee_match:
+                try:
+                    marks_f = float(tee_match.group(1))
+                    marks_int = round(marks_f)
+                except (ValueError, TypeError):
+                    continue
+                pending_code = pending_codes.pop()  # most-recently-queued pending code
+                title = pending_titles.pop(pending_code, pending_code)
+                seen_codes.add(pending_code)
+                subjects.append({
+                    "subject_name": title or pending_code,
+                    "marks_obtained": marks_int,
+                    "max_marks": 100,
+                })
+
+    # ── Compute TEE sub-total for logging (NOT for mismatch validation) ──────
+    tee_sum = sum(int(s["marks_obtained"]) for s in subjects)
+
+    # Quality note explaining the IGNOU multi-component grading to reviewers
+    data_quality_notes: List[str] = []
+    data_quality_notes.append(
+        "IGNOU multi-component grading: marks_obtained per subject is the Term-End Exam (TEE) mark "
+        f"out of 100 (TEE subtotal = {tee_sum}). "
+        f"The aggregate total_max_marks ({total_max_marks}) and percentage ({percentage}%) use a "
+        "credit-weighted combination of Assignment (30%) + TEE (70%) marks that differs from the "
+        "raw TEE sum. printed_grand_total is omitted here to avoid a false mismatch alarm."
+    )
+    if not subjects:
+        data_quality_notes.append(
+            "Could not parse individual subject rows from OCR text. "
+            "This may occur when the marks table has heavy watermark interference."
+        )
+
+    confidence = "MEDIUM" if subjects else "LOW"
+
+    _log_marksheet_ocr_structure(
+        _LAYOUT_IGNOU_OPEN_UNIVERSITY,
+        {
+            "examination_name": examination_name,
+            "percentage": percentage,
+            "result": result,
+            "total_max_marks": total_max_marks,
+            "tee_sum": tee_sum,
+            "subject_count": len(subjects),
+            "subjects": subjects,
+        },
+    )
+
+    return {
+        "document_type": "Marksheet",
+        "candidate_name": "",          # header was not in PaddleOCR output; Gemma4 reads from image
+        "board_or_university_name": "IGNOU",
+        "school_or_college_name": None,
+        "examination_name": examination_name,
+        "month_year_of_passing": "",   # date of printing is not month/year of passing
+        "enrollment_or_seat_number": "",  # Gemma4 reads from image header
+        "subjects": subjects,
+        # Intentionally NOT setting printed_grand_total — it represents the
+        # credit-weighted multi-component aggregate (e.g. 889 out of 1300),
+        # which is always larger than the TEE sum and would wrongly trigger
+        # the safe-fail subjects=[] guard in _validate_educational.
+        "printed_grand_total": None,
+        "total_max_marks": total_max_marks,
+        "computed_total": tee_sum,
+        "percentage_or_cgpa": percentage,
+        "result": result,
+        "extraction_confidence": confidence,
+        "data_quality_notes": data_quality_notes,
+        "_extraction_attempts": 0,  # 0 = directly parsed, no LLM call
+    }
+
+
 def _classify_marksheet_layout_family(ocr_text: str) -> Dict[str, Any]:
     """Classify the marksheet table family from OCR text markers.
 
@@ -1845,7 +2167,16 @@ def _classify_marksheet_layout_family(ocr_text: str) -> Dict[str, Any]:
     score = 0
     family = _LAYOUT_UNKNOWN
 
-    if "MAXIMUM MARKS" in upper and "MARKS OBTAINED" in upper:
+    # IGNOU open-university multi-term marksheet: detect before HSC/BE patterns
+    # because IGNOU course codes (MPC006, MPCE011 etc.) are unique enough to
+    # classify reliably without ambiguity with any school board layout.
+    _ignou_code_count = len(re.findall(r"\bMPC[EL]?\d{2,3}\b", upper))
+    _ignou_completed = "SUCCESSFULLY COMPLETEDWITH" in upper or "SUCCESSFULLY COMPLETED WITH" in upper
+    if _ignou_completed and _ignou_code_count >= 2:
+        family = _LAYOUT_IGNOU_OPEN_UNIVERSITY
+        markers.extend(["SUCCESSFULLY_COMPLETED", f"ignou_code_count={_ignou_code_count}"])
+        score = 88
+    elif "MAXIMUM MARKS" in upper and "MARKS OBTAINED" in upper:
         family = _LAYOUT_HSC_TRANSPOSED
         markers.extend(["MAXIMUM MARKS", "MARKS OBTAINED"])
         if "SUBJECT CODE" in upper or "SUBJECTCODE" in upper:
@@ -1939,6 +2270,13 @@ def _evaluate_marksheet_ocr_candidate(engine_name: str, ocr_text: str) -> Dict[s
         direct_data = _parse_be_ocr_directly(ocr_text)
     elif family == _LAYOUT_TWO_ROW_SUBJECT_TABLE:
         direct_data = _parse_two_row_marksheet_ocr_directly(ocr_text)
+    elif family == _LAYOUT_IGNOU_OPEN_UNIVERSITY:
+        # For IGNOU we intentionally do NOT set direct_data (Gemma4 still runs).
+        # _parse_ignou_ocr_directly is called inside _build_marksheet_structure_hint
+        # instead, where its output feeds structure hints to Gemma4.  Gemma4 then
+        # reads candidate_name and enrollment_or_seat_number from the image header
+        # (PaddleOCR misses these because the IGNOU header contains Devanagari text).
+        direct_data = None
 
     direct_score = _score_marksheet_extraction_candidate(direct_data) if direct_data else 0.0
     text_score = min(len(ocr_text) / 300.0, 15.0)
@@ -2579,7 +2917,46 @@ def extract_document_fields(
         if ocr_engine_used:
             prompt += f"preferred_ocr_engine_hint: {ocr_engine_used}\n"
 
-        structure_hint = _build_marksheet_structure_hint(supplementary_text, layout_family) if supplementary_text else ""
+        # For IGNOU marksheets: try to read the liteparse artifact that the
+        # pre-processing step saved next to the source file.  The liteparse
+        # uses pypdf text extraction which, unlike PaddleOCR, can decode the
+        # Devanagari-font header area and gives us the genuine ENROLMENT NO
+        # and NAME even though PaddleOCR only sees the marks table body.
+        # Pass them as verified hints so Gemma4 copies the correct values
+        # rather than attempting to read the watermark-degraded header image.
+        ignou_liteparse_header: Dict[str, str] = {}
+        if layout_family == _LAYOUT_IGNOU_OPEN_UNIVERSITY and filename:
+            try:
+                _ignou_stem = Path(filename).stem
+                _ignou_lp_path = Path(artifact_root) / _ignou_stem / f"{_ignou_stem}_liteparse.json"
+                if _ignou_lp_path.exists():
+                    import json as _json
+                    _lp_data = _json.loads(_ignou_lp_path.read_text(encoding="utf-8"))
+                    _lp_text = " ".join(p.get("text", "") for p in _lp_data.get("pages", []))
+                    _enrol_m = re.search(r"ENROLMENT\s+NO\s*:\s*(\d{9,10})", _lp_text, re.IGNORECASE)
+                    _name_m = re.search(r"\bNAME\s*:\s*([A-Z][A-Z ]{4,40}?)(?:\s{2,}|C/o|ADDRESS|\n)", _lp_text)
+                    if _enrol_m:
+                        ignou_liteparse_header["enrollment"] = _enrol_m.group(1)
+                        log.info(
+                            "document_extract: IGNOU liteparse enrollment found: %s",
+                            ignou_liteparse_header["enrollment"],
+                        )
+                    if _name_m:
+                        ignou_liteparse_header["name"] = _name_m.group(1).strip()
+                        log.info(
+                            "document_extract: IGNOU liteparse name found: %s",
+                            ignou_liteparse_header["name"],
+                        )
+            except Exception as _ignou_lp_exc:
+                log.debug("document_extract: IGNOU liteparse header read failed: %s", _ignou_lp_exc)
+
+        structure_hint = (
+            _build_marksheet_structure_hint(
+                supplementary_text, layout_family, ignou_liteparse_header=ignou_liteparse_header or None
+            )
+            if supplementary_text
+            else ""
+        )
         if structure_hint:
             prompt += structure_hint + "\n"
 

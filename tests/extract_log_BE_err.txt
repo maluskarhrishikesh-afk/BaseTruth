@@ -1,0 +1,12 @@
+[32m[INFO][0m 06:48:19  integrations.document_extract:978  document_extract: starting extraction
+[32m[INFO][0m 06:48:21  integrations.document_extract:991  document_extract: using model=gemma4:latest at http://localhost:11434 for doc_type=marksheet
+Downloading detection model, please wait. This may take several minutes depending upon your network connection.
+[32m[INFO][0m 06:56:57  integrations.document_extract:1093  document_extract: extraction succeeded
+Traceback (most recent call last):
+  File "C:\Hrishikesh\BaseTruth\tests\_run_extract.py", line 27, in <module>
+    print(f"[extract] Done: {pdf_path.name} \u2192 {out_path}")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\malus\AppData\Local\Programs\Python\Python313\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 33: character maps to <undefined>

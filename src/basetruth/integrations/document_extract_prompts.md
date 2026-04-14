@@ -50,6 +50,7 @@ RULES:
 11. percentage_or_cgpa is the decimal percentage field, not the integer grand total.
 12. If a field is unclear, leave it empty or null and explain the uncertainty in data_quality_notes. Never guess.
 13. If the table itself is not recoverable, return subjects=[] and set extraction_confidence to LOW.
+14. IGNOU open-university marksheets: When the structure hints indicate layout_family_hint=ignou_open_university, the printed TOTAL line shows a CREDIT-WEIGHTED AGGREGATE of assignment + term-end marks. This aggregate does NOT equal the sum of individual subject marks. Set printed_grand_total=null so the mismatch guard does not fire. Use ignou_subject_rows from the hints as your subjects list. Read candidate_name from the header (NAME: field) and enrollment_or_seat_number from the ENROLMENT NO field (10-digit number) — NOT from CERTIFICATE NO (6-digit serial number).
 ```
 
 ## educational
