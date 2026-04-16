@@ -153,6 +153,76 @@
 - [x] **Scan page — DB confirmation banner** — after `service.scan_document()` returns, the UI now shows a green success banner (`✅ Saved to database — Entity: BT-XXXXXX`) when the DB persist succeeded, or an informational message when DB is offline (disk-only mode).
 - [x] Documentation updated: `IDENTITY_VERIFICATION.md`, `TRACKER.md`
 
+---
+
+### Phase 11 — Final Verification Report, Q&A Fixes, UX Improvements (2026-04-17)
+
+#### Final Verification Report (BTR-XXXXXX)
+
+- [x] **`EntityReport` ORM model added** (`src/basetruth/db.py`)
+  - New table `entity_reports` — stores one cross-document analysis report per entity (or one pending + N approved/rejected reports)
+  - `report_ref` = `BTR-XXXXXX` (human-readable, unique)
+  - Same two-level approval workflow as `scans` (`first_level_approval` / `second_level_approval`, `Y`/`N`/NULL)
+  - Cascades delete when the parent entity is deleted
+  - `init_db()` creates the table automatically if missing — no manual migration needed
+- [x] **Entity `→ entity_reports` relationship** added in `Entity` ORM model
+- [x] **9 new CRUD functions added to `store.py`:**
+  - `save_entity_report(entity_ref, report_json)` — creates or refreshes the pending report for an entity
+  - `get_entity_reports(entity_ref)` — returns all reports for one entity (most-recent first)
+  - `list_all_entity_reports(limit)` — returns all reports across all entities (used by Cases screen)
+  - `first_level_approve_entity_report(report_ref, approved_by, comment)` — level-1 approve
+  - `first_level_reject_entity_report(report_ref, approved_by, comment)` — level-1 reject
+  - `second_level_approve_entity_report(report_ref, approved_by, comment)` — level-2 approve (requires level-1 Y)
+  - `second_level_reject_entity_report(report_ref, approved_by, comment)` — level-2 reject
+  - `_set_entity_report_approval()` — shared internal helper for all approve/reject calls
+  - `_next_report_ref()` — generates the next BTR-XXXXXX sequential reference
+- [x] **All 6 new store functions exported** from `components.py` with fallback stubs for DB-offline mode
+- [x] **Document Intelligence screen updated** (`pages/document_intelligence.py`):
+  - Imports `get_entity_document_information`, `get_entity_reports`, `save_entity_report`
+  - New helper `_run_cross_doc_analysis(entity, extractions, scans)` — compares name, address, PAN, Aadhaar, salary (30% tolerance), and forensic verdicts across all documents and produces a structured JSON payload
+  - New helper `_render_entity_reports_section(entity_ref)` — renders saved report cards with check-by-check pass/fail rows, approval trail, and full JSON collapsible
+  - **"🎯 Generate Final Report" button** added below each entity's scan tabs — generates cross-document analysis and saves to `entity_reports`; shows success with BTR-XXXXXX reference; pending reports are refreshed in-place if re-generated before approval
+- [x] **Cases screen updated** (`pages/cases.py`):
+  - New `"📑 Entity Reports"` tab added (always last tab)
+  - Shows all BTR-XXXXXX reports from `list_all_entity_reports()` with 1st-level and 2nd-level approve/reject buttons matching the existing scan approval UI pattern
+- [x] **Reports screen updated** (`pages/reports.py`):
+  - Imports `get_entity_reports`
+  - Each entity expander now shows a **"📑 Final Verification Reports (BTR-XXXXXX)"** section listing all saved entity reports with verdict badge, approval status, generation date, and a **"⬇ JSON"** download button per report
+  - JSON download serialises the full `report_json` payload to a pretty-printed `.json` file named `BTR-XXXXXX_BT-XXXXXX.json`
+- [x] **Database Viewer updated** (`pages/database.py`):
+  - Added `"entity_reports": "Entity Reports"` to `_DB_TABLE_LABELS` dict — the table is now browsable in the Database Viewer alongside the other 7 tables
+
+#### Cross-Document Analysis — Field Mapping
+
+The `_run_cross_doc_analysis()` function in `document_intelligence.py` knows these field names (from `document_extractions.fields` JSONB):
+
+| Concept | Field names checked |
+|---|---|
+| Person name | `candidate_name`, `name`, `employee_name`, `account_holder_name`, `applicant_name`, `holder_name` |
+| Address | `address`, `permanent_address`, `residential_address`, `current_address` |
+| PAN | `pan_number`, `pan` |
+| Aadhaar | `aadhaar_number`, `aadhar_number`, `uid`, `aadhaar` |
+| Salary (payslip) | `net_salary`, `gross_salary`, `net_pay`, `ctc`, `total_compensation`, `net_amount` |
+| Salary (offer/increment) | `offered_salary`, `ctc`, `annual_ctc`, `gross_salary`, `salary`, `annual_salary`, `package` |
+
+Salary comparison uses a **30% tolerance** to handle tax deductions, joining bonuses, and mid-year increments.
+
+#### BaseTruth Q&A Chat Fixes
+
+- [x] **Silent Phase 1 / visible Phase 2 pattern implemented** (`pages/gemma_chat.py`):
+  - Phase 1: LLM generates SQL or MinIO commands silently (no streaming bubble shown)
+  - Phase 2: System executes the SQL/command and feeds results back to the LLM; LLM streams a clean natural-language answer — the user sees ONE response, not two
+  - `_stream_chat(messages, model, base_url, silent=True)` accumulates tokens without rendering UI elements
+- [x] **Intermediate message hiding** — SQL query and MinIO command messages stored with `"_hidden": True`; the history render loop skips hidden messages so they never appear as chat bubbles on subsequent re-renders
+
+#### UX / Bug Fixes
+
+- [x] **`bulk.py` NameError fixed** — `_doc_extraction` was referenced before assignment in the `log.info(extra={…})` call; fixed by extracting it from `_report` dict before use
+- [x] **Log Analyzer sidebar link aligned** (`app.py`) — replaced the HTML `<a>` block with native `st.link_button(label, "/?page=logs", use_container_width=True)`; now renders identically to all other sidebar buttons with no custom CSS needed
+- [x] **Log Analyzer order changed to ascending** (`pages/logs.py`) — removed the `iloc[::-1]` reversal; logs now show oldest entry at the top so the user scrolls down to see newer entries (same reading direction as a terminal); caption updated to "oldest first"
+
+---
+
 ## Immediate Next Milestones
 
 1. Cross-document reconciliation engine (`src/basetruth/analysis/cross_doc.py`)

@@ -1,4 +1,4 @@
-﻿"""Bulk scan page — forensics-only, no OCR pipeline.
+"""Bulk scan page — forensics-only, no OCR pipeline.
 
 Each uploaded document is first classified by Gemma4 (via Ollama) to determine
 its type and whether it is a scanned image or a digitally-created PDF. Then:
@@ -161,6 +161,16 @@ def _process_bulk_document(path_str: str, classification: Dict[str, Any]) -> Dic
     is_image_based = bool(classification.get("is_image_based", True))
     classify_confidence = float(classification.get("confidence") or 0.0)
 
+    log.info(
+        f"Bulk Scanning Started: Picked up document '{path.name}' for analysis. Assumed document type is '{final_doc_type}'.",
+        extra={
+            "file": path.name,
+            "doc_type": final_doc_type,
+            "is_image_based": is_image_based,
+            "classify_confidence": classify_confidence,
+        },
+    )
+
     try:
         from basetruth.analysis.image_forensics_detect import (  # noqa: PLC0415
             run_forensics,
@@ -171,25 +181,52 @@ def _process_bulk_document(path_str: str, classification: Dict[str, Any]) -> Dic
         )
 
         if path.suffix.lower() in _IMAGE_EXTS:
-            forensics_result = run_forensics(str(path))
-        elif path.suffix.lower() == ".pdf" and not is_image_based and classify_confidence > 0.5:
             log.info(
-                "Bulk scan worker: structured PDF — running PDF forensics pipeline",
-                extra={
-                    "file": path.name,
-                    "doc_type": final_doc_type,
-                    "confidence": classify_confidence,
-                },
+                f"Forensics Engine Started: Running the 11-layer image forensics pipeline on '{path.name}'.",
+                extra={"file": path.name, "doc_type": final_doc_type},
             )
-            forensics_result = run_pdf_forensics(str(path))
+            forensics_result = run_forensics(str(path))
+        elif path.suffix.lower() == ".pdf":
+            if not is_image_based:
+                log.info(
+                    f"PDF Forensics Engine Started: Document '{path.name}' looks like a structured digital PDF. Running PDF forensic checks.",
+                    extra={
+                        "file": path.name,
+                        "doc_type": final_doc_type,
+                        "confidence": classify_confidence,
+                    },
+                )
+                forensics_result = run_pdf_forensics(str(path))
+            else:
+                log.info(
+                    f"Image-Based PDF Engine Started: Document '{path.name}' is an image inside a PDF. Extracting pages to run image forensics.",
+                    extra={"file": path.name, "doc_type": final_doc_type},
+                )
+                forensics_result = run_forensics_on_pdf(str(path))
         else:
-            forensics_result = run_forensics_on_pdf(str(path))
+            forensics_result = {}
+
+        _fs = forensics_result.get("scan_summary", {})
 
         no_extract_types = {
             "photograph", "signature", "cancelled_cheque", "document", "unknown",
         }
+
+        log.info(
+            f"Forensics Analysis Complete: Finished analyzing '{path.name}'. Verdict is '{_fs.get('forensic_verdict', 'UNKNOWN')}'.",
+            extra={
+                "file": path.name,
+                "verdict": _fs.get("forensic_verdict", ""),
+                "forgery_score": _fs.get("forgery_score_0_100", 0),
+            },
+        )
+
         doc_extraction: Dict[str, Any] = {}
         if final_doc_type not in no_extract_types:
+            log.info(
+                f"Data Extraction Phase: Starting field extraction using AI for '{path.name}'.",
+                extra={"file": path.name, "doc_type": final_doc_type},
+            )
             try:
                 from basetruth.integrations.document_extract import (  # noqa: PLC0415
                     extract_document_fields,
@@ -200,9 +237,16 @@ def _process_bulk_document(path_str: str, classification: Dict[str, Any]) -> Dic
                     doc_type=final_doc_type,
                     filename=path.name,
                 )
+                log.info(
+                    f"Data Extraction Phase: Finished extracting data fields from '{path.name}'. Found {len([k for k, v in doc_extraction.items() if not k.startswith('_') and v])} data fields.",
+                    extra={
+                        "file": path.name,
+                        "fields_extracted": len([k for k, v in doc_extraction.items() if not k.startswith("_") and v]),
+                    },
+                )
             except Exception as ext_exc:  # noqa: BLE001
                 log.warning(
-                    "Bulk scan worker: field extraction failed (non-fatal)",
+                    f"Bulk scan worker: field extraction failed (non-fatal) — {path.name}: {ext_exc}",
                     extra={"file": path.name, "error": str(ext_exc)},
                 )
 
@@ -219,9 +263,12 @@ def _process_bulk_document(path_str: str, classification: Dict[str, Any]) -> Dic
         }
         return {"ok": True, "path": str(path), "report": report}
     except Exception as exc:  # noqa: BLE001
+        # Include the filename and exception class in the message itself so that
+        # the Log Analyser can show a useful one-liner without needing to expand
+        # the full JSON payload.
         log.error(
-            "Bulk scan worker failed",
-            extra={"path": str(path), "error": str(exc)},
+            f"Bulk Scanning Failed: Something went wrong while analyzing '{path.name}'. Error details: {type(exc).__name__} - {exc}",
+            extra={"path": str(path), "file": path.name, "error": str(exc), "exc_type": type(exc).__name__},
             exc_info=True,
         )
         return {"ok": False, "path": str(path), "error": str(exc), "file_name": path.name}
@@ -426,12 +473,10 @@ def _page_bulk(_service: Any = None) -> None:
             ]
             _filenames = [p.name for p in paths]
 
-            # One Ollama call classifies all documents — returns list of dicts
-            # with keys: filename, document_type, is_image_based, confidence.
             _classifications = classify_documents_batch(_preview_bytes, _filenames)
             _classify_map = {c["filename"]: c for c in _classifications}
             log.info(
-                "Bulk scan: Gemma4 classification complete",
+                f"Bulk Scanning Preparation: Successfully classified {len(_classifications)} documents using Gemma4 AI.",
                 extra={"file_count": len(_classifications)},
             )
         except Exception as _ce:  # noqa: BLE001
@@ -464,9 +509,11 @@ def _page_bulk(_service: Any = None) -> None:
                 try:
                     _result = _future.result()
                 except Exception as exc:  # noqa: BLE001
+                    # Log with the filename and exception type in the message so the
+                    # Log Analyser shows a meaningful one-liner (not just a bare label).
                     log.error(
-                        "Bulk scan document failed",
-                        extra={"path": str(p), "error": str(exc)},
+                        f"Bulk scan failed: {p.name} — {type(exc).__name__}: {exc}",
+                        extra={"path": str(p), "file": p.name, "error": str(exc), "exc_type": type(exc).__name__},
                         exc_info=True,
                     )
                     _new_errors.append(f"{p.name}: {exc}")
@@ -478,9 +525,10 @@ def _page_bulk(_service: Any = None) -> None:
                     _report = _result["report"]
                     _reports_by_path[_result["path"]] = _report
                     _fsummary = (_report.get("_layered_forensics") or {}).get("scan_summary", {})
+                    # Extract the document extraction result from the report (may be absent for non-bulk paths)
                     _doc_extraction = _report.get("_document_extraction") or {}
                     log.info(
-                        "Bulk scan: worker completed",
+                        f"Bulk Scanning Successful: Completely finished processing '{p.name}'.",
                         extra={
                             "file": p.name,
                             "verdict": _fsummary.get("forensic_verdict", ""),
@@ -517,9 +565,8 @@ def _page_bulk(_service: Any = None) -> None:
         st.session_state["bt_bulk_extra_identity"] = bulk_extra_identity
         st.session_state["bt_bulk_saved"] = False
         st.session_state["_bulk_has_uploads"] = True
-        st.session_state.pop("bt_bulk_saved_ref", None)
         log.info(
-            "Bulk scan completed",
+            f"Bulk Scanning Batch Complete: Processed {len(_new_reports)} documents successfully. {len(_new_errors)} failed.",
             extra={"report_count": len(_new_reports), "error_count": len(_new_errors)},
         )
 
@@ -673,9 +720,8 @@ def _page_bulk(_service: Any = None) -> None:
                     st.session_state.pop("bt_bulk_temp_dir", None)
                     st.session_state["bt_bulk_saved"] = True
                     st.session_state["bt_bulk_saved_ref"] = batch_entity_ref
-                    st.session_state.pop("_bulk_has_uploads", None)
                     log.info(
-                        "Bulk save completed",
+                        f"Bulk Saving Batch Complete: Successfully saved {len(reports)} reports to the database.",
                         extra={"entity_ref": batch_entity_ref or "", "report_count": len(reports)},
                     )
                     st.rerun()

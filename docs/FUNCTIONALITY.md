@@ -287,27 +287,70 @@
 
 ## 🧠 Document Intelligence
 
-**Purpose:** Per-entity, per-document AI analysis viewer. Shows the rich information Gemma4 extracted from every scanned document, grouped by applicant.
+**Purpose:** Per-entity, per-document AI analysis viewer. Shows the forensic analysis results and extracted fields for every scanned document, grouped by applicant. Also lets analysts generate a **Final Verification Report** comparing all documents for one person.
 
 | Element | Action | Expected Result |
 |---|---|---|
 | Search bar + field selector | Type name, PAN, email, BT-ref | Filters the entity list |
 | Applicant selector | Select | Shows compact applicant strip (name, ref, PAN, Aadhaar) |
-| Document cards (with Gemma4 analysis) | Listed first | Each shows: document type + confidence, authenticity verdict, confidence score, extracted fields table, fraud signals, structured parser fields |
-| Documents without Gemma4 analysis | Listed separately (collapsed) | Shows basic key_fields; caption invites re-scan |
-| Fraud signal badge | In expander header | Count shown inline when fraud signals > 0 |
+| "✅ Approved" tab | Auto-renders | Lists only fully approved scans (both 1st and 2nd level `Y`) |
+| "📋 All Scans" tab | Auto-renders | Lists all scans regardless of approval state |
+| Scan card | Auto-renders per scan | Shows source filename, document type, approval label, forensic verdict, forgery score, and scanned date |
+| "🔬 Forensic Details" expander | Click | Shows the full 11-layer forensic breakdown for that document |
+| Pending/rejected scan warning | Auto-renders | Warning banner tells analyst how many scans need approval on the Scans screen |
+| "🎯 Generate Final Report" button | Click | Runs cross-document analysis across all documents for this applicant; saves result to `entity_reports` as `BTR-XXXXXX`; shows success message with report reference |
+| Re-generate before approval | Click again | Refreshes the pending report in-place (same BTR-XXXXXX reference, updated payload) |
+| Saved Reports section | Auto-renders after generation | Shows each saved BTR-XXXXXX report with a pass/fail row per check, approval trail, collapsible full JSON, and approval status badge |
+
+**Cross-document checks performed by Generate Final Report:**
+- **Name** — checks if the person’s name is the same across all documents
+- **Address** — checks if addresses across all documents match
+- **PAN** — checks if the same PAN number appears on all documents
+- **Aadhaar** — checks if the same Aadhaar number appears across all documents
+- **Salary** — compares payslip net salary vs offer/increment letter CTC (30% tolerance for deductions and increments)
+- **Forensics** — flags any document with a TAMPERED verdict
 
 **Important rules:**
-- **Only approved scans appear here.** Scans with `approved IS NULL` (pending) or `approved='rejected'` are never shown. A warning banner is shown when pending/rejected scans exist for the selected entity, directing the analyst to the Scans screen.
-- This page shows NO identity card, NO edit form, NO scan history, and NO identity check history. Those belong on the Layered Analysis and Reports pages.
-- Data is populated by Bulk Scan → Save to Database → Approve on Scans screen. A synthetic analysis derived from LiteParse key_fields and tamper signals is always generated when no per-doc Gemma4 analysis exists, so Document Intelligence always has rich data for approved scans.
-- Coming soon: cross-document pattern analysis (DOB, first name, last name cross-check) and a 2nd-level approval step.
+- **Only fully approved scans appear in the "✅ Approved" tab.** A scan is fully approved when both `first_level_approval = 'Y'` AND `second_level_approval = 'Y'`. All scans are always visible in the "📋 All Scans" tab.
+- A warning banner appears when pending or rejected scans exist for the selected entity, directing the analyst to the **🔬 Scans** screen.
+- Generate Final Report reads ALL scans for the entity (not just approved ones) so the cross-document check reflects the full picture.
+- A pending report (not yet approved by anyone) is refreshed in-place when re-generated. Approved or rejected reports are never overwritten — a new BTR-XXXXXX is created instead so the audit trail stays intact.
+- The page title must remain `_page_title("🧠", "Document Intelligence")`.
 
 ---
 
-## 📊 Reports
+## 📁 Cases
 
-**Purpose:** One consolidated report per applicant, plus audit download of uploaded source documents.
+**Purpose:** Case management — review and manage investigation cases for flagged documents, and also approve or reject entity-level Final Verification Reports (BTR-XXXXXX).
+
+| Element | Action | Expected Result |
+|---|---|---|
+| Filter bar | Type | Live-filters all case tabs by entity name, BT-reference, case key, or document type |
+| "⛔ Needs Review" tab | Auto-renders | Lists cases that need manual action; cases grouped by applicant |
+| "✅ Resolved" tab | Auto-renders | Lists cases already approved or rejected |
+| "🔵 Auto-Approved" tab | Auto-renders (if any) | Lists low-risk cases cleared automatically |
+| "📑 Entity Reports" tab | Auto-renders | Lists all BTR-XXXXXX Final Verification Reports across all entities |
+| Case card "✅ Approve" button | Click | Marks the case as cleared; note added automatically |
+| Case card "❌ Reject" button | Click | Marks the case as fraud_confirmed |
+| Entity Reports — "✅ Approve (1st)" button | Click | Sets `first_level_approval = 'Y'` on that report |
+| Entity Reports — "❌ Reject (1st)" button | Click | Sets `first_level_approval = 'N'` on that report |
+| Entity Reports — "✅ Approve (2nd)" button | Click (only after 1st approval) | Sets `second_level_approval = 'Y'`; report is now fully approved |
+| Entity Reports — "❌ Reject (2nd)" button | Click | Sets `second_level_approval = 'N'` |
+
+**Entity Reports approval workflow (BTR-XXXXXX):**
+1. Analyst clicks "🎯 Generate Final Report" on Document Intelligence → report created as ⏳ Pending Review
+2. First reviewer opens **Cases → 📑 Entity Reports** → approves or rejects (1st level)
+3. If 1st-level approved → senior reviewer approves or rejects (2nd level) → report status becomes 🟢 Fully Approved
+4. Either-level rejection → status becomes 🔴 Rejected
+
+**Important rules:**
+- Every approve/reject action must show a visible success or error toast. Silent failures are not allowed.
+- Second-level approval is blocked until first-level approval is `'Y'`.
+- The "📑 Entity Reports" tab is always the last tab and is always shown even if no reports exist yet.
+
+---
+
+**Purpose:** One consolidated report per applicant, plus source-document ZIP export and entity-level Final Verification Report downloads.
 
 | Element | Action | Expected Result |
 |---|---|---|
@@ -315,12 +358,15 @@
 | Applicant cards | Auto-renders | One expandable card per entity with counts for Face Match, Video KYC, and Document Scans |
 | "📄 Generate / Refresh Consolidated Report" | Click | Builds one consolidated PDF for that entity from all saved activities; deletes the older consolidated PDF in MinIO first, then uploads the new one |
 | "⬇ Download Consolidated Report (PDF)" | Click | Downloads the latest consolidated report |
+| "⬇ Download Final Layered Report (PDF)" | Click (appears if exists) | Downloads the Layered Analysis final report for this entity |
 | "📦 Download All Source Documents (ZIP)" | Click | Bundles only the uploaded source documents for that entity into a ZIP; generated report PDFs are excluded |
+| "📑 Final Verification Reports (BTR-XXXXXX)" section | Auto-renders | Lists every saved entity-level cross-document report with overall verdict badge, approval status, and date |
+| "⬇ JSON" per report | Click | Downloads the full `report_json` payload for that BTR-XXXXXX report as a pretty-printed JSON file |
 
 **Scope note:**
 - The Reports page remains the concise applicant-summary view.
 - Detailed explainability and raw stored evidence live on the Layered Analysis page.
-- If a layered-analysis final report exists in MinIO for the entity, it must also be downloadable from the Reports page.
+- BTR-XXXXXX entity reports are separate from the consolidated audit PDF. The JSON download gives auditors the raw cross-document findings.
 
 ---
 
@@ -362,9 +408,15 @@
 
 | Element | Action | Expected Result |
 |---|---|---|
-| Log viewer | Auto-renders | Shows last N lines of the application log file |
+| Log viewer | Auto-renders | Shows log entries in a CloudWatch-style dark terminal view, **oldest entry first** (scroll down to see newest) |
 | Severity filter | Select | Filters to ERROR, WARNING, INFO, DEBUG, or ALL |
-| "Refresh" button | Click | Reloads the log file |
+| Module filter | Select | Filters by logger/module name |
+| Search messages | Type keyword | Live-filters the visible log entries by message text |
+| Quick-filter buttons | Click (🔴 Errors, 🟡 Warnings, etc.) | Sets the severity filter instantly |
+| Recent Errors section | Auto-renders at bottom | Shows up to 20 most recent ERROR entries with full traceback in collapsible expanders |
+| Sidebar link | Click | Opens Log Analyzer in the same tab (implemented as `st.link_button` — same alignment as all other sidebar buttons) |
+
+**Log ordering:** Entries are shown **oldest first** (top = earliest, bottom = most recent). This matches the natural reading direction of a terminal or `tail -f` output.
 
 **Marksheet OCR logging:**
 - When a deterministic marksheet OCR parser runs, INFO logs include one `marksheet_ocr_structure` JSON payload showing the exact OCR-derived table structure used by the parser. The payload includes the detected layout family and the parsed rows or numeric arrays, so operators can inspect marksheet extraction decisions directly in Log Analyzer.
@@ -381,9 +433,9 @@
 
 | Element | Action | Expected Result |
 |---|---|---|
-| Metrics row | Auto-renders (cached) | Shows row counts for Entities, Scans, Document Extractions, Identity Checks, Layered Analysis Entries, Cases, and Case Notes |
+| Metrics row | Auto-renders (cached) | Shows row counts for Entities, Scans, Document Extractions, Identity Checks, Layered Analysis Entries, Cases, Case Notes, and Entity Reports |
 | "🔄 Refresh" button | Click | Clears the page's cached DB/MinIO data queries and reloads the latest counts / object list |
-| Table selector | Select | Loads up to 500 rows from the chosen table, including `identity_checks` and `layered_analysis_entries` |
+| Table selector | Select | Loads up to 500 rows from the chosen table, including `identity_checks`, `layered_analysis_entries`, and `entity_reports` |
 | Data table | Auto-renders | Shows table columns in a wide dataframe. Large JSON fields are rendered into readable summaries, and large binary fields like `identity_checks.pdf_report` are excluded from the cached table query so the page stays serializable and fast |
 | Row inspector | Select a row | Shows the full selected row payload below the dataframe so JSON-heavy tables such as `layered_analysis_entries` remain readable |
 

@@ -12,7 +12,12 @@ from basetruth.ui.components import (
     _badge,
     _page_title,
     _db_available_cached,
+    first_level_approve_entity_report,
+    first_level_reject_entity_report,
+    list_all_entity_reports,
     list_cases_from_db,
+    second_level_approve_entity_report,
+    second_level_reject_entity_report,
 )
 
 
@@ -229,6 +234,143 @@ def _render_case_card(
                     )
 
 
+def _page_entity_reports_tab() -> None:
+    """Render the Entity Reports approval sub-tab inside the Cases screen.
+
+    Shows all generated final-verification reports (BTR-XXXXXX) and lets
+    analysts run them through the same two-level approval workflow used for
+    individual document scans.  1st-level approve/reject is shown first;
+    2nd-level actions only appear after 1st-level approval.
+    """
+    reports = list_all_entity_reports()
+    if not reports:
+        st.info(
+            "No entity final reports yet. "
+            "Go to **🧠 Document Intelligence**, select an entity, "
+            "and click **🎯 Generate Final Report**."
+        )
+        return
+
+    st.caption(f"{len(reports)} final report(s) across all entities.")
+
+    for rpt in reports:
+        report_ref   = rpt.get("report_ref", "?")
+        entity_ref   = rpt.get("entity_ref", "")
+        entity_name  = rpt.get("entity_name", entity_ref)
+        first_ap     = rpt.get("first_level_approval")
+        second_ap    = rpt.get("second_level_approval")
+        overall      = (rpt.get("report_json") or {}).get("overall_verdict", "?")
+        gen_at       = rpt.get("generated_at", "")[:10]
+
+        # Build a readable status badge.
+        if second_ap == "Y":
+            status_label = "🟢 Fully Approved"
+        elif second_ap == "N" or first_ap == "N":
+            status_label = "🔴 Rejected"
+        elif first_ap == "Y":
+            status_label = "🟡 1st-Level Approved"
+        else:
+            status_label = "⏳ Pending Review"
+
+        ov_icon = "✅" if overall == "PASS" else "❌" if overall == "FAIL" else "❓"
+        header  = (
+            f"{report_ref}  ·  {entity_name} ({entity_ref})  "
+            f"·  {ov_icon} {overall}  ·  {status_label}  ·  {gen_at}"
+        )
+
+        with st.expander(header, expanded=(first_ap is None)):
+            # Checks summary.
+            checks = (rpt.get("report_json") or {}).get("checks", {})
+            for check_name, chk in checks.items():
+                icon = "✅" if chk["status"] == "PASS" else (
+                       "❌" if chk["status"] in ("MISMATCH", "TAMPERED") else "➖"
+                )
+                st.markdown(f"**{icon} {check_name.capitalize()}** — {chk['detail']}")
+
+            st.divider()
+
+            # ── 1st-Level Approval ─────────────────────────────────────────
+            if first_ap is None:
+                st.markdown("**1st-Level Review**")
+                l1_by = st.text_input(
+                    "Reviewer name", key=f"l1_by_{report_ref}", placeholder="Your name"
+                )
+                l1_comment = st.text_input(
+                    "Comment (optional)", key=f"l1_cmt_{report_ref}"
+                )
+                l1c1, l1c2, _ = st.columns([1, 1, 3])
+                if l1c1.button(
+                    "✅ 1st Approve", key=f"l1_app_{report_ref}", use_container_width=True, type="primary"
+                ):
+                    result = first_level_approve_entity_report(report_ref, l1_by, l1_comment)
+                    if result:
+                        st.toast(f"✅ {report_ref} — 1st-level approved", icon="✅")
+                        st.rerun()
+                    else:
+                        st.error("Could not update approval. Check the database.")
+                if l1c2.button(
+                    "❌ 1st Reject", key=f"l1_rej_{report_ref}", use_container_width=True
+                ):
+                    result = first_level_reject_entity_report(report_ref, l1_by, l1_comment)
+                    if result:
+                        st.toast(f"❌ {report_ref} — 1st-level rejected", icon="❌")
+                        st.rerun()
+                    else:
+                        st.error("Could not update approval. Check the database.")
+
+            elif first_ap == "Y" and second_ap is None:
+                # 1st-level done; show 2nd-level buttons.
+                st.success(
+                    f"✅ 1st-level approved by "
+                    f"{rpt.get('first_level_approved_by') or 'unknown'}"
+                )
+                st.markdown("**2nd-Level Review**")
+                l2_by = st.text_input(
+                    "Senior reviewer name", key=f"l2_by_{report_ref}", placeholder="Your name"
+                )
+                l2_comment = st.text_input(
+                    "Comment (optional)", key=f"l2_cmt_{report_ref}"
+                )
+                l2c1, l2c2, _ = st.columns([1, 1, 3])
+                if l2c1.button(
+                    "✅ 2nd Approve", key=f"l2_app_{report_ref}", use_container_width=True, type="primary"
+                ):
+                    result = second_level_approve_entity_report(report_ref, l2_by, l2_comment)
+                    if result:
+                        st.toast(f"✅ {report_ref} — fully approved!", icon="✅")
+                        st.rerun()
+                    else:
+                        st.error("Could not update approval. Check the database.")
+                if l2c2.button(
+                    "❌ 2nd Reject", key=f"l2_rej_{report_ref}", use_container_width=True
+                ):
+                    result = second_level_reject_entity_report(report_ref, l2_by, l2_comment)
+                    if result:
+                        st.toast(f"❌ {report_ref} — 2nd-level rejected", icon="❌")
+                        st.rerun()
+                    else:
+                        st.error("Could not update approval. Check the database.")
+
+            elif first_ap == "N":
+                st.error(
+                    f"❌ Rejected at 1st level by "
+                    f"{rpt.get('first_level_approved_by') or 'unknown'}  "
+                    f"— {rpt.get('first_level_approval_comment') or ''}"
+                )
+            elif second_ap == "Y":
+                st.success("🟢 Fully approved — no further action required.")
+                st.caption(
+                    f"1st: {rpt.get('first_level_approved_by') or 'unknown'}  |  "
+                    f"2nd: {rpt.get('second_level_approved_by') or 'unknown'}"
+                )
+            elif second_ap == "N":
+                st.error(
+                    f"❌ Rejected at 2nd level by "
+                    f"{rpt.get('second_level_approved_by') or 'unknown'}  "
+                    f"— {rpt.get('second_level_approval_comment') or ''}"
+                )
+
+
 def _page_cases(service: BaseTruthService) -> None:
     st.markdown(_page_title("📁", "Cases"), unsafe_allow_html=True)
 
@@ -293,6 +435,7 @@ Falling back to local files when the database is offline.
     ]
     if auto_ok:
         tab_labels.append(f"🔵 Auto-Approved ({len(auto_ok)})")
+    tab_labels.append("📑 Entity Reports")
 
     tabs = st.tabs(tab_labels)
 
@@ -331,3 +474,7 @@ Falling back to local files when the database is offline.
     if auto_ok:
         with tabs[2]:
             _render_grouped(auto_ok, show_actions=False)
+
+    # ── Entity Reports tab ────────────────────────────────────────────────────
+    with tabs[-1]:
+        _page_entity_reports_tab()

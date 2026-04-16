@@ -29,6 +29,9 @@ from basetruth.ui.components import (
     save_identity_check,
     search_entities,
 )
+from basetruth.logger import get_logger
+
+log = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # PAN constants
@@ -228,8 +231,17 @@ def _extract_pan_info(img_bytes: bytes) -> Dict[str, Any]:
     signature bounding-box in a single request, halving the Ollama round-trips
     compared to the previous two-call approach.
     """
+    log.info(
+        "Identity Verification: Initiating combined PAN detail and signature extraction using Gemma4.",
+        extra={"engine": "gemma4_ollama"}
+    )
     # One Gemma4 call returns both PAN fields AND sig_box — no second call needed
     gemma_data = extract_pan_details_and_signature_with_ollama(img_bytes)
+    
+    log.info(
+        "Identity Verification: Running fallback PaddleOCR sequence on PAN image.",
+        extra={"engine": "paddleocr"}
+    )
     ocr_data = _extract_pan_info_ocr(img_bytes)
 
     merged: Dict[str, Any] = {}
@@ -275,6 +287,7 @@ def _extract_pan_info(img_bytes: bytes) -> Dict[str, Any]:
         merged["extraction_source"] = " + ".join(sources)
         merged["engine"] = "gemma4_ollama" if sources and sources[0] == "gemma4" else "ocr"
 
+    
     # Forward the signature bounding-box supplied by the combined Gemma4 call
     # so callers can pass it straight to _crop_pan_signature and skip a second
     # Gemma4 round-trip for signature detection.
@@ -286,6 +299,10 @@ def _extract_pan_info(img_bytes: bytes) -> Dict[str, Any]:
     if gemma_data.get("raw_response"):
         merged["gemma_raw_response"] = gemma_data["raw_response"]
 
+    log.info(
+        f"Identity Verification: Completed PAN extraction. Fields retrieved from: {merged.get('extraction_source', 'none')}.",
+        extra={"engine": merged.get("engine"), "pan_number_found": bool(merged.get("pan_number"))}
+    )
     return merged
 
 
@@ -814,6 +831,10 @@ def _check_document_type(img_bytes: bytes, slot: str) -> Dict[str, Any]:
         confidence — how sure Gemma4 was (0.0–1.0)
         reason     — human-readable explanation for the user
     """
+    log.info(
+        f"Identity Verification: Checking if uploaded image matches the expected slot '{slot}' ({_SLOT_DISPLAY_NAMES.get(slot, slot)}).",
+        extra={"slot": slot}
+    )
     result = classify_document_type_with_ollama(img_bytes)
 
     # Ollama is not reachable — skip silently so we never block the user

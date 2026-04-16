@@ -45,7 +45,7 @@
 - **[DONE]** Synthetic mortgage corpus — 50 cases, 426 PDFs, labels.csv (`scripts/generate_mortgage_docs.py`)
 - **[DONE]** Comprehensive `docs/Mortgage_Fraud.md` — full Indian mortgage industry knowledge base, fraud typology, cross-document checks, rules engine, ML features, implementation tracker
 - **[DONE]** 21 new mortgage-specific tests (42 total)
-- cross-document reconciliation engine (`src/basetruth/analysis/cross_doc.py`) — pending
+- **[DONE — in-UI]** cross-document reconciliation engine — name, address, PAN, Aadhaar, salary (30% tolerance), and forensic-verdict consistency checks across all of an applicant's documents; implemented inside Document Intelligence as "🎯 Generate Final Report"; saves results to `entity_reports` table as `BTR-XXXXXX`; a dedicated standalone `src/basetruth/analysis/cross_doc.py` module is still pending
 - case bundle grouping + multi-document scan (`src/basetruth/analysis/case_bundle.py`) — pending
 - FAISS-backed fraud template fingerprint library — pending
 - MCA21 CIN registry API stub — pending
@@ -96,3 +96,16 @@
 - every score must be explainable from emitted signals
 - every domain pack must define what counts as suspicious and why
 - every new mortgage check must reference a rule ID from `docs/Mortgage_Fraud.md`
+
+## Phase 11: Final Verification Report and Two-Level Approval ✅
+
+- **[DONE]** `entity_reports` database table — stores cross-document verification reports with `BTR-XXXXXX` reference
+- **[DONE]** `EntityReport` ORM model in `db.py` with CASCADE delete from entities; `init_db()` creates the table automatically
+- **[DONE]** 9 CRUD functions in `store.py`: `save_entity_report`, `get_entity_reports`, `list_all_entity_reports`, approve/reject helpers for both levels
+- **[DONE]** Document Intelligence: "🎯 Generate Final Report" button; six cross-document checks (name, address, PAN, Aadhaar, salary, forensics); pending reports refreshed in-place; approved/rejected reports get a new BTR-XXXXXX to preserve audit history
+- **[DONE]** Document Intelligence: two-tab view ("✅ Approved" / "📋 All Scans") for per-applicant scans
+- **[DONE]** Cases: "📑 Entity Reports" tab (always last); first-level and second-level approve/reject buttons
+- **[DONE]** Reports: BTR-XXXXXX reports section per entity with verdict badge, approval status, and JSON download
+- **[DONE]** Database Viewer: `entity_reports` added to table browser list
+- **[DONE]** Log Analyzer: logs now display oldest-first (CloudWatch style); sidebar link uses `st.link_button`
+- **[DONE]** Q&A: silent Phase 1 fix (intent classification no longer logs visible loading spinner to users)

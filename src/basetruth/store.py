@@ -25,6 +25,7 @@ from basetruth.db import (
     CaseNote,
     DocumentExtraction,
     Entity,
+    EntityReport,
     IdentityCheck,
     LayeredAnalysisEntry,
     Scan,
@@ -2849,3 +2850,242 @@ def get_all_entities_with_scans(limit: int = 200) -> List[Dict[str, Any]]:
     except Exception as exc:
         log.warning("get_all_entities_with_scans failed: %s", exc)
         return []
+
+
+# ---------------------------------------------------------------------------
+# EntityReport — final cross-document verification reports
+# ---------------------------------------------------------------------------
+
+def _next_report_ref(session: Session) -> str:
+    """Generate the next BTR-XXXXXX reference for an EntityReport.
+
+    Uses the current max id from entity_reports so the reference is stable
+    and predictable even across table truncations during development.
+    """
+    max_id: int = session.query(func.max(EntityReport.id)).scalar() or 0
+    return f"BTR-{(max_id + 1):06d}"
+
+
+def _entity_report_to_dict(r: EntityReport, entity: Optional[Entity]) -> Dict[str, Any]:
+    """Convert an EntityReport ORM row to a plain serialisable dict."""
+    first_name = (entity.first_name or "") if entity else ""
+    last_name = (entity.last_name or "") if entity else ""
+    return {
+        "id": r.id,
+        "report_ref": r.report_ref,
+        "entity_id": r.entity_id,
+        "entity_ref": (entity.entity_ref if entity else ""),
+        "entity_name": f"{first_name} {last_name}".strip() or (entity.entity_ref if entity else ""),
+        "report_json": r.report_json or {},
+        "first_level_approval": r.first_level_approval,
+        "first_level_approved_by": r.first_level_approved_by or "",
+        "first_level_approved_at": (
+            r.first_level_approved_at.isoformat() if r.first_level_approved_at else ""
+        ),
+        "first_level_approval_comment": r.first_level_approval_comment or "",
+        "second_level_approval": r.second_level_approval,
+        "second_level_approved_by": r.second_level_approved_by or "",
+        "second_level_approved_at": (
+            r.second_level_approved_at.isoformat() if r.second_level_approved_at else ""
+        ),
+        "second_level_approval_comment": r.second_level_approval_comment or "",
+        "generated_at": r.generated_at.isoformat() if r.generated_at else "",
+    }
+
+
+def save_entity_report(entity_ref: str, report_json: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Create or refresh the final cross-document report for an entity.
+
+    If the entity already has a pending (unapproved) report, it is replaced
+    by the new analysis so there is always at most one pending report per entity.
+    Approved reports are never overwritten — a new row is created instead so the
+    audit trail is preserved.
+    """
+    try:
+        with db_session() as session:
+            entity = (
+                session.query(Entity).filter(Entity.entity_ref == entity_ref).first()
+            )
+            if not entity:
+                log.warning(
+                    "save_entity_report: entity not found",
+                    extra={"entity_ref": entity_ref},
+                )
+                return None
+
+            # Look for an existing pending (level-1 null) report to refresh.
+            existing = (
+                session.query(EntityReport)
+                .filter(
+                    EntityReport.entity_id == entity.id,
+                    EntityReport.first_level_approval == None,  # noqa: E711
+                )
+                .order_by(EntityReport.generated_at.desc())
+                .first()
+            )
+
+            if existing:
+                # Refresh in-place — re-running before approval resets the payload.
+                existing.report_json = _json_ready(report_json)
+                existing.generated_at = datetime.now(timezone.utc)
+                existing.updated_at = datetime.now(timezone.utc)
+                report_ref = existing.report_ref
+                log.info(
+                    "save_entity_report: refreshed existing pending report",
+                    extra={"entity_ref": entity_ref, "report_ref": report_ref},
+                )
+            else:
+                # Create a new report row (previous ones are approved/rejected).
+                report_ref = _next_report_ref(session)
+                session.add(EntityReport(
+                    entity_id=entity.id,
+                    report_ref=report_ref,
+                    report_json=_json_ready(report_json),
+                ))
+                log.info(
+                    "save_entity_report: created new report",
+                    extra={"entity_ref": entity_ref, "report_ref": report_ref},
+                )
+
+            session.flush()
+            return {"entity_ref": entity_ref, "report_ref": report_ref}
+    except Exception as exc:
+        log.error("save_entity_report failed: %s", exc, exc_info=True)
+        return None
+
+
+def get_entity_reports(entity_ref: str) -> List[Dict[str, Any]]:
+    """Return all EntityReport rows for an entity, most-recent first."""
+    try:
+        with db_session() as session:
+            entity = (
+                session.query(Entity).filter(Entity.entity_ref == entity_ref).first()
+            )
+            if not entity:
+                return []
+            rows = (
+                session.query(EntityReport)
+                .filter(EntityReport.entity_id == entity.id)
+                .order_by(EntityReport.generated_at.desc())
+                .all()
+            )
+            return [_entity_report_to_dict(r, entity) for r in rows]
+    except Exception as exc:
+        log.warning("get_entity_reports failed: %s", exc)
+        return []
+
+
+def list_all_entity_reports(limit: int = 500) -> List[Dict[str, Any]]:
+    """Return all EntityReport rows across all entities, most-recent first.
+
+    Used by the Cases screen to show entity reports awaiting approval.
+    """
+    try:
+        with db_session() as session:
+            rows = (
+                session.query(EntityReport)
+                .order_by(EntityReport.generated_at.desc())
+                .limit(limit)
+                .all()
+            )
+            result = []
+            for r in rows:
+                entity = (
+                    session.query(Entity).filter(Entity.id == r.entity_id).first()
+                )
+                result.append(_entity_report_to_dict(r, entity))
+            return result
+    except Exception as exc:
+        log.warning("list_all_entity_reports failed: %s", exc)
+        return []
+
+
+def _set_entity_report_approval(
+    report_ref: str,
+    *,
+    level: int,
+    approval: str,
+    approved_by: str,
+    comment: str,
+) -> Optional[Dict[str, Any]]:
+    """Internal: set 1st-level or 2nd-level approval on an EntityReport.
+
+    Level 1 can be set freely.  Level 2 is only allowed after level 1 is Y.
+    """
+    try:
+        with db_session() as session:
+            r = (
+                session.query(EntityReport)
+                .filter(EntityReport.report_ref == report_ref)
+                .first()
+            )
+            if r is None:
+                log.warning(
+                    "_set_entity_report_approval: report not found",
+                    extra={"report_ref": report_ref},
+                )
+                return None
+            now = datetime.now(timezone.utc)
+            if level == 1:
+                r.first_level_approval = approval
+                r.first_level_approved_by = approved_by or None
+                r.first_level_approved_at = now
+                r.first_level_approval_comment = comment or None
+            else:
+                if r.first_level_approval != "Y":
+                    log.warning(
+                        "_set_entity_report_approval: 1st-level not yet approved",
+                        extra={"report_ref": report_ref},
+                    )
+                    return None
+                r.second_level_approval = approval
+                r.second_level_approved_by = approved_by or None
+                r.second_level_approved_at = now
+                r.second_level_approval_comment = comment or None
+            r.updated_at = now
+            session.flush()
+            entity = session.query(Entity).filter(Entity.id == r.entity_id).first()
+            log.info(
+                "entity_report approval updated",
+                extra={"report_ref": report_ref, "level": level, "approval": approval},
+            )
+            return _entity_report_to_dict(r, entity)
+    except Exception as exc:
+        log.error("_set_entity_report_approval failed: %s", exc, exc_info=True)
+        return None
+
+
+def first_level_approve_entity_report(
+    report_ref: str, approved_by: str = "", comment: str = ""
+) -> Optional[Dict[str, Any]]:
+    """Set 1st-level approval = Y on the given EntityReport."""
+    return _set_entity_report_approval(
+        report_ref, level=1, approval="Y", approved_by=approved_by, comment=comment
+    )
+
+
+def first_level_reject_entity_report(
+    report_ref: str, approved_by: str = "", comment: str = ""
+) -> Optional[Dict[str, Any]]:
+    """Set 1st-level approval = N on the given EntityReport."""
+    return _set_entity_report_approval(
+        report_ref, level=1, approval="N", approved_by=approved_by, comment=comment
+    )
+
+
+def second_level_approve_entity_report(
+    report_ref: str, approved_by: str = "", comment: str = ""
+) -> Optional[Dict[str, Any]]:
+    """Set 2nd-level approval = Y on the given EntityReport (1st-level must be Y first)."""
+    return _set_entity_report_approval(
+        report_ref, level=2, approval="Y", approved_by=approved_by, comment=comment
+    )
+
+
+def second_level_reject_entity_report(
+    report_ref: str, approved_by: str = "", comment: str = ""
+) -> Optional[Dict[str, Any]]:
+    """Set 2nd-level approval = N on the given EntityReport."""
+    return _set_entity_report_approval(
+        report_ref, level=2, approval="N", approved_by=approved_by, comment=comment
+    )

@@ -94,6 +94,20 @@ When a document is flagged as risky and needs manual analysis, you open a Case (
 
 ---
 
+### `entity_reports` — Final cross-document verification reports (BTR-XXXXXX)
+
+After all of an applicant’s documents have been scanned and approved, an analyst can generate a **Final Verification Report**. This report compares every document the applicant submitted and checks whether the name, address, PAN, Aadhaar, and salary are consistent across all of them. It also summarises whether any documents failed the forensic check.
+
+The report goes through the same two-level human approval process as individual document scans: a first reviewer approves or rejects it, then a senior reviewer makes the final call.
+
+**What gets stored:** A unique reference (e.g. `BTR-000001`), a link to the applicant, the full cross-document findings as JSON (one entry per check — name, address, PAN, Aadhaar, salary, forensics), and the two-level approval trail.
+
+**Created when:** An analyst clicks "🎯 Generate Final Report" on the **Document Intelligence** screen after the applicant's documents have been scanned.
+
+**Reference format:** `BTR-XXXXXX` (as opposed to entity references which are `BT-XXXXXX` and scan approval is on individual scans).
+
+---
+
 ## Part 2 — Technical Reference
 
 **Engine:** PostgreSQL 16  
@@ -261,6 +275,55 @@ A very detailed logbook that records every tiny piece of information captured du
 
 ---
 
+### `entity_reports`
+
+**What is it used for?**
+Stores the output of the cross-document consistency analysis that an analyst runs from the Document Intelligence screen. Each row represents one final analysis for one applicant, tracking whether all their submitted documents are consistent with each other.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | SERIAL | Primary key |
+| `entity_id` | FK → `entities.id` (CASCADE DELETE) | Which applicant this report belongs to |
+| `report_ref` | VARCHAR(20), UNIQUE | Human-readable ID e.g. `BTR-000001` |
+| `report_json` | JSONB | Full cross-document analysis payload (checks for name, address, PAN, Aadhaar, salary, forensics) |
+| `first_level_approval` | VARCHAR(1) | `Y` = approved, `N` = rejected, `NULL` = pending (initial reviewer) |
+| `first_level_approved_by` | VARCHAR(255) | Who made the 1st-level decision |
+| `first_level_approved_at` | TIMESTAMPTZ | When 1st-level decision was made |
+| `first_level_approval_comment` | TEXT | Optional 1st-level reviewer note |
+| `second_level_approval` | VARCHAR(1) | `Y` = approved, `N` = rejected, `NULL` = pending (senior reviewer) |
+| `second_level_approved_by` | VARCHAR(255) | Who made the 2nd-level decision |
+| `second_level_approved_at` | TIMESTAMPTZ | When 2nd-level decision was made |
+| `second_level_approval_comment` | TEXT | Optional 2nd-level reviewer note |
+| `generated_at` | TIMESTAMPTZ | When the report was first generated |
+| `updated_at` | TIMESTAMPTZ | When the report was last updated |
+
+**Behaviour rules:**
+- A pending (unapproved) report for an entity is refreshed in-place when the analyst generates again — no duplicate is created.
+- Once approved or rejected, a re-generation creates a new row with a new BTR-XXXXXX reference so the audit trail of past decisions is never lost.
+- Deleting an entity cascades to delete all their entity reports automatically.
+
+**`report_json` structure:**
+```json
+{
+  "entity_ref": "BT-000001",
+  "entity_name": "Ravi Kumar",
+  "overall_verdict": "PASS | FAIL",
+  "documents_analysed": 5,
+  "scans_reviewed": 5,
+  "checks": {
+    "name":     { "status": "PASS | MISMATCH",   "detail": "..." },
+    "address":  { "status": "PASS | MISMATCH",   "detail": "..." },
+    "pan":      { "status": "PASS | MISMATCH",   "detail": "..." },
+    "aadhaar":  { "status": "PASS | MISMATCH",   "detail": "..." },
+    "salary":   { "status": "PASS | MISMATCH | SKIP", "detail": "..." },
+    "forensics":{ "status": "CLEAR | TAMPERED",  "detail": "..." }
+  },
+  "per_document_evidence": [ ... ]
+}
+```
+
+---
+
 ## Layered Analysis Capture Model
 
 Examples of current section capture:
@@ -319,6 +382,7 @@ Database reset truncates:
 - `layered_analysis_entries`
 - `case_notes`
 - `cases`
+- `entity_reports`
 - `document_extractions`
 - `identity_checks`
 - `scans`

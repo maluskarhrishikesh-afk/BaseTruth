@@ -1,6 +1,7 @@
-﻿"""Document Intelligence page — forensic scan results, per-entity, per-document."""
+"""Document Intelligence page — forensic scan results, per-entity, per-document."""
 from __future__ import annotations
 
+import json
 import streamlit as st
 
 from basetruth.logger import get_logger
@@ -9,8 +10,11 @@ from basetruth.ui.components import (
     _db_available_cached,
     _minio_available_cached,
     _page_title,
+    get_entity_document_information,
+    get_entity_reports,
     get_entity_scans,
     minio_get_object,
+    save_entity_report,
     search_entities,
 )
 
@@ -139,6 +143,231 @@ def _render_scan_card(scan: dict) -> None:
 
         with st.expander("🔬 Forensic Details", expanded=True):
             _render_forensics_card(scan)
+
+
+# ---------------------------------------------------------------------------
+# Cross-document analysis helper
+# ---------------------------------------------------------------------------
+
+# Field name aliases used in different document types for the same concept.
+# Each tuple lists all known field names that could carry that piece of information.
+_NAME_FIELDS    = ("candidate_name", "name", "employee_name", "account_holder_name",
+                   "applicant_name", "holder_name")
+_ADDRESS_FIELDS = ("address", "permanent_address", "residential_address", "current_address")
+_PAN_FIELDS     = ("pan_number", "pan")
+_AADHAR_FIELDS  = ("aadhaar_number", "aadhar_number", "uid", "aadhaar")
+_SALARY_FIELDS_PAYSLIP = ("net_salary", "gross_salary", "net_pay", "ctc",
+                           "total_compensation", "net_amount")
+_SALARY_FIELDS_OFFER   = ("offered_salary", "ctc", "annual_ctc", "gross_salary",
+                           "salary", "annual_salary", "package")
+
+
+def _first(d: dict, keys: tuple) -> str | None:
+    """Return the first non-empty value found in d for any of the given keys."""
+    for k in keys:
+        v = d.get(k)
+        if v and str(v).strip():
+            return str(v).strip()
+    return None
+
+
+def _normalise_name(name: str | None) -> str:
+    """Lower-case and strip extra whitespace for a fuzzy name comparison."""
+    if not name:
+        return ""
+    return " ".join(name.lower().split())
+
+
+def _normalise_number(val: str | None) -> str:
+    """Strip spaces, dashes, and upper-case an ID number for comparison."""
+    if not val:
+        return ""
+    return val.replace(" ", "").replace("-", "").upper()
+
+
+def _to_float(val: str | None) -> float | None:
+    """Convert a possibly formatted salary string ('₹ 1,23,456') to a float."""
+    if not val:
+        return None
+    import re
+    digits = re.sub(r"[^\d.]", "", str(val))
+    try:
+        return float(digits)
+    except ValueError:
+        return None
+
+
+def _run_cross_doc_analysis(entity: dict, extractions: list, scans: list) -> dict:
+    """Perform a cross-document consistency analysis for one entity.
+
+    Compares names, addresses, PAN, Aadhaar, salary, and forensic verdicts
+    across every scanned document's extracted fields. Returns a structured
+    payload suitable for storage in EntityReport.report_json.
+
+    The approach is to collect all values seen for each field across all documents
+    and then flag mismatches where two or more non-identical values are found.
+    Salary comparison is done with a 30% tolerance to accommodate deductions and
+    increments between a payslip and an offer/increment letter.
+    """
+    # Collect per-document evidence rows.
+    evidence: list[dict] = []
+    for ext in extractions:
+        fields = ext.get("fields") or {}
+        doc_type = ext.get("document_type") or "unknown"
+        file_name = ext.get("file_name") or ""
+        evidence.append({
+            "file_name": file_name,
+            "document_type": doc_type,
+            "name":    _first(fields, _NAME_FIELDS),
+            "address": _first(fields, _ADDRESS_FIELDS),
+            "pan":     _first(fields, _PAN_FIELDS),
+            "aadhaar": _first(fields, _AADHAR_FIELDS),
+            "salary_payslip": _first(fields, _SALARY_FIELDS_PAYSLIP)
+                               if "payslip" in doc_type.lower() else None,
+            "salary_offer":   _first(fields, _SALARY_FIELDS_OFFER)
+                               if any(kw in doc_type.lower()
+                                      for kw in ("offer", "increment", "appointment")) else None,
+        })
+
+    # ── Name consistency ─────────────────────────────────────────────────────
+    names = [_normalise_name(r["name"]) for r in evidence if r["name"]]
+    unique_names = list(dict.fromkeys(names))  # preserve order, deduplicate
+    name_status = "PASS" if len(unique_names) <= 1 else "MISMATCH"
+    name_detail = f"Values seen: {unique_names}" if len(unique_names) > 1 else (unique_names[0] if unique_names else "No name found")
+
+    # ── Address consistency ──────────────────────────────────────────────────
+    addresses = [r["address"] for r in evidence if r["address"]]
+    unique_addresses = list(dict.fromkeys(addresses))
+    address_status = "PASS" if len(unique_addresses) <= 1 else "MISMATCH"
+    address_detail = f"{len(unique_addresses)} distinct addresses found" if len(unique_addresses) > 1 else (unique_addresses[0] if unique_addresses else "No address found")
+
+    # ── PAN consistency ──────────────────────────────────────────────────────
+    pans = [_normalise_number(r["pan"]) for r in evidence if r["pan"]]
+    unique_pans = list(dict.fromkeys(pans))
+    pan_status = "PASS" if len(unique_pans) <= 1 else "MISMATCH"
+    pan_detail = f"Values seen: {unique_pans}" if len(unique_pans) > 1 else (unique_pans[0] if unique_pans else "No PAN found")
+
+    # ── Aadhaar consistency ──────────────────────────────────────────────────
+    aadhaars = [_normalise_number(r["aadhaar"]) for r in evidence if r["aadhaar"]]
+    unique_aadhaars = list(dict.fromkeys(aadhaars))
+    aadhaar_status = "PASS" if len(unique_aadhaars) <= 1 else "MISMATCH"
+    aadhaar_detail = f"Values seen: {unique_aadhaars}" if len(unique_aadhaars) > 1 else (unique_aadhaars[0] if unique_aadhaars else "No Aadhaar found")
+
+    # ── Salary cross-check ───────────────────────────────────────────────────
+    payslip_salaries = [_to_float(r["salary_payslip"]) for r in evidence if r["salary_payslip"]]
+    offer_salaries   = [_to_float(r["salary_offer"])   for r in evidence if r["salary_offer"]]
+    salary_status = "SKIP"
+    salary_detail = "No payslip and/or offer salary data available."
+    if payslip_salaries and offer_salaries:
+        # Compare the average payslip net salary to the average offered CTC.
+        # Allow 30% tolerance — deductions and date-of-joining mid-month can
+        # cause legitimate differences between the two numbers.
+        avg_pay = sum(payslip_salaries) / len(payslip_salaries)
+        avg_off = sum(offer_salaries)   / len(offer_salaries)
+        if avg_off > 0:
+            ratio = abs(avg_pay - avg_off) / avg_off
+            salary_status = "PASS" if ratio <= 0.30 else "MISMATCH"
+            salary_detail = (
+                f"Payslip avg ₹{avg_pay:,.0f} vs offer avg ₹{avg_off:,.0f} "
+                f"({ratio * 100:.1f}% difference)"
+            )
+
+    # ── Forensic verdict summary ──────────────────────────────────────────────
+    verdicts = [s.get("verdict") or "" for s in scans]
+    tampered_docs = [
+        s.get("source_name", "?") for s in scans
+        if "TAMPERED" in (s.get("verdict") or "").upper()
+    ]
+    forensic_status = "CLEAR" if not tampered_docs else "TAMPERED"
+    forensic_detail = (
+        f"{len(tampered_docs)} document(s) flagged as TAMPERED: {tampered_docs}"
+        if tampered_docs else
+        f"All {len(scans)} document(s) are forensically clean."
+    )
+
+    # ── Overall verdict ───────────────────────────────────────────────────────
+    all_checks = [name_status, pan_status, aadhaar_status, salary_status, forensic_status]
+    # Any MISMATCH or TAMPERED causes an overall FAIL; SKIP checks are neutral.
+    if any(c in ("MISMATCH", "TAMPERED") for c in all_checks):
+        overall = "FAIL"
+    else:
+        overall = "PASS"
+
+    # ── Assemble report payload ───────────────────────────────────────────────
+    return {
+        "entity_ref":        entity.get("entity_ref", ""),
+        "entity_name":       f"{entity.get('first_name', '')} {entity.get('last_name', '')}".strip(),
+        "overall_verdict":   overall,
+        "documents_analysed": len(extractions),
+        "scans_reviewed":     len(scans),
+        "checks": {
+            "name":     {"status": name_status,     "detail": name_detail},
+            "address":  {"status": address_status,  "detail": address_detail},
+            "pan":      {"status": pan_status,       "detail": pan_detail},
+            "aadhaar":  {"status": aadhaar_status,   "detail": aadhaar_detail},
+            "salary":   {"status": salary_status,    "detail": salary_detail},
+            "forensics":{"status": forensic_status,  "detail": forensic_detail},
+        },
+        "per_document_evidence": evidence,
+    }
+
+
+def _render_entity_reports_section(entity_ref: str) -> None:
+    """Display existing EntityReport records for this entity and allow regeneration.
+
+    Shows a summary card for each saved report with its approval status and a
+    collapsible JSON payload so analysts can inspect the full findings.
+    """
+    reports = get_entity_reports(entity_ref)
+    if not reports:
+        st.info("No final report generated yet. Click **🎯 Generate Final Report** below.")
+        return
+
+    for rpt in reports:
+        first = rpt.get("first_level_approval")
+        second = rpt.get("second_level_approval")
+        if second == "Y":
+            badge = "🟢 Fully Approved"
+        elif second == "N" or first == "N":
+            badge = "🔴 Rejected"
+        elif first == "Y":
+            badge = "🟡 Pending 2nd-Level"
+        else:
+            badge = "⏳ Pending Review"
+
+        overall = (rpt.get("report_json") or {}).get("overall_verdict", "?")
+        ov_icon = "✅" if overall == "PASS" else "❌" if overall == "FAIL" else "❓"
+
+        with st.expander(
+            f"{rpt['report_ref']}  ·  {ov_icon} {overall}  ·  {badge}  "
+            f"·  Generated {rpt.get('generated_at', '')[:10]}",
+            expanded=(second is None and first is None),
+        ):
+            # Summarise each check as a pass/fail row.
+            checks = (rpt.get("report_json") or {}).get("checks", {})
+            for check_name, chk in checks.items():
+                icon = "✅" if chk["status"] == "PASS" else (
+                       "❌" if chk["status"] in ("MISMATCH", "TAMPERED", "FAIL") else "➖"
+                )
+                st.markdown(f"**{icon} {check_name.capitalize()}** — {chk['detail']}")
+
+            # Full JSON payload is available but collapsed to avoid clutter.
+            with st.expander("Full report JSON", expanded=False):
+                st.json(rpt.get("report_json") or {})
+
+            # Show approval trail.
+            if first:
+                st.caption(
+                    f"1st-level: {'✅ Approved' if first == 'Y' else '❌ Rejected'} "
+                    f"by {rpt.get('first_level_approved_by') or 'unknown'}"
+                    f"  {rpt.get('first_level_approval_comment') or ''}"
+                )
+            if second:
+                st.caption(
+                    f"2nd-level: {'✅ Approved' if second == 'Y' else '❌ Rejected'} "
+                    f"by {rpt.get('second_level_approved_by') or 'unknown'}"
+                    f"  {rpt.get('second_level_approval_comment') or ''}"
+                )
 
 
 def _page_document_intelligence() -> None:
@@ -271,7 +500,7 @@ grouped by applicant.
 
     # ── Load all scans for this entity -------------------------------------
     all_scans = get_entity_scans(selected_ref)
-    log.debug("Document Intelligence: loaded scans", extra={"entity_ref": selected_ref, "count": len(all_scans)})
+    log.debug(f"Document Intelligence Engine: Successfully retrieved {len(all_scans)} scans associated with applicant '{selected_ref}'.", extra={"entity_ref": selected_ref, "count": len(all_scans)})
 
     if not all_scans:
         st.info(
@@ -326,3 +555,49 @@ grouped by applicant.
     with tab_all:
         for scan in all_scans:
             _render_scan_card(scan)
+
+    # ── Generate Final Report ─────────────────────────────────────────────────
+    st.divider()
+    st.markdown("#### 🎯 Final Verification Report")
+    st.caption(
+        "Generates a cross-document consistency report comparing names, PAN, Aadhaar, "
+        "address, salary, and forensic verdicts across all documents for this applicant."
+    )
+
+    _existing_reports = get_entity_reports(selected_ref)
+    _has_pending = any(
+        r.get("first_level_approval") is None for r in _existing_reports
+    )
+
+    if _has_pending:
+        st.info(
+            "ℹ️ A pending report already exists. Generating again will refresh it "
+            "with the latest document data (it can be regenerated until approved)."
+        )
+
+    if st.button("🎯 Generate Final Report", type="primary", key="di_gen_report"):
+        with st.spinner("Running cross-document analysis…"):
+            # Fetch all document extractions for this entity.
+            extractions = get_entity_document_information(selected_ref)
+            report_payload = _run_cross_doc_analysis(selected_entity, extractions, all_scans)
+            result = save_entity_report(selected_ref, report_payload)
+
+        if result:
+            st.success(
+                f"✅ Report **{result['report_ref']}** saved. "
+                "Go to **📂 Cases** to approve it, or download it from **📊 Reports**."
+            )
+            log.info(
+                "Final report generated from Document Intelligence",
+                extra={"entity_ref": selected_ref, "report_ref": result["report_ref"]},
+            )
+            st.rerun()
+        else:
+            st.error(
+                "❌ Could not save the report. Check the database connection and try again."
+            )
+
+    # ── Existing reports section ──────────────────────────────────────────────
+    if _existing_reports:
+        st.markdown("##### Saved Reports")
+        _render_entity_reports_section(selected_ref)

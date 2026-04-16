@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List
+from functools import lru_cache
+from pathlib import Path
+from typing import Dict
 
 from sqlalchemy import text
 
@@ -17,6 +19,65 @@ from basetruth.store import (
 
 log = get_logger(__name__)
 
+# ---------------------------------------------------------------------------
+# Prompt loading — all Q&A prompt text lives in qna_prompts.md so that
+# operators can tune chatbot behaviour without editing Python.
+# ---------------------------------------------------------------------------
+
+_QNA_PROMPTS_PATH = Path(__file__).with_name("qna_prompts.md")
+
+# Matches the same section format used in document_extract_prompts.md:
+#   ## section_name
+#   ```text
+#   ...body...
+#   ```
+_QNA_SECTION_PATTERN = re.compile(
+    r"(?ms)^##\s+(?P<name>[a-z0-9_]+)\s*\n```(?:text|prompt)?\n(?P<body>.*?)\n```"
+)
+
+_QNA_REQUIRED_SECTIONS = frozenset({"system_prompt", "db_query_rules", "minio_instructions", "product_knowledge"})
+
+
+@lru_cache(maxsize=1)
+def _load_qna_prompts() -> Dict[str, str]:
+    """Load all prompt sections from qna_prompts.md once per process.
+
+    Keeping prompts in a separate markdown file lets analysts and product
+    managers read and tune the chatbot behaviour without touching Python.
+    The @lru_cache means the file is only read from disk once.
+    """
+    try:
+        raw = _QNA_PROMPTS_PATH.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(
+            f"Q&A prompt asset missing or unreadable: {_QNA_PROMPTS_PATH}"
+        ) from exc
+
+    sections = {
+        m.group("name"): m.group("body").strip("\n")
+        for m in _QNA_SECTION_PATTERN.finditer(raw)
+    }
+    missing = sorted(_QNA_REQUIRED_SECTIONS - set(sections))
+    if missing:
+        raise RuntimeError("qna_prompts.md is missing required sections: " + ", ".join(missing))
+    return sections
+
+
+def get_qna_system_prompt() -> str:
+    """Return the base system-prompt text from qna_prompts.md."""
+    prompts = _load_qna_prompts()
+    return prompts["system_prompt"] + "\n\n" + prompts["product_knowledge"]
+
+
+def get_qna_db_rules() -> str:
+    """Return the database query rules text from qna_prompts.md."""
+    return _load_qna_prompts()["db_query_rules"]
+
+
+def get_qna_minio_instructions() -> str:
+    """Return the MinIO query instructions text from qna_prompts.md."""
+    return _load_qna_prompts()["minio_instructions"]
+
 # Very strict regex whitelist for allowed statements
 _WHITELIST_REGEX = re.compile(
     r"^\s*(WITH\s+.*)?SELECT\s+.*$", re.IGNORECASE | re.DOTALL
@@ -29,19 +90,25 @@ _BLACKLIST_REGEX = re.compile(
 )
 
 def get_schema_summary() -> str:
-    """Return a compact DDL-like text summarising the relevant SQL tables."""
-    return """
-TABLE entities (id, entity_ref, first_name, last_name, email, phone, pan_number, aadhar_number, created_at)
-  - Tip: For names, always use ILIKE '%name%' to handle middle names or partial matches (e.g. first_name ILIKE '%Hrishikesh%').
-TABLE scans (id, entity_id FK->entities, source_name, source_sha256, document_type, layered_analysis_json JSONB, approved, first_level_approval, second_level_approval, generated_at, updated_at)
-TABLE identity_checks (id, entity_id FK->entities, check_type, status, verdict, cosine_similarity, doc_filename, created_at)
-  - 'check_type' is either 'face_match' or 'video_kyc'.
-TABLE cases (id, case_key, entity_id FK->entities, status, disposition, priority, max_risk_level, document_count, created_at)
-TABLE case_notes (id, case_id FK->cases, author, text, created_at)
-TABLE document_extractions (id, entity_id FK->entities, scan_id FK->scans nullable, file_name, document_type, extracted_data JSONB, source_screen, created_at)
-TABLE layered_analysis_entries (id, entity_id FK->entities, screen_name, section_name, details_captured_json JSONB, updated_at)
-  - This table contains detailed breakdown of all the scans and verifications that took place.
-"""
+    """Return a compact schema summary injected into the LLM system prompt.
+
+    This text appears after the base system prompt when DB is available,
+    giving the model everything it needs to write correct SQL queries.
+    The full query patterns and examples live in qna_prompts.md (db_query_rules section).
+    """
+    # Load the detailed query rules from the markdown asset so they stay in sync
+    # with the qna_prompts.md file rather than being hardcoded here.
+    db_rules = get_qna_db_rules()
+
+    return (
+        "LIVE DATABASE CONTEXT:\n"
+        "The following schema and query patterns describe the PostgreSQL database "
+        "connected to this BaseTruth instance. Use them to write accurate SQL.\n\n"
+        + db_rules
+        + "\n\nNOTE: Always use ILIKE for name searches (partial, case-insensitive). "
+        "Always add LIMIT 20 on non-aggregate queries. "
+        "Use only SELECT — no writes are permitted."
+    )
 
 def execute_safe_query(sql_query: str) -> str:
     """Validate and execute a SQL query safely, returning markdown table results."""

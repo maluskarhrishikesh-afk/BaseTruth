@@ -1073,6 +1073,14 @@ def _sidebar() -> str:
 
         current_page = st.session_state.get("page", "dashboard")
         for label, key in _PAGES.items():
+            if key == "logs":
+                # st.link_button is a native Streamlit component (available
+                # since Streamlit 1.24) that renders identically to st.button
+                # but opens a URL instead of re-running the app.  Using it
+                # means no custom HTML/CSS is needed and alignment is perfect.
+                st.link_button(label, "/?page=logs", use_container_width=True)
+                continue
+
             is_active = current_page == key
             btn_type = "primary" if is_active else "secondary"
             if st.button(label, key=f"nav_{key}", use_container_width=True, type=btn_type):
@@ -2828,7 +2836,9 @@ def _page_logs() -> None:
     # ── Live tail — last 15 entries ──────────────────────────────────────────
     st.divider()
     st.markdown("##### 🔴 Live Tail — Latest Entries")
-    _tail = view.tail(15).iloc[::-1]  # most recent first
+    # Show in ascending order (oldest at top, newest at bottom) so the user
+    # can scroll down naturally to reach the most recent entries.
+    _tail = view.tail(15)
     _tail_html = ""
     for _, row in _tail.iterrows():
         _lvl = str(row.get("level", "")).upper()
@@ -2861,13 +2871,14 @@ def _page_logs() -> None:
     if len(view) > 0:
         _max_idx = len(view) - 1
         _sel = st.slider(
-            "Entry (most recent = 0)",
+            "Entry index (0 = oldest)",
             min_value=0,
             max_value=_max_idx,
             value=min(0, _max_idx),
             key="log_json_slider",
         )
-        _record_idx = view.index[len(view) - 1 - _sel] if _sel <= _max_idx else view.index[0]
+        # Ascending: index 0 = oldest entry, max = newest
+        _record_idx = view.index[_sel] if _sel <= _max_idx else view.index[0]
         _chosen_record = records[_record_idx]
         _c1, _c2 = st.columns([1, 3])
         with _c1:
@@ -4356,8 +4367,13 @@ def main() -> None:
 
     if "artifact_root" not in st.session_state:
         st.session_state["artifact_root"] = str(_default_artifact_root())
+    
     if "page" not in st.session_state:
-        st.session_state["page"] = "dashboard"
+        query_params = st.query_params
+        if "page" in query_params:
+            st.session_state["page"] = str(query_params["page"])
+        else:
+            st.session_state["page"] = "dashboard"
 
     # Ensure all DB tables exist on first load (non-fatal if DB is offline).
     # Re-attempt init when the DB comes online after a failed first attempt.

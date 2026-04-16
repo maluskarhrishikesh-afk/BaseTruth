@@ -243,7 +243,10 @@ def _render_scan_row(scan: dict, show_approve_buttons: bool = True, key_prefix: 
                         result = approve_scan(scan_id, approved_by="reviewer-l1", comment=comment)
                         if result:
                             st.success(f"Scan #{scan_id} — 1st level approved.")
-                            log.info("Scan 1st-level approved via UI", extra={"scan_id": scan_id})
+                            log.info(
+                                f"1st Level Review: Document for '{entity_name}' was APPROVED.", 
+                                extra={"scan_id": scan_id, "entity": entity_name, "doc_type": doc_type, "comment": comment}
+                            )
                             st.rerun()
                         else:
                             st.error(f"Failed to approve scan #{scan_id}. Check the logs.")
@@ -252,7 +255,10 @@ def _render_scan_row(scan: dict, show_approve_buttons: bool = True, key_prefix: 
                         result = reject_scan(scan_id, approved_by="reviewer-l1", comment=comment)
                         if result:
                             st.warning(f"Scan #{scan_id} — 1st level rejected.")
-                            log.info("Scan 1st-level rejected via UI", extra={"scan_id": scan_id})
+                            log.info(
+                                f"1st Level Review: Document for '{entity_name}' was REJECTED.", 
+                                extra={"scan_id": scan_id, "entity": entity_name, "doc_type": doc_type, "comment": comment}
+                            )
                             st.rerun()
                         else:
                             st.error(f"Failed to reject scan #{scan_id}. Check the logs.")
@@ -273,7 +279,10 @@ def _render_scan_row(scan: dict, show_approve_buttons: bool = True, key_prefix: 
                         result = second_level_approve_scan(scan_id, approved_by="reviewer-l2", comment=comment2)
                         if result:
                             st.success(f"Scan #{scan_id} — fully approved (2nd level).")
-                            log.info("Scan 2nd-level approved via UI", extra={"scan_id": scan_id})
+                            log.info(
+                                f"2nd Level Review: Document for '{entity_name}' was FULLY APPROVED.", 
+                                extra={"scan_id": scan_id, "entity": entity_name, "doc_type": doc_type, "comment": comment2}
+                            )
                             st.rerun()
                         else:
                             st.error(f"Failed to 2nd-level approve scan #{scan_id}. Check the logs.")
@@ -282,7 +291,10 @@ def _render_scan_row(scan: dict, show_approve_buttons: bool = True, key_prefix: 
                         result = second_level_reject_scan(scan_id, approved_by="reviewer-l2", comment=comment2)
                         if result:
                             st.warning(f"Scan #{scan_id} — rejected at 2nd level.")
-                            log.info("Scan 2nd-level rejected via UI", extra={"scan_id": scan_id})
+                            log.info(
+                                f"2nd Level Review: Document for '{entity_name}' was REJECTED.", 
+                                extra={"scan_id": scan_id, "entity": entity_name, "doc_type": doc_type, "comment": comment2}
+                            )
                             st.rerun()
                         else:
                             st.error(f"Failed to 2nd-level reject scan #{scan_id}. Check the logs.")

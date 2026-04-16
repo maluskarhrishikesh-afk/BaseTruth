@@ -77,6 +77,7 @@ flowchart TD
 - for raw image files: uses PaddleOCR directly (no Poppler or Tesseract dependency) then feeds the same normalisation pipeline
 - for marksheets: always runs PaddleOCR for the OCR pass, writes a raw markdown artifact that preserves top-to-bottom row order plus approximate horizontal spacing, and validates printed totals generically against the visible subject rows without relying on SSC/HSC-specific prompt branches
 - Gemma4 document-extraction prompts and rule text are stored in `src/basetruth/integrations/document_extract_prompts.md` and loaded on demand by `document_extract.py` so prompt tuning stays separate from parser logic
+- BaseTruth Q&A chatbot prompts and DB query rules are stored in `src/basetruth/integrations/qna_prompts.md` and loaded on demand by `db_query.py`; sections: `system_prompt`, `db_query_rules`, `minio_instructions`
 - is intentionally separate from fraud scoring so parsing can be reused elsewhere
 
 ### 3. Metadata Layer
@@ -248,9 +249,10 @@ and local runs.
 | Table | Purpose |
 |---|---|
 | `entities` | One row per verified person/organisation; searchable by name, PAN, Aadhaar, email, phone |
-| `scans` | One row per document scan; stores `report_json` (JSONB) + `pdf_report` (LargeBinary) + `layered_analysis_json` (JSONB, 11-layer forensics) + `approved` / `approved_by` / `approved_at` / `approval_comment` (HITL approval workflow) |
+| `scans` | One row per document scan; stores `report_json` (JSONB) + `pdf_report` (LargeBinary) + `layered_analysis_json` (JSONB, 11-layer forensics) + a **two-level approval workflow** (`first_level_approval` / `second_level_approval`, each `Y`/`N`/NULL) |
 | `document_extractions` | One row per document extraction; stores typed extracted fields (salary, marks, name, UID, etc.); `scan_id` is nullable (NULL for identity_verification rows); `file_name` stores the uploaded filename and is the per-entity UPSERT key; `source_screen` identifies which screen created the row (`scan_document`, `bulk_scan`, `identity_verification`). For bulk scans, the row is **always** written on save — deterministic OCR/layout parsers now run first for layout-heavy documents such as marksheets, while Gemma4 is kept as a normalisation/fallback layer when the OCR text is incomplete or the layout family is unknown. A forensics-summary stub (`_extraction_unavailable: true`) is still used when Ollama is offline and no deterministic parser can produce structured data. The `_has_gemma4_data` gate uses `bool(_bulk_ext)` not a key-count heuristic, so even all-null Gemma4 results are saved correctly. For identity_verification PAN card rows, `extracted_data` also includes `pan_signature_minio_key` (the MinIO object key for the cropped signature image) when signature extraction succeeds. |
 | `layered_analysis_entries` | One upserted row per `(entity, screen, section)` explainability snapshot; powers the Layered Analysis screen and final report |
+| `entity_reports` | One row per entity-level cross-document verification report; `report_ref` = `BTR-XXXXXX`; stores the full analysis JSON (name / address / PAN / Aadhaar / salary / forensics consistency checks) plus same two-level approval workflow as `scans`; created when analyst clicks "Generate Final Report" on Document Intelligence |
 | `cases` | Case-management workflow record linked to an entity |
 | `case_notes` | Timestamped analyst notes on a case |
 

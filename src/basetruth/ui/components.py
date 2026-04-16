@@ -34,14 +34,18 @@ try:
         db_stats,
         db_table_counts,
         db_table_rows,
+        first_level_approve_entity_report,
+        first_level_reject_entity_report,
         get_all_entities_with_scans,
         get_entity_layered_analysis,
         get_entity_identity_checks,
         get_entity_latest_pdf,
         get_entity_scans,
         get_entity_document_information,
+        get_entity_reports,
         get_scan_pdf,
         get_scan_with_forensics,
+        list_all_entity_reports,
         list_all_scans_with_status,
         list_approved_scans,
         list_cases_from_db,
@@ -58,10 +62,13 @@ try:
         mark_layered_report_generated,
         reject_scan,
         reset_db,
+        save_entity_report,
         save_identity_check,
         save_scan_to_db,
         search_entities,
+        second_level_approve_entity_report,
         second_level_approve_scan,
+        second_level_reject_entity_report,
         second_level_reject_scan,
         truncate_table,
         update_case_in_db,
@@ -192,6 +199,27 @@ except Exception:  # noqa: BLE001
         return None
 
     def second_level_reject_scan(scan_id: int, approved_by: str = "", comment: str = "") -> Optional[dict]:  # type: ignore[misc]
+        return None
+
+    def save_entity_report(entity_ref: str, report_json: dict) -> Optional[dict]:  # type: ignore[misc]
+        return None
+
+    def get_entity_reports(entity_ref: str) -> list:  # type: ignore[misc]
+        return []
+
+    def list_all_entity_reports(limit: int = 500) -> list:  # type: ignore[misc]
+        return []
+
+    def first_level_approve_entity_report(report_ref: str, approved_by: str = "", comment: str = "") -> Optional[dict]:  # type: ignore[misc]
+        return None
+
+    def first_level_reject_entity_report(report_ref: str, approved_by: str = "", comment: str = "") -> Optional[dict]:  # type: ignore[misc]
+        return None
+
+    def second_level_approve_entity_report(report_ref: str, approved_by: str = "", comment: str = "") -> Optional[dict]:  # type: ignore[misc]
+        return None
+
+    def second_level_reject_entity_report(report_ref: str, approved_by: str = "", comment: str = "") -> Optional[dict]:  # type: ignore[misc]
         return None
 
 

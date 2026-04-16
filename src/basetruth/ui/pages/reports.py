@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import json
 import zipfile
 
 import streamlit as st
@@ -14,6 +15,7 @@ from basetruth.ui.components import (
     get_all_entities_with_scans,
     get_entity_layered_analysis,
     get_entity_identity_checks,
+    get_entity_reports,
     get_entity_scans,
     minio_delete_object,
     minio_get_object,
@@ -212,5 +214,51 @@ This screen keeps one final report per applicant and nothing else.
                         file_name=f"documents_{entity_ref}.zip",
                         mime="application/zip",
                         key=f"reports_download_zip_{entity_ref}",
+                        use_container_width=True,
+                    )
+
+            # ── Entity Final Reports ──────────────────────────────────────────
+            # Show any BTR-XXXXXX final verification reports with per-report
+            # JSON download buttons.  These are separate from the consolidated
+            # audit PDF and only exist after the analyst clicks
+            # "Generate Final Report" on the Document Intelligence screen.
+            entity_reports = get_entity_reports(entity_ref)
+            if entity_reports:
+                st.divider()
+                st.markdown("**📑 Final Verification Reports (BTR-XXXXXX)**")
+                for rpt in entity_reports:
+                    report_ref = rpt.get("report_ref", "?")
+                    first_ap   = rpt.get("first_level_approval")
+                    second_ap  = rpt.get("second_level_approval")
+                    overall    = (rpt.get("report_json") or {}).get("overall_verdict", "?")
+                    gen_at     = rpt.get("generated_at", "")[:10]
+
+                    if second_ap == "Y":
+                        badge = "🟢 Fully Approved"
+                    elif second_ap == "N" or first_ap == "N":
+                        badge = "🔴 Rejected"
+                    elif first_ap == "Y":
+                        badge = "🟡 Pending 2nd-Level"
+                    else:
+                        badge = "⏳ Pending Review"
+
+                    ov_icon = "✅" if overall == "PASS" else "❌" if overall == "FAIL" else "❓"
+
+                    rc1, rc2 = st.columns([3, 1])
+                    rc1.markdown(
+                        f"**{report_ref}** &nbsp; {ov_icon} `{overall}` &nbsp; "
+                        f"{badge} &nbsp; _{gen_at}_"
+                    )
+                    # Serialise the report payload to a pretty JSON string and
+                    # offer it as a direct download.
+                    json_bytes = json.dumps(
+                        rpt.get("report_json") or {}, indent=2, ensure_ascii=False
+                    ).encode("utf-8")
+                    rc2.download_button(
+                        "⬇ JSON",
+                        data=json_bytes,
+                        file_name=f"{report_ref}_{entity_ref}.json",
+                        mime="application/json",
+                        key=f"reports_dl_rpt_{report_ref}",
                         use_container_width=True,
                     )

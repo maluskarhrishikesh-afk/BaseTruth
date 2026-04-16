@@ -187,6 +187,11 @@ class Entity(Base):
         back_populates="entity",
         cascade="all, delete-orphan",
     )
+    entity_reports = relationship(
+        "EntityReport",
+        back_populates="entity",
+        cascade="all, delete-orphan",
+    )
 
 
 class Scan(Base):
@@ -351,6 +356,46 @@ class IdentityCheck(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     entity = relationship("Entity", back_populates="identity_checks")
+
+
+class EntityReport(Base):
+    """Final cross-document verification report generated for one entity.
+
+    Created from the Document Intelligence screen when an analyst clicks
+    'Generate Final Report'.  Stores a structured comparison of names,
+    addresses, PAN/Aadhaar numbers, salaries, and forensic verdicts across
+    all of the entity's scanned documents.
+
+    Undergoes the same two-level approval workflow as individual document
+    scans so senior reviewers can endorse or dispute the findings before
+    the report is considered complete.
+    """
+
+    __tablename__ = "entity_reports"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    # entity_id links this report to the applicant.  CASCADE means all
+    # reports are deleted automatically when the entity is removed.
+    entity_id = Column(Integer, ForeignKey("entities.id", ondelete="CASCADE"), nullable=False)
+    # report_ref is the human-readable identifier shown to analysts, e.g. "BTR-000001".
+    report_ref = Column(String(20), unique=True, nullable=False)
+    # report_json holds the full cross-document analysis payload as structured JSON.
+    report_json = Column(JSONB, nullable=False)
+    # Two-level approval columns — Y approved / N rejected / NULL pending (same as scans)
+    first_level_approval = Column(String(1), nullable=True)
+    first_level_approved_by = Column(String(255), default="")
+    first_level_approved_at = Column(DateTime(timezone=True), nullable=True)
+    first_level_approval_comment = Column(Text, default="")
+    second_level_approval = Column(String(1), nullable=True)
+    second_level_approved_by = Column(String(255), default="")
+    second_level_approved_at = Column(DateTime(timezone=True), nullable=True)
+    second_level_approval_comment = Column(Text, default="")
+    generated_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    entity = relationship("Entity", back_populates="entity_reports")
 
 
 class LayeredAnalysisEntry(Base):
@@ -543,6 +588,25 @@ def init_db() -> bool:
                 "CREATE UNIQUE INDEX IF NOT EXISTS "
                 "ux_document_extractions_entity_file_name "
                 "ON document_extractions (entity_id, file_name)"
+            ))
+            # entity_reports table — final cross-document verification reports
+            conn.execute(text(
+                "CREATE TABLE IF NOT EXISTS entity_reports ("
+                "id SERIAL PRIMARY KEY, "
+                "entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE, "
+                "report_ref VARCHAR(20) UNIQUE NOT NULL, "
+                "report_json JSONB NOT NULL, "
+                "first_level_approval VARCHAR(1), "
+                "first_level_approved_by VARCHAR(255) DEFAULT '', "
+                "first_level_approved_at TIMESTAMPTZ, "
+                "first_level_approval_comment TEXT DEFAULT '', "
+                "second_level_approval VARCHAR(1), "
+                "second_level_approved_by VARCHAR(255) DEFAULT '', "
+                "second_level_approved_at TIMESTAMPTZ, "
+                "second_level_approval_comment TEXT DEFAULT '', "
+                "generated_at TIMESTAMPTZ DEFAULT NOW(), "
+                "updated_at TIMESTAMPTZ DEFAULT NOW()"
+                ")"
             ))
         log.info("DB schema ready")
         return True

@@ -1,265 +1,31 @@
-﻿Psychology_Marksheet.jpg ->
+﻿
+Now we have captured lot of data in document_extractions table. 
 
-{
-"id":6
-"entity_id":1
-"scan_id":4
-"document_type":"marksheet"
-"source_screen":"bulk_scan"
-"created_at":"datetime.datetime(2026, 4, 13, 18, 42, 35, 970129, tzinfo=datetime.timezone.utc)"
-"extracted_data":{
-"result":"FIRST DIVISION"
-"subjects":[
-]
-"document_type":"Marksheet"
-"_layout_family":"generic_row_table"
-"candidate_name":"GANDHINA"
-"computed_total":518
-"total_max_marks":800
-"_ocr_engine_used":"paddleocr"
-"examination_name":"MA IN PSYCHOLOGY"
-"data_quality_notes":[
-0:"The total marks obtained (71+43+51+74+76+62+75+66 = 468) do not match the printed grand total (889). The total max marks (1000) is used for percentage calculation. The printed grand total (889) is used as the primary source for the total marks."
-1:"The percentage (68.42%) is explicitly stated with the result (FIRST DIVISION)."
-2:"Large marks mismatch (41.7% off): computed 518 vs printed 889. The marks table could not be read reliably. subjects cleared to avoid storing fabricated data (safe-fail)."
-]
-"percentage_or_cgpa":"68.42"
-"printed_grand_total":889
-"_extraction_attempts":1
-"extraction_confidence":"LOW"
-"month_year_of_passing":NULL
-"_ocr_engine_comparison":[...]
-"_raw_ocr_markdown_path":"artifacts/Psychology_Marksheet/Psychology_Marksheet_ocr_scan.md"
-"school_or_college_name":NULL
-"board_or_university_name":"IGNOU"
-"enrollment_or_seat_number":"106117"
-}
-}
+On Document Intelligence screen we should now have a option to generate final report for every entity
 
+When we click on this generate final report button, we should do the following ->
+Compare names on Aadhar, PAN, payslips, marksheets, degrees etc. They all should be same per entity.
 
-------------------------------------------------------------------------------------------------------
+Address if present on any other document should match with the one given on Aadhar.
 
-HSC-Marksheet.pdf ->
+PAN number is present on any other document should match with the PAN number on the PAN Card.
 
-{
-"id":5
-"entity_id":1
-"scan_id":3
-"document_type":"marksheet"
-"source_screen":"bulk_scan"
-"created_at":"datetime.datetime(2026, 4, 13, 18, 42, 35, 923599, tzinfo=datetime.timezone.utc)"
-"extracted_data":{
-"result":"Distinction"
-"subjects":[
-0:{
-"max_marks":100
-"subject_name":"01"
-"marks_obtained":70
-}
-1:{
-"max_marks":100
-"subject_name":"40"
-"marks_obtained":82
-}
-2:{
-"max_marks":100
-"subject_name":"54"
-"marks_obtained":90
-}
-3:{
-"max_marks":100
-"subject_name":"55"
-"marks_obtained":91
-}
-]
-"document_type":"Marksheet"
-"_layout_family":"hsc_transposed"
-"candidate_name":"MALUSKAR HRISHIKESH NAMDED"
-"computed_total":333
-"total_max_marks":400
-"_ocr_engine_used":"paddleocr"
-"examination_name":"HSC"
-"data_quality_notes":[...]
-"percentage_or_cgpa":"84.00"
-"printed_grand_total":504
-"_extraction_attempts":0
-"extraction_confidence":"MEDIUM"
-"month_year_of_passing":"FEB-2001"
-"_ocr_engine_comparison":[...]
-"_raw_ocr_markdown_path":"artifacts/HSC-Marksheet/HSC-Marksheet_ocr_scan.md"
-"school_or_college_name":NULL
-"board_or_university_name":"Maharashtra State Board of Secondary and Higher Secondary Education"
-"enrollment_or_seat_number":"005392"
-}
-}
+Aadhar number if present on any other document should match witht he Aadhar number on the Aadhar card.
 
-------------------------------------------------------------------------------------------------------
+Overall salary mentioned on salary-slips should match with the amount mentioned on offer letter or increment letter.
 
-BE-Marksheet.pdf ->
+Forensic details of all documents should be considered.
 
-{
-"id":4
-"entity_id":1
-"scan_id":2
-"document_type":"marksheet"
-"source_screen":"bulk_scan"
-"created_at":"datetime.datetime(2026, 4, 13, 18, 42, 35, 872754, tzinfo=datetime.timezone.utc)"
-"extracted_data":{
-"result":"First Class"
-"subjects":[
-0:{
-"max_marks":100
-"subject_name":"Oiocomputer Networks (PP)"
-"marks_obtained":54
-}
-1:{
-"max_marks":25
-"subject_name":"Computer Networks I (TW)"
-"marks_obtained":15
-}
-2:{
-"max_marks":50
-"subject_name":"O1o.computer Networks (OR)"
-"marks_obtained":32
-}
-3:{
-"max_marks":100
-"subject_name":"Operating Systems (PP)"
-"marks_obtained":64
-}
-4:{
-"max_marks":100
-"subject_name":"Object Oriented Modeling &desi (PP)"
-"marks_obtained":59
-}
-5:{
-"max_marks":100
-"subject_name":"Compiler . A (PP)"
-"marks_obtained":52
-}
-6:{
-"max_marks":100
-"subject_name":"Artificial Intelligence Ele-i (PP)"
-"marks_obtained":50
-}
-7:{
-"max_marks":25
-"subject_name":"Artificial Intelligence Ele-i (TW)"
-"marks_obtained":20
-}
-8:{
-"max_marks":50
-"subject_name":"Artificial Inteli Igence (ele-i) (OR)"
-"marks_obtained":39
-}
-9:{
-"max_marks":50
-"subject_name":"Computer Laboratory-i A (TW)"
-"marks_obtained":29
-}
-10:{
-"max_marks":50
-"subject_name":"070.seminar &technicalcomm (TW)"
-"marks_obtained":26
-}
-11:{
-"max_marks":100
-"subject_name":"08oadv.comp.arch.&computing (PP)"
-"marks_obtained":47
-}
-12:{
-"max_marks":100
-"subject_name":"Prdject Planning & Management (PP)"
-"marks_obtained":72
-}
-13:{
-"max_marks":100
-"subject_name":"ADV UNIX Programming Ele-ii (PP)"
-"marks_obtained":50
-}
-14:{
-"max_marks":25
-"subject_name":"ADV UNIX Programming Ele-ii) (TW)"
-"marks_obtained":20
-}
-15:{
-"max_marks":50
-"subject_name":"ADV UNIX Programming Ele-ii (OR)"
-"marks_obtained":39
-}
-16:{
-"max_marks":100
-"subject_name":"Multimedia Technioues (PP)"
-"marks_obtained":60
-}
-17:{
-"max_marks":25
-"subject_name":"Computer Laboratory = II. A (TW)"
-"marks_obtained":14
-}
-18:{
-"max_marks":50
-"subject_name":"Computer Laboratory - II. I (PR)"
-"marks_obtained":30
-}
-19:{
-"max_marks":100
-"subject_name":"Project - - -I R (TW)"
-"marks_obtained":77
-}
-20:{
-"max_marks":50
-"subject_name":"Project (OR)"
-"marks_obtained":39
-}
-]
-"document_type":"Marksheet"
-"_layout_family":"be_max_min_obt"
-"candidate_name":""
-"computed_total":888
-"total_max_marks":1450
-"_ocr_engine_used":"paddleocr"
-"examination_name":"STATEMENT OF MARKS FOR B.E.REV(COMPUTER)EXAMINATION MAYZOO6"
-"data_quality_notes":[
-]
-"percentage_or_cgpa":""
-"printed_grand_total":NULL
-"_extraction_attempts":0
-"extraction_confidence":"HIGH"
-"month_year_of_passing":""
-"_ocr_engine_comparison":[...]
-"_raw_ocr_markdown_path":"artifacts/BE-Marksheet/BE-Marksheet_ocr_scan.md"
-"school_or_college_name":NULL
-"board_or_university_name":"UNIVERSITYOFPUNE"
-"enrollment_or_seat_number":"0113250"
-}
-}
+And a final report should be created. This should again go cases section where it will undergo 
+2 levels of approval similar to scans screen.
 
-------------------------------------------------------------------------------------------------------
+We will need to create a table for cases functionality which should be similar to scans functionality.
 
-{
-"id":3
-"entity_id":1
-"scan_id":1
-"document_type":"degree_certificate"
-"source_screen":"bulk_scan"
-"created_at":"datetime.datetime(2026, 4, 13, 18, 42, 35, 771800, tzinfo=datetime.timezone.utc)"
-"extracted_data":{
-"degree_name":"Bachelor of Engineering"
-"date_of_issue":"14th January 2012"
-"document_type":"Degree Certificate"
-"_layout_family":"unknown"
-"candidate_name":"Maluskar Hrishkesh Namdeo"
-"university_name":"University of Pune"
-"_ocr_engine_used":"paddleocr"
-"division_or_class":"First Class"
-"enrollment_number":"N/A"
-"certificate_number":"S-EN-00861"
-"data_quality_notes":[
-0:"This is a degree certificate, not a marksheet. The extraction is based on the visible text fields."
-]
-"_extraction_attempts":1
-"specialization_or_major":"Computer"
-"year_or_date_of_passing":"May 2006"
-}
-}
+Eventually this final report should be available for download on the Reports screen. Other documents 
+should also be available for download in zipped format. final report should be independant, it should
+not be included in the zipped file.
+
+Apart from this do you feel I have missed anything that should be included to make this the best
+document intelligence product ever.
+
+New table that we create should also be visible on Database Viewer screen.

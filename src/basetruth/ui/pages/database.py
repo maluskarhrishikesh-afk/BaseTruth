@@ -18,6 +18,9 @@ from basetruth.ui.components import (
     reset_db,
     truncate_table,
 )
+from basetruth.logger import get_logger
+
+log = get_logger(__name__)
 
 _DB_TABLE_LABELS: dict[str, str] = {
     "entities": "Entities",
@@ -27,6 +30,7 @@ _DB_TABLE_LABELS: dict[str, str] = {
     "layered_analysis_entries": "Layered Analysis Entries",
     "cases": "Cases",
     "case_notes": "Case Notes",
+    "entity_reports": "Entity Reports",
 }
 
 # Schema reference — (column_name, type, description)
@@ -134,6 +138,7 @@ def _cached_minio_list_objects(limit: int = 500) -> list:
 def _page_database() -> None:
     st.markdown(_page_title("🗄️", "Database Viewer"), unsafe_allow_html=True)
     if st.button("🔄 Refresh", key="db_viewer_refresh"):
+        log.info("Database Viewer: Refreshing cached table counts, rows, and MinIO stats.")
         _cached_db_table_counts.clear()
         _cached_db_table_rows.clear()
         _cached_minio_bucket_stats.clear()
@@ -349,12 +354,15 @@ This screen gives you direct visibility into what is stored in the system.
             )
             if st.button("💀 Empty Database", type="primary", key="db_reset_execute_btn"):
                 if db_confirm.strip() == "RESET":
+                    log.warning("Database Viewer [Danger Zone]: Admin user initiated FULL database reset. Truncating all entities, scans, and cases.")
                     with st.spinner("Truncating all tables…"):
                         ok = reset_db()
                     if ok:
+                        log.info("Database Viewer [Danger Zone]: Successfully reset PostgreSQL database.")
                         st.session_state["db_reset_success"] = True
                         st.rerun()
                     else:
+                        log.error("Database Viewer [Danger Zone]: Failed to reset PostgreSQL database. Reverting operation.")
                         st.error("Reset failed — check the Logs page for details.")
                 else:
                     st.error("Type exactly `RESET` (all caps) to confirm.")
@@ -374,12 +382,15 @@ This screen gives you direct visibility into what is stored in the system.
             )
             if st.button("🗑️ Empty MinIO Bucket", type="primary", key="minio_truncate_btn"):
                 if minio_confirm.strip() == "RESET":
+                    log.warning("Database Viewer [Danger Zone]: Admin user initiated FULL MinIO bucket deletion.")
                     with st.spinner("Deleting all objects from the bucket…"):
                         ok = minio_truncate_bucket()
                     if ok:
+                        log.info("Database Viewer [Danger Zone]: Successfully emptied MinIO bucket objects.")
                         st.session_state["minio_reset_success"] = True
                         st.rerun()
                     else:
+                        log.error("Database Viewer [Danger Zone]: MinIO bucket deletion process failed.")
                         st.error(
                             "Reset failed — MinIO may be offline or misconfigured. "
                             "Check the Logs page."
@@ -425,12 +436,15 @@ This screen gives you direct visibility into what is stored in the system.
             with tcol3:
                 if st.button(f"🗑️ Clear {_label}", key=_btn_key):
                     if _confirm_val.strip() == "RESET":
+                        log.warning(f"Database Viewer [Danger Zone]: Truncating specific table `{_tname}`.")
                         with st.spinner(f"Truncating `{_tname}`…"):
                             _ok = truncate_table(_tname)
                         if _ok:
+                            log.info(f"Database Viewer [Danger Zone]: Safely truncated table `{_tname}`.")
                             st.session_state[_success_key] = True
                             st.rerun()
                         else:
+                            log.error(f"Database Viewer [Danger Zone]: Error occurred truncating table `{_tname}`.")
                             st.error(f"Failed to clear `{_tname}` — see Logs for details.")
                     else:
                         st.error("Type exactly `RESET` (all caps) to confirm.")

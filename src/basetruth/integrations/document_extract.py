@@ -1373,12 +1373,24 @@ def _parse_two_row_marksheet_ocr_directly(ocr_text: str) -> Optional[Dict[str, A
     ]
 
     candidate_name = _extract_uppercase_name(lines)
+    # Seat numbers on Indian marksheets can have 0, 1, or 2 uppercase letter
+    # prefixes followed by 5–7 digits (e.g. "36419", "B006795", "CO28223").
+    # We prefer letter-prefixed codes over plain numeric values because plain
+    # digit runs (roll numbers, sequence ids) appear frequently in OCR output
+    # and are easily confused with the seat number we actually want.
     seat_number = ""
+    seat_number_fallback = ""
     for line in lines:
-        match = re.search(r"\b([A-Z]?\d{5,7})\b", line.upper())
-        if match:
-            seat_number = match.group(1)
+        letter_match = re.search(r"\b([A-Z]{1,2}\d{5,7})\b", line.upper())
+        if letter_match:
+            seat_number = letter_match.group(1)
             break
+        if not seat_number_fallback:
+            num_match = re.search(r"\b(\d{5,7})\b", line.upper())
+            if num_match:
+                seat_number_fallback = num_match.group(1)
+    if not seat_number:
+        seat_number = seat_number_fallback
 
     month_year = _extract_month_year_from_marksheet_lines(lines)
 
@@ -1396,6 +1408,28 @@ def _parse_two_row_marksheet_ocr_directly(ocr_text: str) -> Optional[Dict[str, A
             break
         if "H.S.C" in upper or "HSC" in upper:
             exam_name = "H.S.C. Examination"
+            break
+        # Additional board identifiers used by other Indian and international
+        # examination boards that also use the two-row marks layout.
+        if "10TH" in upper or "10 TH" in upper:
+            exam_name = "10th Standard"
+            break
+        if "12TH" in upper or "12 TH" in upper:
+            exam_name = "12th Standard"
+            break
+        if "CBSE" in upper:
+            exam_name = "CBSE Examination"
+            break
+        if "ICSE" in upper:
+            exam_name = "ICSE Examination"
+            break
+        if "ISC " in f"{upper} " or upper.endswith("ISC"):
+            exam_name = "ISC Examination"
+            break
+        # Generic fallback: any header line naming an examination will be used
+        # so that state boards and other boards still get their exam name.
+        if "EXAMINATION" in upper and len(line.strip()) > 8:
+            exam_name = line.strip()
             break
 
     computed_total = sum(int(subject["marks_obtained"]) for subject in subjects)
@@ -1472,12 +1506,21 @@ def _build_marksheet_structure_hint(
     if candidate_name:
         anchor_lines.append(f"detected_candidate_name: {candidate_name}")
 
+    # Prefer letter-prefixed seat numbers (e.g. CO28223, B006795) over plain
+    # numeric identifiers so we do not pass a roll/sequence number as the seat.
     seat_number = ""
+    seat_number_fallback = ""
     for line in lines_text[:14]:
-        match = re.search(r"\b([A-Z]?\d{5,7})\b", line.upper())
-        if match:
-            seat_number = match.group(1)
+        letter_match = re.search(r"\b([A-Z]{1,2}\d{5,7})\b", line.upper())
+        if letter_match:
+            seat_number = letter_match.group(1)
             break
+        if not seat_number_fallback:
+            num_match = re.search(r"\b(\d{5,7})\b", line.upper())
+            if num_match:
+                seat_number_fallback = num_match.group(1)
+    if not seat_number:
+        seat_number = seat_number_fallback
     if seat_number:
         anchor_lines.append(f"detected_seat_number: {seat_number}")
 
@@ -1816,7 +1859,13 @@ def _parse_be_ocr_directly(ocr_text: str) -> Optional[Dict[str, Any]]:
     university_name = ""
     for line in lines[:15]:
         if "UNIVERSITY" in line.upper():
-            university_name = line.strip()
+            raw_name = line.strip()
+            # OCR on older scanned marks sheets sometimes runs adjacent header
+            # words together without spaces (e.g. "UNIVERSITYOFPUNE").  Split
+            # the two most common merged patterns back into separate words.
+            raw_name = re.sub(r"(UNIVERSITY)(OF|FOR)", r"\1 \2 ", raw_name, flags=re.IGNORECASE)
+            raw_name = re.sub(r"(BOARD)(OF|FOR)", r"\1 \2 ", raw_name, flags=re.IGNORECASE)
+            university_name = re.sub(r"\s+", " ", raw_name).strip()
             break
 
     exam_name = ""
@@ -1836,9 +1885,34 @@ def _parse_be_ocr_directly(ocr_text: str) -> Optional[Dict[str, Any]]:
     )
     if month_match:
         month_year = f"{month_match.group(1)} {month_match.group(2)}"
+    else:
+        # Fallback: OCR on old scanned marksheets confuses certain characters
+        # inside year tokens — most commonly Z→2 and O→0 (e.g. the year 2006
+        # is read as "ZOO6" when adjacent to a month name like "MAYZOO6").
+        # Apply the character substitution in the specific 4-char year context
+        # (letter Z followed by two O-like chars followed by one digit) so we
+        # do not disturb other parts of the OCR text.
+        noisy_upper = re.sub(
+            r"(?<=[A-Z])(Z)([O0])([O0])(\d)\b",
+            lambda m: "200" + m.group(4),
+            upper,
+        )
+        month_match_noisy = re.search(
+            r"\b(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s*(\d{4})\b",
+            noisy_upper,
+        )
+        if month_match_noisy:
+            month_year = f"{month_match_noisy.group(1)} {month_match_noisy.group(2)}"
 
-    seat_match = re.search(r"\b[A-Z]\d{5,}\b|\b\d{6,}\b", upper)
-    seat_number = seat_match.group(0) if seat_match else ""
+    # Prefer letter-prefixed seat numbers (e.g. B2084275) over plain numeric
+    # ids — plain digit runs (0113250) appear earlier in OCR text and would
+    # otherwise be selected first by a simple re.search alternation.
+    seat_letter_match = re.search(r"\b[A-Z]{1,2}\d{5,}\b", upper)
+    if seat_letter_match:
+        seat_number = seat_letter_match.group(0)
+    else:
+        seat_plain_match = re.search(r"\b\d{6,}\b", upper)
+        seat_number = seat_plain_match.group(0) if seat_plain_match else ""
 
     result = ""
     result_match = re.search(
@@ -2838,7 +2912,12 @@ def extract_document_fields(
                         raw_ocr_markdown_path=raw_ocr_markdown_path,
                     )
             else:
-                ocr_text = paddle_text
+                # Use the spatially-aware markdown text (horizontal spacing preserved)
+                # so Gemma4 can match labels to values in the same visual column.
+                # paddle_text is a plain flat string that loses all table structure;
+                # paddle_markdown_text keeps row spacing so e.g. "Division: First Class"
+                # stays on the same line instead of being split across two.
+                ocr_text = paddle_markdown_text or paddle_text
                 ocr_engine_used = paddle_engine or ""
 
             if ocr_text:
@@ -2872,6 +2951,16 @@ def extract_document_fields(
     supplementary_text = ocr_text if doc_type == "marksheet" else (raw_pdf_text or ocr_text)
 
     if doc_type == "marksheet" and not raw_ocr_markdown_path and ocr_text:
+        raw_ocr_markdown_path = _write_marksheet_ocr_markdown(
+            source,
+            filename=filename,
+            markdown_text=ocr_text,
+            artifact_root=artifact_root,
+        )
+    elif doc_type != "marksheet" and not raw_pdf_text and ocr_text and artifact_root:
+        # For non-marksheet scanned images (degree certs, employment letters, etc.)
+        # write the same kind of OCR markdown artifact so both the human reviewer
+        # and any future debug step can see exactly what PaddleOCR read off the page.
         raw_ocr_markdown_path = _write_marksheet_ocr_markdown(
             source,
             filename=filename,
