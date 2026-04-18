@@ -295,12 +295,11 @@ app.py  →  main()  →  session_state["page"]
  pages/dashboard.py   pages/identity.py   pages/scan.py  …
 ```
 
-Streamlit auto-discovers any `.py` file in a `pages/` directory and adds it to the sidebar.  We suppress this two ways:
+Streamlit auto-discovers any `.py` file in a `pages/` directory and adds it to the sidebar.  We suppress this via CSS in `app.py`:
 
-1. **Config** — `.streamlit/config.toml`: `hideSidebarNav = true` (supported in most Streamlit versions)
-2. **CSS fallback** — `_CSS` in `app.py`: `[data-testid="stSidebarNav"] { display: none !important; }`
+- **CSS** — `_CSS` in `app.py`: `[data-testid="stSidebarNav"] { display: none !important; }`
 
-Both are applied so the nav items are hidden regardless of Streamlit version.
+The deprecated `client.hideSidebarNav` config option has been removed from `.streamlit/config.toml` as it is no longer supported in current Streamlit versions.
 
 ### Sidebar navigation labels
 
