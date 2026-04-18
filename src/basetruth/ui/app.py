@@ -24,7 +24,6 @@ try:
         get_entity_latest_pdf,
         get_entity_scans,
         get_scan_pdf,
-        list_cases_from_db,
         list_recent_scans,
         minio_available,
         minio_bucket_stats,
@@ -940,7 +939,6 @@ _PAGES: Dict[str, str] = {
     "🔍  Scan Document": "scan",
     "📦  Bulk Scan": "bulk",
     "🔬  Scans": "scans",
-    "📁  Cases": "cases",
     "🧠  Document Intelligence": "document_intelligence",
     "📊  Reports": "reports",
     "🔗  Datasources": "datasources",
@@ -1163,7 +1161,6 @@ def _page_dashboard(service: BaseTruthService) -> None:
             """
 The Dashboard gives you an **at-a-glance health check** of all document processing.
 
-- **Pending Review** — cases with high or medium risk that need your decision. Go to **Cases** to approve or reject them.
 - **Documents Scanned** — total document verifications stored in the database.
 - **High Risk** — documents where the Truth Score is critically low.
 - **Avg Truth Score** — average score across all scans (100 = perfect integrity).
@@ -1195,21 +1192,21 @@ Use **Scan** (single file) or **Bulk Scan** (entire loan folder) to add new docu
                 st.rerun()
         with m3:
             st.metric("Pending Review", stats.get("pending_review", 0),
-                      help="Open cases requiring Approve / Reject.")
+                      help="High or medium risk scans awaiting manual review.")
             if st.button("Review →", key="dash_goto_cases_pending", use_container_width=True, type="primary" if stats.get("pending_review", 0) > 0 else "secondary"):
-                st.session_state["page"] = "cases"
+                st.session_state["page"] = "scans"
                 st.rerun()
         with m4:
             st.metric("High Risk", stats.get("high_risk", 0),
                       help="Documents with high tamper risk.")
             if st.button("View →", key="dash_goto_cases_risk", use_container_width=True, type="primary" if stats.get("high_risk", 0) > 0 else "secondary"):
-                st.session_state["page"] = "cases"
+                st.session_state["page"] = "scans"
                 st.rerun()
         with m5:
             st.metric("Auto Approved", stats.get("auto_approved", 0),
                       help="Low-risk documents automatically cleared.")
             if st.button("View →", key="dash_goto_cases_auto", use_container_width=True):
-                st.session_state["page"] = "cases"
+                st.session_state["page"] = "scans"
                 st.rerun()
         with m6:
             st.metric("Avg Score",
@@ -1255,33 +1252,7 @@ Use **Scan** (single file) or **Bulk Scan** (entire loan folder) to add new docu
             else:
                 st.info("No entities yet.")
 
-        # ── Pending cases quick-view ───────────────────────────────────
-        if stats.get("pending_review", 0) > 0:
-            st.divider()
-            st.subheader(f"⛔ Cases Requiring Your Review ({stats['pending_review']})")
-            st.caption("Go to **Cases** to Approve or Reject.")
-            cases = service.list_cases()
-            needs_review_cases = [c for c in cases if c.get("needs_review")]
-            if needs_review_cases:
-                try:
-                    import pandas as pd
-                    rows = [
-                        {
-                            "Case": c.get("case_key", ""),
-                            "Type": c.get("document_type", "").replace("_", " ").title(),
-                            "Docs": str(c.get("document_count", 0)),
-                            "Risk": str(c.get("max_risk_level", "low")).title(),
-                            "Status": str(c.get("status", "new")).replace("_", " ").title(),
-                        }
-                        for c in needs_review_cases
-                    ]
-                    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
-                except ImportError:
-                    for c in needs_review_cases:
-                        st.write(c.get("case_key", ""))
-        else:
-            st.divider()
-            st.success("✅ All cases resolved — nothing pending review.")
+
     else:
         # ── DB offline fallback (file-based) ─────────────────────────────
         st.info("📴 **Database offline** — showing file-based stats. Connect PostgreSQL for accurate counts.", icon=None)
@@ -4403,7 +4374,6 @@ def main() -> None:
     from basetruth.ui.pages.scan import _page_scan as _m_scan  # noqa: PLC0415
     from basetruth.ui.pages.bulk import _page_bulk as _m_bulk  # noqa: PLC0415
     from basetruth.ui.pages.scans import _page_scans as _m_scans  # noqa: PLC0415
-    from basetruth.ui.pages.cases import _page_cases as _m_cases  # noqa: PLC0415
     from basetruth.ui.pages.document_intelligence import _page_document_intelligence as _m_records  # noqa: PLC0415
     from basetruth.ui.pages.reports import _page_reports as _m_reports  # noqa: PLC0415
     from basetruth.ui.pages.datasources import _page_datasources as _m_datasources  # noqa: PLC0415
@@ -4422,8 +4392,6 @@ def main() -> None:
         _m_bulk(service)
     elif page == "scans":
         _m_scans()
-    elif page == "cases":
-        _m_cases(service)
     elif page == "document_intelligence":
         _m_records()
     elif page == "reports":
