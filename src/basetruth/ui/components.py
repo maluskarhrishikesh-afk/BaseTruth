@@ -37,7 +37,6 @@ try:
         first_level_approve_entity_report,
         first_level_reject_entity_report,
         get_all_entities_with_scans,
-        get_entity_layered_analysis,
         get_entity_identity_checks,
         get_entity_latest_pdf,
         get_entity_scans,
@@ -48,7 +47,6 @@ try:
         list_all_entity_reports,
         list_all_scans_with_status,
         list_approved_scans,
-        list_cases_from_db,
         list_pending_scans,
         list_recent_scans,
         minio_available,
@@ -59,7 +57,6 @@ try:
         minio_list_objects,
         minio_truncate_bucket,
         minio_upload,
-        mark_layered_report_generated,
         reject_scan,
         reset_db,
         save_entity_report,
@@ -71,7 +68,6 @@ try:
         second_level_reject_entity_report,
         second_level_reject_scan,
         truncate_table,
-        update_case_in_db,
         update_entity,
     )
     _DB_IMPORTS_OK = True
@@ -102,9 +98,6 @@ except Exception:  # noqa: BLE001
     def get_entity_identity_checks(ref: str) -> list:  # type: ignore[misc]
         return []
 
-    def get_entity_layered_analysis(ref: str) -> dict:  # type: ignore[misc]
-        return {"entries": [], "screens": {}, "report_state": {}}
-
     def get_entity_latest_pdf(ref: str) -> tuple:  # type: ignore[misc]
         return None, None
 
@@ -116,9 +109,6 @@ except Exception:  # noqa: BLE001
 
     def get_scan_pdf(scan_id: int) -> Optional[bytes]:  # type: ignore[misc]
         return None
-
-    def list_cases_from_db() -> list:  # type: ignore[misc]
-        return []
 
     def list_recent_scans(limit: int = 50) -> list:  # type: ignore[misc]
         return []
@@ -147,9 +137,6 @@ except Exception:  # noqa: BLE001
     def minio_upload(key: str, data: bytes, content_type: str = "") -> None:  # type: ignore[misc]
         pass
 
-    def mark_layered_report_generated(entity_ref: str, minio_key: str) -> bool:  # type: ignore[misc]
-        return False
-
     def reset_db() -> bool:  # type: ignore[misc]
         return False
 
@@ -170,9 +157,6 @@ except Exception:  # noqa: BLE001
 
     def search_entities(query: str, field: str = "all", limit: int = 50) -> list:  # type: ignore[misc]
         return []
-
-    def update_case_in_db(case_key: str, **kwargs) -> bool:  # type: ignore[misc]
-        return False
 
     def update_entity(ref: str, fields: dict) -> Optional[dict]:  # type: ignore[misc]
         return None
