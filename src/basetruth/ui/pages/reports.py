@@ -14,7 +14,6 @@ from basetruth.ui.components import (
     _minio_available_cached,
     _page_title,
     get_all_entities_with_scans,
-    get_entity_layered_analysis,
     get_entity_identity_checks,
     get_entity_reports,
     get_entity_scans,
@@ -25,7 +24,6 @@ from basetruth.ui.components import (
 )
 
 _CONSOLIDATED_PDF_KEY = "{entity_ref}/consolidated_report.pdf"
-_LAYERED_PDF_FALLBACK_KEY = "{entity_ref}/layered_analysis_report.pdf"
 
 
 def _is_audit_source_object(key: str) -> bool:
@@ -163,19 +161,6 @@ This screen keeps one final report per applicant and nothing else.
                         file_name=f"consolidated_report_{entity_ref}.pdf",
                         mime="application/pdf",
                         key=f"reports_download_pdf_{entity_ref}",
-                        use_container_width=True,
-                    )
-
-                layered_state = get_entity_layered_analysis(entity_ref).get("report_state") or {}
-                layered_key = layered_state.get("minio_key") or _LAYERED_PDF_FALLBACK_KEY.format(entity_ref=entity_ref)
-                layered_pdf = minio_get_object(layered_key) if layered_key else None
-                if layered_pdf:
-                    st.download_button(
-                        "⬇ Download Final Layered Report (PDF)",
-                        data=layered_pdf,
-                        file_name=f"layered_analysis_{entity_ref}.pdf",
-                        mime="application/pdf",
-                        key=f"reports_download_layered_pdf_{entity_ref}",
                         use_container_width=True,
                     )
 
