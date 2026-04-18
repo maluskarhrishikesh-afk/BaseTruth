@@ -138,44 +138,9 @@ html, body, [class*="css"] {
 
 /* ---- Layout ----------------------------------------------- */
 .block-container {
-    padding-top: 1rem !important;
+    padding-top: 2rem !important;
     padding-bottom: 3rem !important;
     max-width: 1440px !important;
-}
-
-/* ---- Hide Streamlit sidebar (top-nav layout) --------------- */
-[data-testid="stSidebar"] {
-    display: none !important;
-}
-[data-testid="stSidebarCollapsedControl"] {
-    display: none !important;
-}
-
-/* ---- Top navigation: brand block -------------------------- */
-.bt-topnav-brand {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 4px 0 2px;
-}
-.bt-topnav-icon {
-    font-size: 26px;
-    line-height: 1;
-    flex-shrink: 0;
-}
-.bt-topnav-name {
-    font-size: 1.1rem;
-    font-weight: 800;
-    color: var(--text-color, #0f172a);
-    letter-spacing: -0.03em;
-    line-height: 1.2;
-}
-.bt-topnav-sub {
-    font-size: 8.5px;
-    color: #94a3b8;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    margin-top: 1px;
 }
 
 /* ---- Hide Streamlit's auto-generated page navigation -------- */
@@ -199,11 +164,12 @@ html, body, [class*="css"] {
 }
 
 /* ---- Sidebar brand ---------------------------------------- */
+/* Reduced top padding so no dead space appears above the BaseTruth logo */
 .bt-brand {
     display: flex;
     flex-direction: column;
     align-items: center;
-    padding: 1.5rem 0.5rem 1rem;
+    padding: 0.4rem 0.5rem 0.75rem;
     gap: 3px;
 }
 .bt-brand-icon {
@@ -1091,20 +1057,9 @@ def _unsaved_changes_dialog(pending_page: str) -> None:
         st.rerun()
 
 
-def _topnav() -> str:
-    """Render horizontal top navigation bar. Returns the current page key.
-
-    The nav is split into two rows of 7 buttons each so all 14 destinations
-    are always visible without scrolling.  The brand block occupies a wider
-    left column in the first row; an empty spacer fills the same slot in the
-    second row so both rows of buttons stay left-aligned.
-    """
+def _sidebar() -> str:
+    """Render the left sidebar navigation. Returns the current page key."""
     current_page = st.session_state.get("page", "dashboard")
-    items = list(_PAGES.items())
-
-    # Split into two rows of 7 for a 2-row horizontal layout
-    row1 = items[:7]
-    row2 = items[7:]
 
     def _nav_click(key: str) -> None:
         """Handle a nav button click with unsaved-changes guard."""
@@ -1115,41 +1070,39 @@ def _topnav() -> str:
             st.session_state.pop("_nav_pending", None)
         st.rerun()
 
-    # Row 1: brand column + 7 nav buttons
-    brand_col, *r1_cols = st.columns([2] + [1] * len(row1))
-    with brand_col:
+    with st.sidebar:
+        # Brand block — compact top padding keeps logo close to the top edge
         st.markdown(
-            '<div class="bt-topnav-brand">'
-            '<span class="bt-topnav-icon">🛡</span>'
-            '<div><div class="bt-topnav-name">BaseTruth</div>'
-            '<div class="bt-topnav-sub">Document Integrity</div></div>'
+            '<div class="bt-brand">'
+            '<div class="bt-brand-icon">🛡</div>'
+            '<div class="bt-brand-name">BaseTruth</div>'
+            '<div class="bt-brand-sub">Document Integrity</div>'
             '</div>',
             unsafe_allow_html=True,
         )
-    for col, (label, key) in zip(r1_cols, row1):
-        with col:
-            if key == "logs":
-                # link_button opens the URL which re-reads query params.
-                st.link_button(label, "/?page=logs", use_container_width=True)
-                continue
-            is_active = current_page == key
-            if st.button(label, key=f"nav_{key}", use_container_width=True,
-                         type="primary" if is_active else "secondary"):
-                _nav_click(key)
+        st.markdown('<hr style="border-color:#1e293b;margin:0 0 0.5rem 0;">', unsafe_allow_html=True)
 
-    # Row 2: empty spacer + 7 nav buttons
-    _, *r2_cols = st.columns([2] + [1] * len(row1))
-    for col, (label, key) in zip(r2_cols, row2):
-        with col:
+        # Nav buttons — one per page
+        for label, key in _PAGES.items():
             if key == "logs":
                 st.link_button(label, "/?page=logs", use_container_width=True)
                 continue
             is_active = current_page == key
-            if st.button(label, key=f"nav_{key}", use_container_width=True,
-                         type="primary" if is_active else "secondary"):
+            if st.button(
+                label,
+                key=f"nav_{key}",
+                use_container_width=True,
+                type="primary" if is_active else "secondary",
+            ):
                 _nav_click(key)
 
-    st.divider()
+        # DB connection status pill at the bottom
+        st.markdown('<hr style="border-color:#1e293b;margin:0.5rem 0;">', unsafe_allow_html=True)
+        if _DB_IMPORTS_OK and _db_available_cached():
+            st.caption("🟢 PostgreSQL connected")
+        else:
+            st.caption("🔴 PostgreSQL offline")
+
     return current_page
 
 
@@ -4411,7 +4364,7 @@ def main() -> None:
         page_title="BaseTruth",
         page_icon="🛡",
         layout="wide",
-        initial_sidebar_state="collapsed",
+        initial_sidebar_state="expanded",
     )
     st.markdown(_CSS, unsafe_allow_html=True)
 
@@ -4435,7 +4388,7 @@ def main() -> None:
         if ok:
             st.session_state["db_init_done"] = True
 
-    page = _topnav()
+    page = _sidebar()
     service = _get_service()
 
     # If a navigation request is pending (user clicked away from a dirty page),
