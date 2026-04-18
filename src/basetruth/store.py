@@ -357,18 +357,6 @@ def _entity_to_dict(entity: Entity, session: Session) -> Dict[str, Any]:
         "phone": entity.phone or "",
         "pan_number": entity.pan_number or "",
         "aadhar_number": entity.aadhar_number or "",
-        "layered_report_generated": bool(entity.layered_report_generated),
-        "layered_report_generated_at": (
-            entity.layered_report_generated_at.isoformat()
-            if entity.layered_report_generated_at
-            else ""
-        ),
-        "layered_analysis_updated_at": (
-            entity.layered_analysis_updated_at.isoformat()
-            if entity.layered_analysis_updated_at
-            else ""
-        ),
-        "layered_report_minio_key": entity.layered_report_minio_key or "",
         "scan_count": scan_count,
         # risk_level and truth_score columns were removed — derive verdict from layered_analysis_json instead
         "latest_risk": (
@@ -2287,10 +2275,6 @@ def get_all_entities_with_scans(limit: int = 200) -> List[Dict[str, Any]]:
                     "last_name": e.last_name or "",
                     "pan_number": e.pan_number or "",
                     "email": e.email or "",
-                    "layered_report_generated": bool(e.layered_report_generated),
-                    "layered_report_generated_at": e.layered_report_generated_at.isoformat() if e.layered_report_generated_at else "",
-                    "layered_analysis_updated_at": e.layered_analysis_updated_at.isoformat() if e.layered_analysis_updated_at else "",
-                    "layered_report_minio_key": e.layered_report_minio_key or "",
                     "scans": [
                         {
                             "id": s.id,
