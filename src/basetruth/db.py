@@ -2,12 +2,11 @@
 
 Tables
 ------
-  entities   — one row per person/organisation being verified (searchable by
-               first_name, last_name, email, phone, PAN, Aadhaar, entity_ref).
-  scans      — one row per document scan; stores the full JSON report + optional
-               PDF report bytes; linked to an entity.
-  cases      — case management records (replaces case_records.json).
-  case_notes — timestamped analyst notes attached to a case.
+  entities              — one row per person/organisation being verified.
+  scans                 — one row per document scan; stores forensic JSON + approval status.
+  document_extractions  — structured fields extracted from scanned documents.
+  identity_checks       — face-match and Video KYC verification events.
+  entity_reports        — final cross-document verification reports.
 
 All public functions degrade gracefully (return None / empty list) when the
 database is unavailable so the file-based fallback still works.
@@ -169,24 +168,14 @@ class Entity(Base):
     phone = Column(String(50), default="")
     pan_number = Column(String(20), default="")
     aadhar_number = Column(String(20), default="")
-    layered_report_generated = Column(Boolean, nullable=False, server_default=text("false"))
-    layered_report_generated_at = Column(DateTime(timezone=True), nullable=True)
-    layered_analysis_updated_at = Column(DateTime(timezone=True), nullable=True)
-    layered_report_minio_key = Column(String(500), default="")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
     scans = relationship("Scan", back_populates="entity", cascade="all, delete-orphan")
-    cases = relationship("Case", back_populates="entity")
     extracted_info = relationship("DocumentExtraction", back_populates="entity", cascade="all, delete-orphan")
     identity_checks = relationship("IdentityCheck", back_populates="entity", cascade="all, delete-orphan")
-    layered_analysis_entries = relationship(
-        "LayeredAnalysisEntry",
-        back_populates="entity",
-        cascade="all, delete-orphan",
-    )
     entity_reports = relationship(
         "EntityReport",
         back_populates="entity",
@@ -234,52 +223,6 @@ class Scan(Base):
 
     entity = relationship("Entity", back_populates="scans")
     extracted_info = relationship("DocumentExtraction", back_populates="scan", cascade="all, delete-orphan")
-
-
-class Case(Base):
-    """Case management record (mirrors CaseRecord dataclass)."""
-
-    __tablename__ = "cases"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    case_key = Column(String(500), unique=True, nullable=False)
-    entity_id = Column(
-        Integer, ForeignKey("entities.id", ondelete="SET NULL"), nullable=True
-    )
-    document_type = Column(String(100), default="")
-    status = Column(String(50), default="new")
-    disposition = Column(String(50), default="open")
-    priority = Column(String(20), default="normal")
-    assignee = Column(String(255), default="")
-    labels = Column(ARRAY(Text), default=list)
-    max_risk_level = Column(String(20), default="low")
-    document_count = Column(Integer, default=0)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-
-    entity = relationship("Entity", back_populates="cases")
-    notes = relationship(
-        "CaseNote",
-        back_populates="case",
-        cascade="all, delete-orphan",
-        order_by="CaseNote.created_at",
-    )
-
-
-class CaseNote(Base):
-    """Analyst note attached to a Case."""
-
-    __tablename__ = "case_notes"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    case_id = Column(Integer, ForeignKey("cases.id", ondelete="CASCADE"))
-    author = Column(String(255), default="analyst")
-    text = Column(Text, default="")
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-    case = relationship("Case", back_populates="notes")
 
 
 class DocumentExtraction(Base):
@@ -381,6 +324,9 @@ class EntityReport(Base):
     report_ref = Column(String(20), unique=True, nullable=False)
     # report_json holds the full cross-document analysis payload as structured JSON.
     report_json = Column(JSONB, nullable=False)
+    # MinIO object key for the rendered PDF, e.g. "BTR-reports/BT-000001/BTR-000002.pdf".
+    # Empty string means MinIO was unavailable at generation time — PDF not stored.
+    report_minio_key = Column(String(500), default="")
     # Two-level approval columns — Y approved / N rejected / NULL pending (same as scans)
     first_level_approval = Column(String(1), nullable=True)
     first_level_approved_by = Column(String(255), default="")
@@ -396,32 +342,6 @@ class EntityReport(Base):
     )
 
     entity = relationship("Entity", back_populates="entity_reports")
-
-
-class LayeredAnalysisEntry(Base):
-    """Latest explainability payload for a given entity/screen/section."""
-
-    __tablename__ = "layered_analysis_entries"
-    __table_args__ = (
-        UniqueConstraint(
-            "entity_id",
-            "screen_name",
-            "section_name",
-            name="uq_layered_analysis_entries_entity_screen_section",
-        ),
-    )
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    entity_id = Column(Integer, ForeignKey("entities.id", ondelete="CASCADE"), nullable=False)
-    screen_name = Column(String(100), nullable=False)
-    section_name = Column(String(255), nullable=False)
-    details_captured_json = Column(JSONB, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-
-    entity = relationship("Entity", back_populates="layered_analysis_entries")
 
 
 # ---------------------------------------------------------------------------
@@ -441,50 +361,6 @@ def init_db() -> bool:
     try:
         Base.metadata.create_all(engine)
         with engine.begin() as conn:
-            conn.execute(
-                text(
-                    "ALTER TABLE entities "
-                    "ADD COLUMN IF NOT EXISTS layered_report_generated BOOLEAN DEFAULT FALSE"
-                )
-            )
-            conn.execute(
-                text(
-                    "ALTER TABLE entities "
-                    "ADD COLUMN IF NOT EXISTS layered_report_generated_at TIMESTAMPTZ"
-                )
-            )
-            conn.execute(
-                text(
-                    "ALTER TABLE entities "
-                    "ADD COLUMN IF NOT EXISTS layered_analysis_updated_at TIMESTAMPTZ"
-                )
-            )
-            conn.execute(
-                text(
-                    "ALTER TABLE entities "
-                    "ADD COLUMN IF NOT EXISTS layered_report_minio_key VARCHAR(500) DEFAULT ''"
-                )
-            )
-            conn.execute(
-                text(
-                    "CREATE TABLE IF NOT EXISTS layered_analysis_entries ("
-                    "id SERIAL PRIMARY KEY, "
-                    "entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE, "
-                    "screen_name VARCHAR(100) NOT NULL, "
-                    "section_name VARCHAR(255) NOT NULL, "
-                    "details_captured_json JSONB NOT NULL, "
-                    "created_at TIMESTAMPTZ DEFAULT NOW(), "
-                    "updated_at TIMESTAMPTZ DEFAULT NOW()"
-                    ")"
-                )
-            )
-            conn.execute(
-                text(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS "
-                    "ux_layered_analysis_entries_entity_screen_section "
-                    "ON layered_analysis_entries (entity_id, screen_name, section_name)"
-                )
-            )
             # Forensic analysis JSON stored per scan row
             conn.execute(text(
                 "ALTER TABLE scans ADD COLUMN IF NOT EXISTS layered_analysis_json JSONB"
@@ -596,6 +472,7 @@ def init_db() -> bool:
                 "entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE, "
                 "report_ref VARCHAR(20) UNIQUE NOT NULL, "
                 "report_json JSONB NOT NULL, "
+                "report_minio_key VARCHAR(500) DEFAULT '', "
                 "first_level_approval VARCHAR(1), "
                 "first_level_approved_by VARCHAR(255) DEFAULT '', "
                 "first_level_approved_at TIMESTAMPTZ, "
@@ -607,6 +484,11 @@ def init_db() -> bool:
                 "generated_at TIMESTAMPTZ DEFAULT NOW(), "
                 "updated_at TIMESTAMPTZ DEFAULT NOW()"
                 ")"
+            ))
+            # Add report_minio_key to existing entity_reports rows created before this column existed.
+            conn.execute(text(
+                "ALTER TABLE entity_reports "
+                "ADD COLUMN IF NOT EXISTS report_minio_key VARCHAR(500) DEFAULT ''"
             ))
         log.info("DB schema ready")
         return True

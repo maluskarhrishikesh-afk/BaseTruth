@@ -4,12 +4,21 @@ from __future__ import annotations
 import base64
 import json
 import os
+import pathlib
 import re
 from typing import Any, Dict, List, Sequence
 
 import requests
 
-DEFAULT_OLLAMA_MODEL = "gemma4:latest"
+# Path to the project-level LLM configuration file.  Resolved relative to the
+# current working directory so it works when Streamlit launches from the project
+# root AND inside Docker where the project root is the container cwd.
+_LLM_CONFIG_PATH = pathlib.Path("artifacts/config/settings.json")
+
+# Fallback model used when no model is configured.  "gemma4:e2b" is the efficient
+# 2B-parameter variant that runs comfortably on a 16 GB RAM machine.  Switch to
+# "gemma4:latest" for higher accuracy when more RAM / VRAM is available.
+DEFAULT_OLLAMA_MODEL = "gemma4:e2b"
 DEFAULT_OLLAMA_BASES = (
     "http://localhost:11434",
     "http://host.docker.internal:11434",
@@ -93,6 +102,47 @@ Rules:
 """.strip()
 
 
+def _load_llm_config() -> Dict[str, Any]:
+    """Read LLM settings from artifacts/config/settings.json.
+
+    Returns an empty dict when the file is missing or malformed so that every
+    caller can safely fall back to its hardcoded defaults without crashing.
+    """
+    try:
+        return json.loads(_LLM_CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _get_configured_model() -> str:
+    """Return the Ollama model name to use, in priority order.
+
+    Priority: OLLAMA_MODEL env var → settings.json 'ollama_model' → DEFAULT_OLLAMA_MODEL.
+    This lets users change the model without touching source code — just edit
+    artifacts/config/settings.json or set the OLLAMA_MODEL environment variable.
+    """
+    # 1. Environment variable — highest priority, overrides config file (useful in Docker / CI)
+    env_model = os.getenv("OLLAMA_MODEL", "").strip()
+    if env_model:
+        return env_model
+    # 2. settings.json 'ollama_model' key — user-editable without code changes
+    configured = str(_load_llm_config().get("ollama_model", "")).strip()
+    if configured:
+        return configured
+    # 3. Hardcoded default — gemma4:e2b is the RAM-friendly 2B-parameter variant
+    return DEFAULT_OLLAMA_MODEL
+
+
+def get_active_provider() -> str:
+    """Return the currently configured VLM provider from settings.json.
+
+    Possible values: 'ollama' (default/local), 'github_models', 'openai', 'anthropic'.
+    Falls back to 'ollama' when the config file is missing or the key is absent.
+    Change 'active_provider' in artifacts/config/settings.json to switch providers.
+    """
+    return str(_load_llm_config().get("active_provider", "ollama") or "ollama").strip().lower()
+
+
 def candidate_ollama_bases() -> List[str]:
     """Return possible Ollama base URLs in the order most likely to work."""
     env_base = os.getenv("OLLAMA_BASE_URL", "").strip().rstrip("/")
@@ -126,22 +176,281 @@ def probe_ollama() -> tuple[str | None, List[str], List[str]]:
             response.raise_for_status()
             models = [model["name"] for model in response.json().get("models", [])]
             models.sort(key=lambda name: (0 if "gemma4" in name.lower() else 1, name))
-            return base_url, (models or [DEFAULT_OLLAMA_MODEL]), attempted
+            return base_url, (models or [_get_configured_model()]), attempted
         except requests.RequestException:
             continue
-    return None, [DEFAULT_OLLAMA_MODEL], attempted
+    return None, [_get_configured_model()], attempted
 
 
 def select_ollama_model(
     models: Sequence[str],
     preferred_substring: str = "gemma4",
 ) -> str:
-    """Return the preferred Ollama model, favouring Gemma4 when available."""
+    """Return the preferred Ollama model, favouring the configured model above all else.
+
+    Priority:
+      1. Exact match on the configured model name (e.g. 'gemma4:e2b')
+      2. Any model whose name contains preferred_substring (e.g. 'gemma4')
+      3. The first model in the list
+      4. The configured model name as a last-resort fallback
+    """
+    configured = _get_configured_model()
+    # 1. Exact match — use the configured model if it is installed on this Ollama instance
+    for name in models:
+        if name.lower() == configured.lower():
+            return name
+    # 2. Substring match — any model with 'gemma4' (or the given substring) in its name
     preferred = preferred_substring.lower().strip()
     for name in models:
         if preferred and preferred in name.lower():
             return name
-    return models[0] if models else DEFAULT_OLLAMA_MODEL
+    # 3. Fall back to whatever Ollama has, or the configured name if list is empty
+    return models[0] if models else configured
+
+
+def _ollama_vlm_chat(
+    system_prompt: str,
+    user_prompt: str,
+    image_bytes_list: List[bytes],
+    *,
+    base_url: str,
+    model: str,
+    timeout_sec: int = OLLAMA_READ_TIMEOUT_SEC,
+) -> tuple[str, str, str, str]:
+    """POST a vision chat request to the local Ollama API.
+
+    Ollama embeds images as base64 strings directly inside the message object —
+    this differs from the OpenAI format that uses 'image_url' content blocks.
+    A system message is only added when system_prompt is non-empty so that
+    batch calls (which have no system prompt) match the expected Ollama format.
+    Returns (content, 'gemma4_ollama', model_name, base_url).
+    """
+    messages: List[Dict[str, Any]] = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({
+        "role": "user",
+        "content": user_prompt,
+        # Ollama expects images as base64-encoded ASCII strings in the message
+        "images": [base64.b64encode(img).decode("ascii") for img in image_bytes_list],
+    })
+    payload = {
+        "model": model,
+        "messages": messages,
+        "stream": False,
+        "options": {"temperature": 0},
+    }
+    try:
+        response = requests.post(
+            f"{base_url}/api/chat",
+            json=payload,
+            timeout=(OLLAMA_CONNECT_TIMEOUT_SEC, timeout_sec),
+        )  # nosemgrep: basetruth-ssrf
+        response.raise_for_status()
+        content = str(response.json().get("message", {}).get("content", "")).strip()
+        return content, "gemma4_ollama", model, base_url
+    except requests.RequestException:
+        return "", "gemma4_ollama", model, base_url
+
+
+def _openai_compatible_vlm_chat(
+    system_prompt: str,
+    user_prompt: str,
+    image_bytes_list: List[bytes],
+    provider_cfg: Dict[str, Any],
+    *,
+    timeout_sec: int = OLLAMA_READ_TIMEOUT_SEC,
+) -> tuple[str, str, str]:
+    """POST a vision chat request to an OpenAI-compatible endpoint.
+
+    Works with GitHub Models (Azure inference endpoint), standard OpenAI, and any
+    other provider following the OpenAI chat/completions API.  Images are sent as
+    base64 data URIs inside 'image_url' content blocks — this is the standard
+    OpenAI multimodal format, different from Ollama's format.
+    API key is read from provider_cfg first, then from environment variables
+    (GITHUB_TOKEN for GitHub Models, OPENAI_API_KEY for others).
+    Returns (content, 'openai_compatible', model_name).
+    """
+    base_url = str(provider_cfg.get("base_url", "https://api.openai.com/v1")).rstrip("/")
+    model = str(provider_cfg.get("model", "gpt-4o-mini"))
+    # Read API key from config first; fall back to standard environment variables
+    api_key = str(provider_cfg.get("api_key", "")).strip()
+    if not api_key:
+        # GitHub Models uses the GitHub personal access token; standard OpenAI uses OPENAI_API_KEY
+        if "azure.com" in base_url or "github" in base_url.lower():
+            api_key = os.getenv("GITHUB_TOKEN", "")
+        else:
+            api_key = os.getenv("OPENAI_API_KEY", "")
+    if not api_key:
+        return "", "openai_compatible", model
+
+    # OpenAI format: text first, then one image_url block per image
+    content_parts: List[Dict[str, Any]] = [{"type": "text", "text": user_prompt}]
+    for img_bytes in image_bytes_list:
+        b64 = base64.b64encode(img_bytes).decode("ascii")
+        content_parts.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+        })
+
+    messages: List[Dict[str, Any]] = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": content_parts})
+
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0,
+        "max_tokens": 4096,
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    try:
+        response = requests.post(
+            f"{base_url}/chat/completions",
+            json=payload,
+            headers=headers,
+            timeout=(OLLAMA_CONNECT_TIMEOUT_SEC, timeout_sec),
+        )  # nosemgrep: basetruth-ssrf
+        response.raise_for_status()
+        text = str(
+            response.json().get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+        ).strip()
+        return text, "openai_compatible", model
+    except (requests.RequestException, KeyError, IndexError):
+        return "", "openai_compatible", model
+
+
+def _anthropic_vlm_chat(
+    system_prompt: str,
+    user_prompt: str,
+    image_bytes_list: List[bytes],
+    provider_cfg: Dict[str, Any],
+    *,
+    timeout_sec: int = OLLAMA_READ_TIMEOUT_SEC,
+) -> tuple[str, str, str]:
+    """POST a vision chat request to the Anthropic Messages API.
+
+    Anthropic uses a different auth header ('x-api-key') and a different image
+    format where images appear as 'source' blocks inside the content array.
+    The system prompt is a top-level field, not a messages entry.
+    Images are placed before the text prompt in the content array, as Anthropic
+    requires images to appear before any text that references them.
+    Returns (content, 'anthropic', model_name).
+    """
+    api_key = str(provider_cfg.get("api_key", "")).strip() or os.getenv("ANTHROPIC_API_KEY", "")
+    model = str(provider_cfg.get("model", "claude-3-5-haiku-20241022"))
+    if not api_key:
+        return "", "anthropic", model
+
+    # Anthropic format: images come before the text prompt in the content array
+    content_parts: List[Dict[str, Any]] = []
+    for img_bytes in image_bytes_list:
+        b64 = base64.b64encode(img_bytes).decode("ascii")
+        content_parts.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/jpeg", "data": b64},
+        })
+    content_parts.append({"type": "text", "text": user_prompt})
+
+    payload: Dict[str, Any] = {
+        "model": model,
+        "max_tokens": 4096,
+        "messages": [{"role": "user", "content": content_parts}],
+    }
+    # Anthropic only accepts a non-empty system string
+    if system_prompt:
+        payload["system"] = system_prompt
+
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    try:
+        response = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            json=payload,
+            headers=headers,
+            timeout=(OLLAMA_CONNECT_TIMEOUT_SEC, timeout_sec),
+        )  # nosemgrep: basetruth-ssrf
+        response.raise_for_status()
+        blocks = response.json().get("content", [])
+        # Pull the first text block out of the Anthropic response content array
+        text = str(
+            next((b.get("text", "") for b in blocks if b.get("type") == "text"), "")
+        ).strip()
+        return text, "anthropic", model
+    except (requests.RequestException, KeyError, StopIteration):
+        return "", "anthropic", model
+
+
+def _route_vlm_chat(
+    system_prompt: str,
+    user_prompt: str,
+    image_bytes_list: List[bytes],
+    *,
+    timeout_sec: int = OLLAMA_READ_TIMEOUT_SEC,
+    # Caller-supplied Ollama overrides skip provider selection entirely so we
+    # do not re-probe Ollama on every function call when the endpoint was
+    # already resolved by the caller.
+    ollama_base_url: str | None = None,
+    ollama_model: str | None = None,
+) -> tuple[str, str, str, str]:
+    """Route a VLM vision request to the configured provider.
+
+    Reads 'active_provider' from artifacts/config/settings.json and routes the
+    request to Ollama (local), GitHub Models, OpenAI, or Anthropic accordingly.
+    Provider credentials are read from the providers block in settings.json with
+    environment variable fallbacks (GITHUB_TOKEN, OPENAI_API_KEY, ANTHROPIC_API_KEY).
+
+    Returns (content, engine_label, model_name, base_url_or_empty).
+    """
+    # If the caller already resolved an Ollama endpoint, use it directly
+    if ollama_base_url:
+        return _ollama_vlm_chat(
+            system_prompt, user_prompt, image_bytes_list,
+            base_url=ollama_base_url,
+            model=ollama_model or _get_configured_model(),
+            timeout_sec=timeout_sec,
+        )
+
+    cfg = _load_llm_config()
+    provider = str(cfg.get("active_provider", "ollama") or "ollama").strip().lower()
+    provider_cfg: Dict[str, Any] = cfg.get("providers", {}).get(provider, {})
+
+    if provider in ("github_models", "openai", "openai_compatible"):
+        content, engine, model = _openai_compatible_vlm_chat(
+            system_prompt, user_prompt, image_bytes_list,
+            provider_cfg,
+            timeout_sec=timeout_sec,
+        )
+        return content, engine, model, str(provider_cfg.get("base_url", ""))
+
+    if provider == "anthropic":
+        content, engine, model = _anthropic_vlm_chat(
+            system_prompt, user_prompt, image_bytes_list,
+            provider_cfg,
+            timeout_sec=timeout_sec,
+        )
+        return content, engine, model, "https://api.anthropic.com/v1"
+
+    # Default path: local Ollama
+    base_url, models, _ = probe_ollama()
+    if not base_url:
+        return "", "gemma4_ollama", _get_configured_model(), ""
+    selected_model = select_ollama_model(models)
+    return _ollama_vlm_chat(
+        system_prompt, user_prompt, image_bytes_list,
+        base_url=base_url,
+        model=selected_model,
+        timeout_sec=timeout_sec,
+    )
 
 
 def _extract_json_object(text: str) -> str:
@@ -277,47 +586,21 @@ def extract_aadhaar_details_with_ollama(
     if not image_bytes:
         return {}
 
-    resolved_base = base_url
-    resolved_model = model
-    if not resolved_base:
-        resolved_base, models, _ = probe_ollama()
-        if not resolved_base:
-            return {}
-        resolved_model = resolved_model or select_ollama_model(models)
-    elif not resolved_model:
-        resolved_model = DEFAULT_OLLAMA_MODEL
-
-    payload = {
-        "model": resolved_model,
-        "messages": [
-            {"role": "system", "content": AADHAAR_EXTRACTION_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": AADHAAR_EXTRACTION_PROMPT,
-                "images": [base64.b64encode(image_bytes).decode("ascii")],
-            },
-        ],
-        "stream": False,
-        "options": {"temperature": 0},
-    }
-
-    try:
-        response = requests.post(
-            f"{resolved_base}/api/chat",
-            json=payload,
-            timeout=(OLLAMA_CONNECT_TIMEOUT_SEC, OLLAMA_READ_TIMEOUT_SEC),
-        )  # nosemgrep: basetruth-ssrf
-        response.raise_for_status()
-    except requests.RequestException:
+    content, engine, resolved_model, resolved_base = _route_vlm_chat(
+        AADHAAR_EXTRACTION_SYSTEM_PROMPT,
+        AADHAAR_EXTRACTION_PROMPT,
+        [image_bytes],
+        ollama_base_url=base_url,
+        ollama_model=model,
+    )
+    if not content:
         return {}
-
-    content = str(response.json().get("message", {}).get("content", "")).strip()
     parsed = parse_aadhaar_response_content(content)
     if not parsed:
         return {}
-    parsed["engine"] = "gemma4_ollama"
-    parsed["model"] = resolved_model or DEFAULT_OLLAMA_MODEL
-    parsed["base_url"] = resolved_base or ""
+    parsed["engine"] = engine
+    parsed["model"] = resolved_model
+    parsed["base_url"] = resolved_base
     parsed["raw_response"] = content
     parsed["qr_type"] = "gemma4"
     return parsed
@@ -333,47 +616,21 @@ def extract_pan_details_with_ollama(
     if not image_bytes:
         return {}
 
-    resolved_base = base_url
-    resolved_model = model
-    if not resolved_base:
-        resolved_base, models, _ = probe_ollama()
-        if not resolved_base:
-            return {}
-        resolved_model = resolved_model or select_ollama_model(models)
-    elif not resolved_model:
-        resolved_model = DEFAULT_OLLAMA_MODEL
-
-    payload = {
-        "model": resolved_model,
-        "messages": [
-            {"role": "system", "content": PAN_EXTRACTION_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": PAN_EXTRACTION_PROMPT,
-                "images": [base64.b64encode(image_bytes).decode("ascii")],
-            },
-        ],
-        "stream": False,
-        "options": {"temperature": 0},
-    }
-
-    try:
-        response = requests.post(
-            f"{resolved_base}/api/chat",
-            json=payload,
-            timeout=(OLLAMA_CONNECT_TIMEOUT_SEC, OLLAMA_READ_TIMEOUT_SEC),
-        )  # nosemgrep: basetruth-ssrf
-        response.raise_for_status()
-    except requests.RequestException:
+    content, engine, resolved_model, resolved_base = _route_vlm_chat(
+        PAN_EXTRACTION_SYSTEM_PROMPT,
+        PAN_EXTRACTION_PROMPT,
+        [image_bytes],
+        ollama_base_url=base_url,
+        ollama_model=model,
+    )
+    if not content:
         return {}
-
-    content = str(response.json().get("message", {}).get("content", "")).strip()
     parsed = parse_pan_response_content(content)
     if not parsed:
         return {}
-    parsed["engine"] = "gemma4_ollama"
-    parsed["model"] = resolved_model or DEFAULT_OLLAMA_MODEL
-    parsed["base_url"] = resolved_base or ""
+    parsed["engine"] = engine
+    parsed["model"] = resolved_model
+    parsed["base_url"] = resolved_base
     parsed["raw_response"] = content
     return parsed
 
@@ -454,41 +711,15 @@ def extract_pan_details_and_signature_with_ollama(
     if not image_bytes:
         return {}
 
-    resolved_base = base_url
-    resolved_model = model
-    if not resolved_base:
-        resolved_base, models, _ = probe_ollama()
-        if not resolved_base:
-            return {}
-        resolved_model = resolved_model or select_ollama_model(models)
-    elif not resolved_model:
-        resolved_model = DEFAULT_OLLAMA_MODEL
-
-    payload = {
-        "model": resolved_model,
-        "messages": [
-            {"role": "system", "content": PAN_COMBINED_EXTRACTION_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": PAN_COMBINED_EXTRACTION_PROMPT,
-                "images": [base64.b64encode(image_bytes).decode("ascii")],
-            },
-        ],
-        "stream": False,
-        "options": {"temperature": 0},
-    }
-
-    try:
-        response = requests.post(
-            f"{resolved_base}/api/chat",
-            json=payload,
-            timeout=(OLLAMA_CONNECT_TIMEOUT_SEC, OLLAMA_READ_TIMEOUT_SEC),
-        )  # nosemgrep: basetruth-ssrf
-        response.raise_for_status()
-    except requests.RequestException:
+    content, engine, resolved_model, resolved_base = _route_vlm_chat(
+        PAN_COMBINED_EXTRACTION_SYSTEM_PROMPT,
+        PAN_COMBINED_EXTRACTION_PROMPT,
+        [image_bytes],
+        ollama_base_url=base_url,
+        ollama_model=model,
+    )
+    if not content:
         return {}
-
-    content = str(response.json().get("message", {}).get("content", "")).strip()
 
     # Parse PAN card text fields using the shared parser
     parsed = parse_pan_response_content(content)
@@ -524,9 +755,9 @@ def extract_pan_details_and_signature_with_ollama(
     if not parsed:
         return {}
 
-    parsed["engine"] = "gemma4_ollama"
-    parsed["model"] = resolved_model or DEFAULT_OLLAMA_MODEL
-    parsed["base_url"] = resolved_base or ""
+    parsed["engine"] = engine
+    parsed["model"] = resolved_model
+    parsed["base_url"] = resolved_base
     parsed["raw_response"] = content
     return parsed
 
@@ -609,43 +840,18 @@ def classify_document_type_with_ollama(
     if not image_bytes:
         return {}
 
-    resolved_base = base_url
-    resolved_model = model
-    if not resolved_base:
-        resolved_base, models, _ = probe_ollama()
-        if not resolved_base:
-            # Ollama is not running — signal to caller that check was skipped
-            return {"available": False}
-        resolved_model = resolved_model or select_ollama_model(models)
-    elif not resolved_model:
-        resolved_model = DEFAULT_OLLAMA_MODEL
-
-    payload = {
-        "model": resolved_model,
-        "messages": [
-            {"role": "system", "content": DOC_CLASSIFY_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": DOC_CLASSIFY_PROMPT,
-                "images": [base64.b64encode(image_bytes).decode("ascii")],
-            },
-        ],
-        "stream": False,
-        "options": {"temperature": 0},
-    }
-
-    try:
-        response = requests.post(
-            f"{resolved_base}/api/chat",
-            json=payload,
-            # Use the shorter timeout — this is a quick yes/no classification
-            timeout=(OLLAMA_CONNECT_TIMEOUT_SEC, _DOC_CLASSIFY_READ_TIMEOUT_SEC),
-        )  # nosemgrep: basetruth-ssrf
-        response.raise_for_status()
-    except requests.RequestException:
+    content, _engine, _model, _base = _route_vlm_chat(
+        DOC_CLASSIFY_SYSTEM_PROMPT,
+        DOC_CLASSIFY_PROMPT,
+        [image_bytes],
+        timeout_sec=_DOC_CLASSIFY_READ_TIMEOUT_SEC,
+        ollama_base_url=base_url,
+        ollama_model=model,
+    )
+    if not content:
+        # VLM provider is unreachable — signal to caller that the check was skipped
         return {"available": False}
 
-    content = str(response.json().get("message", {}).get("content", "")).strip()
     json_text = _extract_json_object(content)
     if not json_text:
         # Could not parse the response — treat as inconclusive
@@ -772,45 +978,21 @@ def analyze_document_with_ollama(
     if not image_bytes:
         return {}
 
-    resolved_base = base_url
-    resolved_model = model
-    if not resolved_base:
-        resolved_base, models, _ = probe_ollama()
-        if not resolved_base:
-            return {}
-        resolved_model = resolved_model or select_ollama_model(models)
-    elif not resolved_model:
-        resolved_model = DEFAULT_OLLAMA_MODEL
-
+    # Prepend the optional document type hint to the prompt for better accuracy
     prompt = UNIVERSAL_DOCUMENT_ANALYSIS_PROMPT
     if doc_hint:
         prompt = f"Document hint: {doc_hint}\n\n{prompt}"
 
-    payload = {
-        "model": resolved_model,
-        "messages": [
-            {"role": "system", "content": UNIVERSAL_DOCUMENT_ANALYSIS_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": prompt,
-                "images": [base64.b64encode(image_bytes).decode("ascii")],
-            },
-        ],
-        "stream": False,
-        "options": {"temperature": 0},
-    }
-
-    try:
-        response = requests.post(
-            f"{resolved_base}/api/chat",
-            json=payload,
-            timeout=(OLLAMA_CONNECT_TIMEOUT_SEC, OLLAMA_READ_TIMEOUT_SEC),
-        )  # nosemgrep: basetruth-ssrf
-        response.raise_for_status()
-    except requests.RequestException:
+    content, engine, resolved_model, _base = _route_vlm_chat(
+        UNIVERSAL_DOCUMENT_ANALYSIS_SYSTEM_PROMPT,
+        prompt,
+        [image_bytes],
+        ollama_base_url=base_url,
+        ollama_model=model,
+    )
+    if not content:
         return {}
 
-    content = str(response.json().get("message", {}).get("content", "")).strip()
     json_text = _extract_json_object(content)
     if not json_text:
         return {}
@@ -823,8 +1005,8 @@ def analyze_document_with_ollama(
     if not isinstance(parsed, dict):
         return {}
 
-    parsed["engine"] = "gemma4_ollama"
-    parsed["model"] = resolved_model or DEFAULT_OLLAMA_MODEL
+    parsed["engine"] = engine
+    parsed["model"] = resolved_model
     parsed["raw_response"] = content
     return parsed
 
@@ -904,17 +1086,7 @@ def classify_documents_batch(
     if not valid_pairs:
         return fallback
 
-    resolved_base = base_url
-    resolved_model = model
-    if not resolved_base:
-        resolved_base, models, _ = probe_ollama()
-        if not resolved_base:
-            return fallback
-        resolved_model = resolved_model or select_ollama_model(models)
-    elif not resolved_model:
-        resolved_model = DEFAULT_OLLAMA_MODEL
-
-    # List file names in the prompt so the model can reference them
+    # List file names in the prompt so the model knows which document is which
     names_block = "\n".join(
         f"{i}. {filenames[i] if i < len(filenames) else f'document_{i}'}"
         for i, _ in valid_pairs
@@ -924,33 +1096,20 @@ def classify_documents_batch(
         f"{BATCH_CLASSIFICATION_PROMPT}"
     )
 
-    payload: Dict[str, Any] = {
-        "model": resolved_model,
-        "messages": [
-            {
-                "role": "user",
-                "content": prompt,
-                "images": [
-                    base64.b64encode(img).decode("ascii")
-                    for _, img in valid_pairs
-                ],
-            }
-        ],
-        "stream": False,
-        "options": {"temperature": 0},
-    }
+    # Extract just the valid (non-empty) images to send to the VLM
+    valid_images = [img for _, img in valid_pairs]
 
-    try:
-        response = requests.post(
-            f"{resolved_base}/api/chat",
-            json=payload,
-            timeout=(OLLAMA_CONNECT_TIMEOUT_SEC, OLLAMA_READ_TIMEOUT_SEC),
-        )  # nosemgrep: basetruth-ssrf
-        response.raise_for_status()
-    except requests.RequestException:
+    # _route_vlm_chat with empty system_prompt sends a user-only message,
+    # matching the original Ollama payload structure for batch classification
+    content, _engine, _model, _base = _route_vlm_chat(
+        "",  # no system prompt for batch — the user message contains all instructions
+        prompt,
+        valid_images,
+        ollama_base_url=base_url,
+        ollama_model=model,
+    )
+    if not content:
         return fallback
-
-    content = str(response.json().get("message", {}).get("content", "")).strip()
 
     # Parse the returned JSON array
     try:

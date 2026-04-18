@@ -32,15 +32,6 @@ try:
     class ScanPathRequest(BaseModel):
         path: str = Field(..., description="Absolute path to the document or structured JSON to scan.")
 
-    class UpdateCaseRequest(BaseModel):
-        status: Optional[str] = Field(None, description="new | triage | investigating | pending_client | closed")
-        disposition: Optional[str] = Field(None, description="open | monitor | escalate | cleared | fraud_confirmed")
-        priority: Optional[str] = Field(None, description="low | normal | high | critical")
-        assignee: Optional[str] = Field(None, description="Investigator user name.")
-        labels: Optional[List[str]] = Field(None, description="Free-form labels for routing and triage.")
-        note_text: str = Field("", description="Text of the new note to append, if any.")
-        note_author: str = Field("api", description="Author name for the note.")
-
     class CreateKYCSessionRequest(BaseModel):
         customer_name:           str            = Field("", description="Customer display name.")
         entity_ref:              str            = Field("", description="Entity / case reference ID.")
@@ -420,44 +411,6 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
         if risk_level:
             reports = [r for r in reports if r.get("risk_level") == risk_level]
         return reports
-
-    @app.get("/api/v1/cases", tags=["Cases"])
-    def list_cases(
-        status: Optional[str] = Query(None, description="Filter by workflow status."),
-        priority: Optional[str] = Query(None, description="Filter by priority."),
-        disposition: Optional[str] = Query(None, description="Filter by disposition."),
-    ) -> List[Dict[str, Any]]:
-        """List all cases, optionally filtered by workflow state."""
-        cases = svc.list_cases()
-        if status:
-            cases = [c for c in cases if c.get("status") == status]
-        if priority:
-            cases = [c for c in cases if c.get("priority") == priority]
-        if disposition:
-            cases = [c for c in cases if c.get("disposition") == disposition]
-        return cases
-
-    @app.get("/api/v1/cases/{case_key}", tags=["Cases"])
-    def get_case(case_key: str) -> Dict[str, Any]:
-        """Get full case detail including workflow state and all linked reports."""
-        try:
-            return svc.get_case_detail(case_key)
-        except KeyError:
-            raise HTTPException(status_code=404, detail=f"Case not found: {case_key}")
-
-    @app.patch("/api/v1/cases/{case_key}", tags=["Cases"])
-    def update_case(case_key: str, request: UpdateCaseRequest) -> Dict[str, Any]:
-        """Update the workflow state of a case, optionally appending a note."""
-        return svc.update_case(
-            case_key,
-            status=request.status,
-            disposition=request.disposition,
-            priority=request.priority,
-            assignee=request.assignee,
-            labels=request.labels,
-            note_text=request.note_text,
-            note_author=request.note_author,
-        )
 
     # ── Video KYC — challenge-based liveness + face-match ─────────────────────
 

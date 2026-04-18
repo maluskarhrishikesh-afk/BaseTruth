@@ -66,11 +66,6 @@ def test_save_identity_check_persists_aadhaar_demographics(monkeypatch) -> None:
 
     monkeypatch.setattr(store, "db_session", fake_db_session)
     monkeypatch.setattr(store, "_find_or_create_entity", lambda session, identity: entity)
-    monkeypatch.setattr(
-        store,
-        "_persist_identity_layered_analysis",
-        lambda *args, **kwargs: None,
-    )
 
     saved = store.save_identity_check(
         check_type="face_match",

@@ -405,3 +405,4 @@ def _page_scans() -> None:
                 # key_prefix "all_" keeps this tab's keys distinct from all other tabs
                 _render_scan_row(scan, show_approve_buttons=_needs_action, key_prefix="all_")
 
+

@@ -21,13 +21,10 @@ from basetruth.analysis.upload_authenticity import (
     build_scan_authenticity_payload,
 )
 from basetruth.db import (
-    Case,
-    CaseNote,
     DocumentExtraction,
     Entity,
     EntityReport,
     IdentityCheck,
-    LayeredAnalysisEntry,
     Scan,
     db_session,
 )
@@ -421,92 +418,6 @@ def _json_ready(value: Any) -> Any:
     return value
 
 
-def _mark_layered_analysis_dirty(entity: Entity) -> None:
-    """Record that this entity's layered-analysis PDF is now out of date.
-
-    Whenever a new scan or identity check is saved, the cached PDF summary
-    for the entity is no longer current.  Setting these flags tells the
-    report generator to rebuild the PDF the next time someone requests it.
-    """
-    entity.layered_analysis_updated_at = datetime.now(timezone.utc)
-    entity.layered_report_generated = False
-    entity.layered_report_generated_at = None
-    entity.layered_report_minio_key = ""
-
-
-def _upsert_layered_analysis_entry(
-    session: Session,
-    *,
-    entity: Entity,
-    screen_name: str,
-    section_name: str,
-    details: Dict[str, Any],
-) -> None:
-    """Save or update a single section's captured data in layered_analysis_entries.
-
-    Each (entity, screen, section) combination stores the latest snapshot of what
-    was captured on that screen section — e.g. (BT-000001, 'Bulk Scan', 'payslip.jpg').
-    If a row already exists we overwrite it (UPSERT) so the table always holds the
-    most recent data rather than growing unbounded with duplicates.
-    Calling this also marks the entity's PDF report as stale so it gets rebuilt.
-    """
-    existing = (
-        session.query(LayeredAnalysisEntry)
-        .filter(
-            LayeredAnalysisEntry.entity_id == entity.id,
-            LayeredAnalysisEntry.screen_name == screen_name,
-            LayeredAnalysisEntry.section_name == section_name,
-        )
-        .first()
-    )
-    payload = _json_ready(details)
-    if existing:
-        existing.details_captured_json = payload
-        existing.updated_at = datetime.now(timezone.utc)
-    else:
-        session.add(
-            LayeredAnalysisEntry(
-                entity_id=entity.id,
-                screen_name=screen_name,
-                section_name=section_name,
-                details_captured_json=payload,
-            )
-        )
-    _mark_layered_analysis_dirty(entity)
-
-
-def _persist_scan_layered_analysis(
-    session: Session,
-    *,
-    entity: Entity,
-    scan: Scan,
-    report: Dict[str, Any],
-    screen_name: str,
-) -> None:
-    structured_summary = report.get("structured_summary") or {}
-    _upsert_layered_analysis_entry(
-        session,
-        entity=entity,
-        screen_name=screen_name,
-        section_name=scan.source_name or f"scan-{scan.id}",
-        details={
-            "scan_id": scan.id,
-            "document_type": scan.document_type,
-            "source_name": scan.source_name,
-            "source_sha256": scan.source_sha256,
-            # Forensic verdict and score come from layered_analysis_json — no separate DB columns
-            "forensic_verdict": (scan.layered_analysis_json or {}).get("scan_summary", {}).get("forensic_verdict", ""),
-            "forgery_score": (scan.layered_analysis_json or {}).get("scan_summary", {}).get("forgery_score_0_100"),
-            "structured_summary": structured_summary,
-            "authenticity_checks": build_scan_authenticity_payload(report),
-            "tamper_assessment": report.get("tamper_assessment") or {},
-            "signals": report.get("signals") or [],
-            "artifacts": report.get("artifacts") or {},
-            "generated_at": scan.generated_at.isoformat() if scan.generated_at else "",
-        },
-    )
-
-
 def _build_document_information_payload(report: Dict[str, Any]) -> Dict[str, Any]:
     """Return a rich JSON payload for document_information.extracted_data."""
     structured_summary = report.get("structured_summary") or {}
@@ -612,113 +523,6 @@ def _build_document_information_payload(report: Dict[str, Any]) -> Dict[str, Any
             "signals": report.get("signals") or [],
             "gemma4_analysis": gemma4_analysis,
         }
-    )
-
-
-def _persist_identity_layered_analysis(
-    session: Session,
-    *,
-    entity: Entity,
-    row: IdentityCheck,
-    check_type: str,
-    result: Dict[str, Any],
-    doc_filename: str,
-    selfie_filename: str,
-    status: str,
-    verdict: str,
-) -> None:
-    layered_analysis = result.get("layered_analysis") or {}
-    upload_authenticity = layered_analysis.get("upload_authenticity") or {}
-    if check_type == "face_match":
-        cross_checks = result.get("cross_checks") or {}
-        _upsert_layered_analysis_entry(
-            session,
-            entity=entity,
-            screen_name="Identity Verification",
-            section_name="Aadhaar",
-            details={
-                "check_id": row.id,
-                "doc_filename": doc_filename,
-                "aadhaar_qr": result.get("aadhaar_qr") or {},
-                "authenticity_checks": upload_authenticity.get("aadhaar") or {},
-                "captured_at": row.created_at.isoformat() if row.created_at else "",
-            },
-        )
-        _upsert_layered_analysis_entry(
-            session,
-            entity=entity,
-            screen_name="Identity Verification",
-            section_name="PAN Card",
-            details={
-                "check_id": row.id,
-                "doc_filename": doc_filename,
-                "pan_extraction": result.get("pan_extraction") or {},
-                "pan_format": cross_checks.get("pan_format") or {},
-                "pan_layers": ((result.get("layered_analysis") or {}).get("pan_layers") or {}),
-                "captured_at": row.created_at.isoformat() if row.created_at else "",
-            },
-        )
-        _upsert_layered_analysis_entry(
-            session,
-            entity=entity,
-            screen_name="Identity Verification",
-            section_name="Photo Upload",
-            details={
-                "check_id": row.id,
-                "document_filename": doc_filename,
-                "selfie_filename": selfie_filename,
-                "document_uploaded": bool(doc_filename),
-                "selfie_uploaded": bool(selfie_filename),
-                "authenticity_checks": upload_authenticity.get("photo") or {},
-                "captured_at": row.created_at.isoformat() if row.created_at else "",
-            },
-        )
-        _upsert_layered_analysis_entry(
-            session,
-            entity=entity,
-            screen_name="Identity Verification",
-            section_name="Run Verification",
-            details={
-                "check_id": row.id,
-                "status": status,
-                "verdict": verdict,
-                "display_score": row.display_score,
-                "cosine_similarity": row.cosine_similarity,
-                "threshold": row.threshold,
-                "is_match": row.is_match,
-                "cross_checks": cross_checks,
-                "result": {
-                    key: value
-                    for key, value in result.items()
-                    if key not in {"aadhaar_qr", "pan_extraction", "layered_analysis"}
-                },
-                "captured_at": row.created_at.isoformat() if row.created_at else "",
-            },
-        )
-        return
-
-    section_name = "In-Person Session" if selfie_filename else "Remote Session"
-    _upsert_layered_analysis_entry(
-        session,
-        entity=entity,
-        screen_name="Video KYC",
-        section_name=section_name,
-        details={
-            "check_id": row.id,
-            "status": status,
-            "verdict": verdict,
-            "doc_filename": doc_filename,
-            "selfie_filename": selfie_filename,
-            "reference_document_authenticity": upload_authenticity.get("reference_document") or {},
-            "live_capture_authenticity": upload_authenticity.get("live_capture") or {},
-            "display_score": row.display_score,
-            "cosine_similarity": row.cosine_similarity,
-            "threshold": row.threshold,
-            "liveness_passed": row.liveness_passed,
-            "liveness_state": row.liveness_state,
-            "result": result,
-            "captured_at": row.created_at.isoformat() if row.created_at else "",
-        },
     )
 
 
@@ -966,20 +770,6 @@ def save_scan_to_db(
                         extra={"error": str(di_exc), "entity_id": entity.id, "scan_id": scan.id},
                         exc_info=True,
                     )
-                try:
-                    _persist_scan_layered_analysis(
-                        session,
-                        entity=entity,
-                        scan=scan,
-                        report=report,
-                        screen_name=layered_screen_name,
-                    )
-                except Exception as la_exc:
-                    log.error(
-                        "save_scan_to_db: layered analysis upsert FAILED",
-                        extra={"error": str(la_exc), "entity_id": entity.id, "scan_id": scan.id},
-                        exc_info=True,
-                    )
             elif entity and "_document_extraction" in report:
                 # Bulk Scan path: always save a document_extractions row so operators
                 # can see extracted fields in Document Intelligence even when Gemma4/Ollama
@@ -1053,22 +843,6 @@ def save_scan_to_db(
                         exc_info=True,
                     )
 
-                # Persist layered analysis entry for bulk scans so the Layered Analysis
-                # screen shows this document alongside single-scan documents.
-                try:
-                    _persist_scan_layered_analysis(
-                        session,
-                        entity=entity,
-                        scan=scan,
-                        report=report,
-                        screen_name=layered_screen_name,
-                    )
-                except Exception as la_exc:
-                    log.error(
-                        "save_scan_to_db: layered analysis upsert FAILED",
-                        extra={"error": str(la_exc), "entity_id": entity.id, "scan_id": scan.id},
-                        exc_info=True,
-                    )
             else:
                 log.debug("save_scan_to_db: skipping DocumentExtraction — no entity or unknown report format")
 
@@ -1640,18 +1414,6 @@ def update_entity(entity_ref: str, fields: Dict[str, str]) -> Optional[Dict[str,
         return None
 
 
-def case_exists_in_db(case_key: str) -> bool:
-    """Return True if any Case row exists for this case_key (open or closed)."""
-    from basetruth.db import Case  # local import to avoid circular deps  # noqa: PLC0415
-    try:
-        with db_session() as session:
-            return (
-                session.query(Case).filter(Case.case_key == case_key).first() is not None
-            )
-    except Exception:  # noqa: BLE001
-        return False
-
-
 def db_stats() -> Dict[str, int]:
     """Return high-level counts for the dashboard."""
     try:
@@ -1678,7 +1440,6 @@ def db_stats() -> Dict[str, int]:
 
 def db_dashboard_stats() -> Dict[str, Any]:
     """Extended stats for the Dashboard — single round-trip query."""
-    from basetruth.db import Case  # local import to avoid circular deps at module level
     try:
         with db_session() as session:
             total_scans = session.query(func.count(Scan.id)).scalar() or 0
@@ -1714,16 +1475,6 @@ def db_dashboard_stats() -> Dict[str, Any]:
                 )
             ).scalar()
             avg_score = round(float(avg_score_row), 1) if avg_score_row is not None else None
-            pending = (
-                session.query(func.count(Case.id)).filter(Case.disposition == "open").scalar() or 0
-            )
-            cleared = (
-                session.query(func.count(Case.id)).filter(Case.disposition == "cleared").scalar() or 0
-            )
-            fraud = (
-                session.query(func.count(Case.id)).filter(Case.disposition == "fraud_confirmed").scalar() or 0
-            )
-            total_cases = session.query(func.count(Case.id)).scalar() or 0
             # Risk distribution per entity (for bar chart)
             risk_by_entity = []
             for e in session.query(Entity).order_by(Entity.id.desc()).limit(20).all():
@@ -1741,10 +1492,10 @@ def db_dashboard_stats() -> Dict[str, Any]:
                 "medium_risk": medium_risk,
                 "low_risk": low_risk,
                 "avg_score": avg_score,
-                "pending_review": pending,
-                "auto_approved": cleared,
-                "rejected": fraud,
-                "total_cases": total_cases,
+                "pending_review": 0,
+                "auto_approved": 0,
+                "rejected": 0,
+                "total_cases": 0,
                 "risk_by_entity": risk_by_entity,
             }
     except Exception as exc:
@@ -1935,26 +1686,6 @@ def save_identity_check(
                         ),
                     )
 
-            if entity is not None:
-                try:
-                    _persist_identity_layered_analysis(
-                        session,
-                        entity=entity,
-                        row=row,
-                        check_type=check_type,
-                        result=result,
-                        doc_filename=doc_filename,
-                        selfie_filename=selfie_filename,
-                        status=status,
-                        verdict=verdict,
-                    )
-                except Exception as la_exc:
-                    log.error(
-                        "save_identity_check: layered analysis upsert FAILED",
-                        extra={"error": str(la_exc), "entity_id": entity.id, "check_id": row.id},
-                        exc_info=True,
-                    )
-
             # ── Save extracted identity fields to document_extractions ───
             # The Identity Verification page stores Aadhaar fields under
             # result['aadhaar_qr'] and PAN fields under result['pan_extraction'].
@@ -2106,70 +1837,6 @@ def save_identity_check(
         return None
 
 
-def get_entity_layered_analysis(entity_ref: str) -> Dict[str, Any]:
-    """Return latest layered-analysis entries and report-generation state for an entity."""
-    try:
-        with db_session() as session:
-            entity = session.query(Entity).filter(Entity.entity_ref == entity_ref).first()
-            if not entity:
-                return {"entries": [], "screens": {}, "report_state": {}}
-
-            entries = (
-                session.query(LayeredAnalysisEntry)
-                .filter(LayeredAnalysisEntry.entity_id == entity.id)
-                .order_by(LayeredAnalysisEntry.screen_name.asc(), LayeredAnalysisEntry.section_name.asc())
-                .all()
-            )
-            entry_dicts = [
-                {
-                    "id": entry.id,
-                    "screen_name": entry.screen_name,
-                    "section_name": entry.section_name,
-                    "details_captured_json": entry.details_captured_json or {},
-                    "created_at": entry.created_at.isoformat() if entry.created_at else "",
-                    "updated_at": entry.updated_at.isoformat() if entry.updated_at else "",
-                }
-                for entry in entries
-            ]
-            screens: Dict[str, List[Dict[str, Any]]] = {}
-            for item in entry_dicts:
-                screens.setdefault(item["screen_name"], []).append(item)
-
-            report_generated = bool(entity.layered_report_generated)
-            report_state = {
-                "generated": report_generated,
-                "generated_at": entity.layered_report_generated_at.isoformat() if entity.layered_report_generated_at else "",
-                "updated_at": entity.layered_analysis_updated_at.isoformat() if entity.layered_analysis_updated_at else "",
-                "minio_key": entity.layered_report_minio_key or "",
-                "can_generate": not report_generated,
-                "has_entries": bool(entry_dicts),
-            }
-            return {
-                "entries": entry_dicts,
-                "screens": screens,
-                "report_state": report_state,
-            }
-    except Exception as exc:
-        log.warning("get_entity_layered_analysis failed: %s", exc)
-        return {"entries": [], "screens": {}, "report_state": {}}
-
-
-def mark_layered_report_generated(entity_ref: str, minio_key: str) -> bool:
-    """Mark the entity's layered-analysis report as generated and current."""
-    try:
-        with db_session() as session:
-            entity = session.query(Entity).filter(Entity.entity_ref == entity_ref).first()
-            if not entity:
-                return False
-            entity.layered_report_generated = True
-            entity.layered_report_generated_at = datetime.now(timezone.utc)
-            entity.layered_report_minio_key = minio_key
-            return True
-    except Exception as exc:
-        log.warning("mark_layered_report_generated failed: %s", exc)
-        return False
-
-
 def get_entity_identity_checks(entity_ref: str) -> List[Dict[str, Any]]:
     """Return all identity checks for an entity (most-recent first), without PDF bytes."""
     try:
@@ -2215,7 +1882,7 @@ def get_entity_identity_checks(entity_ref: str) -> List[Dict[str, Any]]:
         return []
 
 
-_DB_VIEWER_TABLES = {"entities", "scans", "document_extractions", "cases", "case_notes", "identity_checks", "layered_analysis_entries"}
+_DB_VIEWER_TABLES = {"entities", "scans", "document_extractions", "identity_checks", "entity_reports"}
 
 
 def db_table_counts() -> Dict[str, int]:
@@ -2224,10 +1891,8 @@ def db_table_counts() -> Dict[str, int]:
         "entities",
         "scans",
         "document_extractions",
-        "cases",
-        "case_notes",
         "identity_checks",
-        "layered_analysis_entries",
+        "entity_reports",
     )
     counts: Dict[str, int] = {}
     try:
@@ -2252,11 +1917,13 @@ def db_table_rows(table: str, limit: int = 500) -> tuple[List[Dict[str, Any]], i
         with db_session() as session:
             total: int = session.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar() or 0  # noqa: S608
             if table == "scans":
-                # Select all columns except layered_analysis_json (can be a very large JSONB blob)
-                # so the Database Viewer loads quickly and does not time out.
+                # Include layered_analysis_json so the Database Viewer can display
+                # the full 11-layer forensic breakdown for each scan row.
+                # The JSONB column can be large, but it is essential for analysis.
                 rows_raw = session.execute(
                     text(
                         "SELECT id, entity_id, source_name, source_sha256, document_type, "
+                        "layered_analysis_json, "
                         "approved, approved_by, approved_at, approval_comment, "
                         "first_level_approval, first_level_approved_by, "
                         "first_level_approved_at, first_level_approval_comment, "
@@ -2286,11 +1953,17 @@ def db_table_rows(table: str, limit: int = 500) -> tuple[List[Dict[str, Any]], i
                     ),
                     {"lim": limit},
                 ).mappings().all()
-            elif table == "layered_analysis_entries":
+            elif table == "entity_reports":
+                # Exclude report_json (can be a large JSONB blob) for fast display.
                 rows_raw = session.execute(
                     text(
-                        "SELECT * "
-                        "FROM layered_analysis_entries ORDER BY updated_at DESC LIMIT :lim"
+                        "SELECT id, entity_id, report_ref, report_minio_key, "
+                        "first_level_approval, first_level_approved_by, "
+                        "first_level_approved_at, first_level_approval_comment, "
+                        "second_level_approval, second_level_approved_by, "
+                        "second_level_approved_at, second_level_approval_comment, "
+                        "generated_at, updated_at "
+                        "FROM entity_reports ORDER BY generated_at DESC LIMIT :lim"
                     ),
                     {"lim": limit},
                 ).mappings().all()
@@ -2314,11 +1987,11 @@ def reset_db() -> bool:
         with db_session() as session:
             session.execute(
                 text(
-                    "TRUNCATE TABLE layered_analysis_entries, case_notes, cases, document_extractions, identity_checks, scans, entities "
+                    "TRUNCATE TABLE entity_reports, document_extractions, identity_checks, scans, entities "
                     "RESTART IDENTITY CASCADE"
                 )
             )
-        log.warning("reset_db: all tables (incl. layered_analysis_entries) truncated by user request")
+        log.warning("reset_db: all tables truncated by user request")
         return True
     except Exception as exc:
         log.error("reset_db failed: %s", exc)
@@ -2332,9 +2005,7 @@ _TRUNCATABLE_TABLES = frozenset({
     "scans",
     "document_extractions",
     "identity_checks",
-    "layered_analysis_entries",
-    "cases",
-    "case_notes",
+    "entity_reports",
 })
 
 
@@ -2586,218 +2257,6 @@ def minio_get_object(key: str) -> Optional[bytes]:
         return None
 
 
-# ---------------------------------------------------------------------------
-# DB-driven case management
-# ---------------------------------------------------------------------------
-
-
-def update_case_in_db(
-    case_key: str,
-    *,
-    entity_ref: Optional[str] = None,
-    document_type: Optional[str] = None,
-    status: Optional[str] = None,
-    disposition: Optional[str] = None,
-    priority: Optional[str] = None,
-    assignee: Optional[str] = None,
-    labels: Optional[List[str]] = None,
-    max_risk_level: Optional[str] = None,
-    note_text: str = "",
-    note_author: str = "system",
-) -> Optional[Dict[str, Any]]:
-    """Upsert a case record in the DB cases table.
-
-    Returns {case_id, case_key} on success, None on failure.
-    """
-    try:
-        with db_session() as session:
-            case = session.query(Case).filter(Case.case_key == case_key).first()
-            if case is None:
-                # Try to derive entity_id and doc_type from the case_key
-                # Expected format: ``doc_type::entity_ref`` (e.g. payslip::BT-000001)
-                eid: Optional[int] = None
-                dtype = document_type or ""
-                if entity_ref:
-                    ent = session.query(Entity).filter(Entity.entity_ref == entity_ref).first()
-                    eid = ent.id if ent else None
-                elif "::" in case_key:
-                    parts = case_key.rsplit("::", 1)
-                    dtype = dtype or parts[0]
-                    potential_ref = parts[1]
-                    if potential_ref.startswith("BT-"):
-                        ent = session.query(Entity).filter(Entity.entity_ref == potential_ref).first()
-                        eid = ent.id if ent else None
-                case = Case(
-                    case_key=case_key,
-                    entity_id=eid,
-                    document_type=dtype,
-                    status=status or "new",
-                    disposition=disposition or "open",
-                    priority=priority or "normal",
-                    assignee=assignee or "",
-                    labels=labels or [],
-                    max_risk_level=max_risk_level or "low",
-                )
-                session.add(case)
-                session.flush()
-            else:
-                if status is not None:
-                    case.status = status
-                if disposition is not None:
-                    case.disposition = disposition
-                if priority is not None:
-                    case.priority = priority
-                if assignee is not None:
-                    case.assignee = assignee
-                if labels is not None:
-                    case.labels = labels
-                if max_risk_level is not None:
-                    case.max_risk_level = max_risk_level
-
-            if note_text.strip():
-                note = CaseNote(  # type: ignore[call-arg]  # ORM model, not dataclass
-                    case_id=case.id,
-                    author=note_author or "system",
-                    text=note_text.strip(),
-                )
-                session.add(note)
-
-            return {"case_id": case.id, "case_key": case_key}
-    except Exception as exc:
-        log.warning("update_case_in_db failed for '%s': %s", case_key, exc)
-        return None
-
-
-def list_cases_from_db() -> List[Dict[str, Any]]:
-    """Build the case list from DB scans grouped by (entity, document_type).
-
-    Case state (status, disposition, priority, notes) is loaded from the DB
-    cases table.  This replaces the file-based list_cases() so counts are
-    always accurate and are automatically cleared when the DB is reset.
-    """
-    try:
-        with db_session() as session:
-            # Fetch all scans with entity info in a single query
-            scans = session.query(Scan).order_by(Scan.generated_at.desc()).all()
-
-            entity_cache: Dict[int, Optional[Entity]] = {}
-
-            # Group scans by (entity_ref, document_type) → case_key
-            groups: Dict[str, Dict] = {}
-            for s in scans:
-                if s.entity_id:
-                    if s.entity_id not in entity_cache:
-                        entity_cache[s.entity_id] = (
-                            session.query(Entity).filter(Entity.id == s.entity_id).first()
-                        )
-                    entity = entity_cache[s.entity_id]
-                else:
-                    entity = None
-
-                entity_ref = entity.entity_ref if entity else "unlinked"
-                doc_type = s.document_type or "generic"
-                case_key = f"{doc_type}::{entity_ref}"
-
-                if case_key not in groups:
-                    ename = (
-                        f"{entity.first_name or ''} {entity.last_name or ''}".strip()
-                        if entity
-                        else ""
-                    )
-                    groups[case_key] = {
-                        "case_key": case_key,
-                        "entity_ref": entity_ref,
-                        "entity_name": ename,
-                        "document_type": doc_type,
-                        "documents": [],
-                        "max_risk_level": "low",
-                        "min_truth_score": 100,
-                    }
-
-                groups[case_key]["documents"].append(
-                    {
-                        "source_name": s.source_name,
-                        "document_type": doc_type,
-                        "truth_score": s.truth_score,
-                        "risk_level": s.risk_level or "low",
-                        "verdict": s.verdict or "",
-                        "generated_at": s.generated_at.isoformat() if s.generated_at else "",
-                        "scan_id": s.id,
-                    }
-                )
-                r = s.risk_level or "low"
-                cur = groups[case_key]["max_risk_level"]
-                if r == "high" or (r == "medium" and cur == "low"):
-                    groups[case_key]["max_risk_level"] = r
-                if s.truth_score is not None:
-                    groups[case_key]["min_truth_score"] = min(
-                        groups[case_key]["min_truth_score"], s.truth_score
-                    )
-
-            # Load case state from DB cases table
-            db_states: Dict[str, Case] = {
-                c.case_key: c for c in session.query(Case).all()
-            }
-
-            result = []
-            for case_key, group in groups.items():
-                state = db_states.get(case_key)
-                group["document_count"] = len(group["documents"])
-                group["status"] = state.status if state else "new"
-                group["disposition"] = state.disposition if state else "open"
-                group["priority"] = state.priority if state else "normal"
-                group["assignee"] = state.assignee if state else ""
-                group["labels"] = list(state.labels) if state and state.labels else []
-                group["notes"] = []
-                group["note_count"] = 0
-                if state:
-                    db_notes = (
-                        session.query(CaseNote)  # type: ignore[attr-defined]
-                        .filter(CaseNote.case_id == state.id)  # type: ignore[attr-defined]
-                        .order_by(CaseNote.created_at.asc())  # type: ignore[attr-defined]
-                        .all()
-                    )
-                    group["notes"] = [
-                        {
-                            "created_at": n.created_at.isoformat() if n.created_at else "",
-                            "author": n.author,
-                            "text": n.text,
-                        }
-                        for n in db_notes
-                    ]
-                    group["note_count"] = len(group["notes"])
-                group["needs_review"] = (
-                    group["max_risk_level"] in ("high", "medium")
-                    and group["disposition"] not in ("cleared", "fraud_confirmed")
-                )
-                if group["min_truth_score"] == 100 and not group["documents"]:
-                    group["min_truth_score"] = None
-                result.append(group)
-
-            def _latest_scan_neg(c: Dict[str, Any]) -> float:
-                """Return negated timestamp so that most-recently-scanned sorts first."""
-                import datetime as _dt
-                dates = [d["generated_at"] for d in c.get("documents", []) if d.get("generated_at")]
-                if not dates:
-                    return 0.0
-                try:
-                    return -max(_dt.datetime.fromisoformat(d) for d in dates).timestamp()
-                except Exception:
-                    return 0.0
-
-            return sorted(
-                result,
-                key=lambda c: (
-                    0 if c["needs_review"] else 1,
-                    {"high": 0, "medium": 1, "low": 2}.get(c["max_risk_level"], 3),
-                    _latest_scan_neg(c),
-                ),
-            )
-    except Exception as exc:
-        log.warning("list_cases_from_db failed: %s", exc)
-        return []
-
-
 def get_all_entities_with_scans(limit: int = 200) -> List[Dict[str, Any]]:
     """Return all entities (most-recent first) with their full scan summaries."""
     try:
@@ -2837,11 +2296,11 @@ def get_all_entities_with_scans(limit: int = 200) -> List[Dict[str, Any]]:
                             "id": s.id,
                             "source_name": s.source_name,
                             "document_type": s.document_type or "generic",
-                            "truth_score": s.truth_score,
-                            "risk_level": s.risk_level or "low",
-                            "verdict": s.verdict or "",
+                            "truth_score": (s.layered_analysis_json or {}).get("overall_score") if s.layered_analysis_json else None,
+                            "risk_level": "low",
+                            "verdict": (s.layered_analysis_json or {}).get("overall_verdict", ""),
                             "generated_at": s.generated_at.isoformat() if s.generated_at else "",
-                            "has_pdf": bool(s.pdf_report),
+                            "has_pdf": False,
                         }
                         for s in latest_scans.values()
                     ],
@@ -2890,6 +2349,8 @@ def _entity_report_to_dict(r: EntityReport, entity: Optional[Entity]) -> Dict[st
         ),
         "second_level_approval_comment": r.second_level_approval_comment or "",
         "generated_at": r.generated_at.isoformat() if r.generated_at else "",
+        # MinIO key for the PDF — empty string means PDF was not stored (MinIO unavailable).
+        "report_minio_key": r.report_minio_key or "",
     }
 
 
@@ -2948,6 +2409,62 @@ def save_entity_report(entity_ref: str, report_json: Dict[str, Any]) -> Optional
                 )
 
             session.flush()
+
+            # ── Generate PDF and upload to MinIO ──────────────────────────────
+            # We render the PDF after the DB row is flushed so we have the
+            # report_ref available for the header.  The MinIO key is then written
+            # back to the row and committed together with the rest of the data.
+            try:
+                from basetruth.reporting.pdf import render_entity_report_pdf  # lazy import avoids circular deps
+
+                # Fetch the candidate photo bytes from MinIO if a key was stored
+                # in the report_json by build_final_report_json().  The photo is
+                # embedded in the PDF but NOT stored separately — we just look it
+                # up at render time from the existing MinIO object.
+                photo_minio_key = report_json.get("photo_minio_key") or ""
+                photo_bytes: bytes | None = None
+                if photo_minio_key:
+                    try:
+                        photo_bytes = minio_get_object(photo_minio_key)
+                        log.debug(
+                            "save_entity_report: fetched candidate photo",
+                            extra={"entity_ref": entity_ref, "key": photo_minio_key, "size": len(photo_bytes) if photo_bytes else 0},
+                        )
+                    except Exception as photo_exc:
+                        log.warning(
+                            "save_entity_report: could not fetch photo from MinIO (%s) — PDF will have no photo",
+                            photo_exc,
+                            extra={"entity_ref": entity_ref, "key": photo_minio_key},
+                        )
+
+                pdf_bytes   = render_entity_report_pdf(report_json, report_ref, photo_bytes=photo_bytes)
+                minio_key   = f"BTR-reports/{entity_ref}/{report_ref}.pdf"
+                upload_ok   = minio_upload(minio_key, pdf_bytes, "application/pdf")
+
+                if upload_ok:
+                    # Attach the key to the ORM row so it is persisted on commit.
+                    target = existing if existing else session.query(EntityReport).filter(
+                        EntityReport.report_ref == report_ref
+                    ).first()
+                    if target:
+                        target.report_minio_key = minio_key
+                    log.info(
+                        "save_entity_report: PDF uploaded to MinIO",
+                        extra={"entity_ref": entity_ref, "report_ref": report_ref, "minio_key": minio_key},
+                    )
+                else:
+                    log.warning(
+                        "save_entity_report: MinIO upload failed — PDF not stored",
+                        extra={"entity_ref": entity_ref, "report_ref": report_ref},
+                    )
+            except Exception as pdf_exc:
+                # PDF generation/upload is best-effort; do not fail the whole save.
+                log.warning(
+                    "save_entity_report: PDF render/upload error — %s",
+                    pdf_exc,
+                    extra={"entity_ref": entity_ref, "report_ref": report_ref},
+                )
+
             return {"entity_ref": entity_ref, "report_ref": report_ref}
     except Exception as exc:
         log.error("save_entity_report failed: %s", exc, exc_info=True)

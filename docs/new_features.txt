@@ -1,31 +1,39 @@
 ﻿
-Now we have captured lot of data in document_extractions table. 
+Clean up ->
 
-On Document Intelligence screen we should now have a option to generate final report for every entity
+1) From the left panel remove "Layered Analysis" option and also remove any code related to it. We
+are no longer going to use this screen.
 
-When we click on this generate final report button, we should do the following ->
-Compare names on Aadhar, PAN, payslips, marksheets, degrees etc. They all should be same per entity.
+Remove these also from the left panel as its of no use to the end customer -> 🟢 PostgreSQL connected
 
-Address if present on any other document should match with the one given on Aadhar.
+-------------------------------------------------------------------------------------------------
 
-PAN number is present on any other document should match with the PAN number on the PAN Card.
+2) Can you move the entire left panel to the top so that all options are visible without 
+scrolling down. There is lot of space wasted above BaseTruth logo.
 
-Aadhar number if present on any other document should match witht he Aadhar number on the Aadhar card.
+-------------------------------------------------------------------------------------------------
 
-Overall salary mentioned on salary-slips should match with the amount mentioned on offer letter or increment letter.
+3) We are no longer using these tables in the database ->
+Layered Analysis Entries
+Cases 
+Case Notes
 
-Forensic details of all documents should be considered.
+Remove them from the system and also any code refrencing them as its no loger required.
+Remove it from "Database Viewer" screen also.
+Remove these tables from the documentation also.
 
-And a final report should be created. This should again go cases section where it will undergo 
-2 levels of approval similar to scans screen.
+-------------------------------------------------------------------------------------------------
 
-We will need to create a table for cases functionality which should be similar to scans functionality.
+4) In the databe for all tables we should capture 
+created_on in this format -> Day/Month/Year
+created_at in this format -> Hours:Minutes:Seconds
 
-Eventually this final report should be available for download on the Reports screen. Other documents 
-should also be available for download in zipped format. final report should be independant, it should
-not be included in the zipped file.
+Basically any date and time should be captured in this format only so it becomes easy to work with it.
 
-Apart from this do you feel I have missed anything that should be included to make this the best
-document intelligence product ever.
+-------------------------------------------------------------------------------------------------
 
-New table that we create should also be visible on Database Viewer screen.
+5) Now I want to test the application with  "GITHUB_TOKEN": "<stored in artifacts/config/settings.json — gitignored>",
+so can you make that setting active. Will switch to gemma4 later.
+
+Also tell me how to change the settings so that I will be able to do it myself.
+

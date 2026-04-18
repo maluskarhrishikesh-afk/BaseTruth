@@ -561,23 +561,26 @@ def _render_index_metrics() -> None:
             help="Scans flagged high-risk (truth score < 60).",
         )
         try:
-            from basetruth.db import Case as _Case  # noqa: PLC0415
             from basetruth.db import db_session  # noqa: PLC0415
             from sqlalchemy import func as _func  # noqa: PLC0415
-
+            from basetruth.db import Scan as _Scan  # noqa: PLC0415
             with db_session() as _s:
-                pending = (
-                    _s.query(_func.count(_Case.id))
-                    .filter(_Case.disposition == "open")
+                high_risk = (
+                    _s.query(_func.count(_Scan.id))
+                    .filter(
+                        _Scan.layered_analysis_json["scan_summary"]["forensic_verdict"].astext.in_(
+                            ["TAMPERED", "LIKELY TAMPERED"]
+                        )
+                    )
                     .scalar() or 0
                 )
             cols[3].metric(
-                "Pending Review",
-                pending,
-                help="Cases still open — go to Cases to approve or reject.",
+                "High / Medium Risk",
+                high_risk,
+                help="Documents flagged as TAMPERED or LIKELY TAMPERED.",
             )
         except Exception:  # noqa: BLE001
-            cols[3].metric("Pending Review", "—")
+            cols[3].metric("High / Medium Risk", "—")
     else:
         st.info(
             "📴 **Database offline** — connect PostgreSQL to see live statistics. "

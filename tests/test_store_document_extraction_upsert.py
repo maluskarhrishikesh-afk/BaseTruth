@@ -150,7 +150,6 @@ def test_save_scan_to_db_upserts_document_extraction_by_entity_and_file_name(mon
 
     monkeypatch.setattr(store, "db_session", fake_db_session)
     monkeypatch.setattr(store, "minio_upload", lambda *args, **kwargs: None)
-    monkeypatch.setattr(store, "_persist_scan_layered_analysis", lambda *args, **kwargs: None)
 
     first_report = {
         "source": {

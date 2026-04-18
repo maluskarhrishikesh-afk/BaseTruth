@@ -2468,6 +2468,37 @@ def _validate_educational(data: Dict[str, Any]) -> List[str]:
     errors: List[str] = []
     doc_type = data.get("document_type", "")
 
+    # ── Degree Certificate normalisation ─────────────────────────────────────
+    # Gemma4 sometimes returns a slightly different document_type string (e.g.
+    # "Degree Certificate Information") or uses its own field names (e.g.
+    # "student_name" instead of "candidate_name", "institution" instead of
+    # "university_name").  Normalise both the type string and the field names
+    # here so validation and downstream consumers always see canonical keys.
+    if str(doc_type).strip().lower().startswith("degree"):
+        data["document_type"] = "Degree Certificate"
+        doc_type = "Degree Certificate"
+        # Map common alternative field names → the schema-prescribed names.
+        # Only copy when the canonical field is absent so we never overwrite
+        # a value the model got right.
+        _degree_field_aliases: Dict[str, List[str]] = {
+            "candidate_name":         ["student_name", "name"],
+            "university_name":        ["institution", "university", "college_name", "institution_name"],
+            "degree_name":            ["degree_awarded", "degree", "programme", "qualification"],
+            "specialization_or_major":["specialization", "major", "branch", "field_of_study", "programme_name"],
+            "year_or_date_of_passing":["date_of_completion", "year_of_passing", "year_of_graduation",
+                                       "date_of_passing", "graduation_year", "year_awarded"],
+            "enrollment_number":      ["identification_number", "enrollment_no", "enrolment_number",
+                                       "enrollment_or_seat_number", "seat_number", "roll_number"],
+            "division_or_class":      ["division", "class", "grade_class", "result"],
+            "date_of_issue":          ["date_issued", "issue_date", "certificate_date"],
+        }
+        for canonical, aliases in _degree_field_aliases.items():
+            if not data.get(canonical):
+                for alias in aliases:
+                    if data.get(alias):
+                        data[canonical] = data[alias]
+                        break
+
     if not data.get("candidate_name"):
         errors.append("Candidate name is missing. It is usually the largest text near the top.")
 
@@ -2741,13 +2772,60 @@ def _resolve_ollama() -> tuple:
 
 
 def _ollama_chat(messages: List[Dict[str, Any]], base_url: str, model: str) -> str:
-    """Send a chat request to Ollama and return the text reply.
+    """Send a chat request to the configured VLM provider and return the text reply.
+
+    When active_provider is 'ollama', this posts directly to the local Ollama
+    API at the supplied base_url.  When a cloud provider is configured
+    (github_models, openai, anthropic), the messages are decomposed into
+    system_prompt + user_prompt + image bytes and routed through the shared
+    provider helpers in ollama.py.
 
     Raises requests.RequestException if Ollama is offline or returns an error.
-    base_url and model are passed in rather than read from module-level
-    constants so that the correct endpoint (localhost vs Docker host) is
-    always used.
+    Cloud provider errors raise requests.RequestException or return empty string.
     """
+    from .ollama import (
+        _load_llm_config,
+        _openai_compatible_vlm_chat,
+        _anthropic_vlm_chat,
+    )
+
+    cfg = _load_llm_config()
+    provider = str(cfg.get("active_provider", "ollama") or "ollama").strip().lower()
+
+    if provider != "ollama":
+        # Decompose the Ollama-format messages list into the generic interface
+        # used by the cloud provider helpers: system_prompt, user_prompt, images.
+        system_prompt = ""
+        user_prompt = ""
+        image_bytes_list: List[bytes] = []
+        for msg in messages:
+            if msg.get("role") == "system":
+                system_prompt = str(msg.get("content", ""))
+            elif msg.get("role") == "user":
+                user_prompt = str(msg.get("content", ""))
+                for b64_str in msg.get("images", []):
+                    import base64 as _b64
+                    image_bytes_list.append(_b64.b64decode(b64_str))
+
+        provider_cfg = cfg.get("providers", {}).get(provider, {})
+
+        if provider in ("github_models", "openai", "openai_compatible"):
+            content, _engine, _model = _openai_compatible_vlm_chat(
+                system_prompt, user_prompt, image_bytes_list,
+                provider_cfg,
+                timeout_sec=OLLAMA_READ_TIMEOUT_SEC,
+            )
+            return content
+
+        if provider == "anthropic":
+            content, _engine, _model = _anthropic_vlm_chat(
+                system_prompt, user_prompt, image_bytes_list,
+                provider_cfg,
+                timeout_sec=OLLAMA_READ_TIMEOUT_SEC,
+            )
+            return content
+
+    # Default: post directly to the local Ollama API
     payload = {
         "model": model,
         "messages": messages,
@@ -3083,12 +3161,18 @@ def extract_document_fields(
     )
 
     # Step 5: Build the initial chat message to Gemma4.
-    # We always include the image and the OCR-derived structure hint together.
-    # PaddleOCR gives row and column clues, while the image still helps the
-    # model resolve ambiguous tokens and confirm the visual table layout.
+    # When supplementary text is available (embedded PDF text or PaddleOCR), we send
+    # text-only — the model already has all the field values it needs from the text,
+    # and skipping the large JPEG dramatically reduces inference time (60s vs 600s+ on
+    # 16GB RAM).  The image is only included when no text could be extracted at all,
+    # so the model can fall back to reading the raw pixels.
+    user_msg: Dict[str, Any] = {"role": "user", "content": prompt}
+    if not supplementary_text:
+        # No OCR or embedded text available — include the image as the sole data source
+        user_msg["images"] = [img_b64]
     messages: List[Dict[str, Any]] = [
         {"role": "system", "content": _get_prompt("system")},
-        {"role": "user", "content": prompt, "images": [img_b64]},
+        user_msg,
     ]
 
     # Step 6: Send to Gemma4, validate, retry once if needed

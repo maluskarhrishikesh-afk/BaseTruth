@@ -6,13 +6,12 @@
 
 ---
 
-## Navigation (Left Sidebar)
+## Navigation (Top Bar)
 
-| Sidebar Label | Icon | Page Key | Page Title |
+| Label | Icon | Page Key | Page Title |
 |---|---|---|---|
 | Dashboard | 🏠 | `dashboard` | Dashboard |
 | Identity Verification | 🧑‍💻 | `identity` | Identity Verification |
-| Layered Analysis | 🧾 | `layered_analysis` | Layered Analysis |
 | Video KYC | 🎥 | `video_kyc` | Video KYC |
 | Scan Document | 🔍 | `scan` | Scan Document |
 | Bulk Scan | 📦 | `bulk` | Bulk Scan |
@@ -27,10 +26,10 @@
 | BaseTruth Q&A | 💬 | `gemma_chat` | BaseTruth Q&A |
 
 **Rules:**
-- The sidebar label, icon, and page title must always match.
+- The nav label, icon, and page title must always match.
 - Icons are set in the `_PAGES` dict in `app.py` and in `_page_title(icon, name)` calls in each page file.
 - Navigation is session-state-driven (`st.session_state["page"]`), not Streamlit's built-in routing.
-- The DB connection status pill at the bottom of the sidebar uses `_db_available_cached()` (30-second TTL) to avoid a live `SELECT 1` on every render.
+- All 14 destinations are shown in two horizontal rows of 7 buttons each (top of page, no sidebar).
 
 ---
 
@@ -49,7 +48,7 @@
 
 ## 🧑‍💻 Identity Verification
 
-**Purpose:** Run a clean operator-facing identity flow using Aadhaar, PAN, and selfie inputs, then save the underlying evidence for later auditor review on the Layered Analysis screen.
+**Purpose:** Run a clean operator-facing identity flow using Aadhaar, PAN, and selfie inputs, and save the verification result to the database.
 
 ### Step 1 & 2 — Upload or Capture Documents
 
@@ -102,31 +101,7 @@
 - `_draw_face()` in `vision/face.py` must always be defined before it is called from `compare_faces()`.
 - `save_identity_check()` must always show an error (not silent failure) when it returns `None`.
 - `init_db()` must be retried on each app load until it succeeds (not just first attempt).
-- The Identity Verification page must stay clean; heavy explainability content belongs on the Layered Analysis page, not inline here.
-
----
-
-## 🧾 Layered Analysis
-
-**Purpose:** Provide a regulator- and auditor-facing explainable-AI screen showing the stored evidence trail behind Identity Verification, Video KYC, Scan Document, and Bulk Scan decisions.
-
-| Element | Action | Expected Result |
-|---|---|---|
-| Applicant filter | Type | Filters saved entities by name, PAN, email, or BT-reference |
-| Applicant expanders | Open | Shows one audit view per entity with section counts for Identity Verification, Video KYC, Scan Document, and Bulk Scan evidence |
-| Identity Verification section | Expand | Reads only from `layered_analysis_entries`; shows four separate section views for Aadhaar, PAN Card, Photo Upload, and Run Verification, including saved upload-authenticity checks where applicable |
-| Video KYC section | Expand | Reads only from `layered_analysis_entries`; shows liveness outcome, match metrics, upload-authenticity checks for the reference document and live capture, and raw stored payload |
-| Scan Document / Bulk Scan sections | Expand | Read only from `layered_analysis_entries`; show key extracted fields, truth score, risk level, upload-authenticity checks, top forensic signals, and raw stored payload |
-| "📄 Generate Final Report" | Click | Builds a detailed layered-analysis PDF for the selected entity from `layered_analysis_entries`; uploads it to MinIO and enables download |
-| "⬇ Download Final Report (PDF)" | Click after generation | Downloads the latest layered-analysis PDF for that entity |
-
-**Important rules:**
-- This page is intentionally detailed and audit-heavy; it is the place for explainability, not the primary workflow pages.
-- The page title must remain `_page_title("🧾", "Layered Analysis")`.
-- Report generation must show a visible success, warning, or error outcome.
-- Final report generation is locked once the current evidence set has been reported. The button is re-enabled only after fresh layered-analysis data is saved for that entity.
-- Layered Analysis entries must be upserted by `(entity_id, screen_name, section_name)` so each entity always has the latest evidence snapshot per section.
-- The Database Viewer must expose `identity_checks` and `layered_analysis_entries` in the table browser.
+- The Identity Verification page must stay clean; heavy explainability content is accessible via the Scans screen, not inline here.
 
 ---
 
@@ -365,7 +340,7 @@
 
 **Scope note:**
 - The Reports page remains the concise applicant-summary view.
-- Detailed explainability and raw stored evidence live on the Layered Analysis page.
+- Detailed explainability and raw stored evidence are available on the Scans and Document Intelligence pages.
 - BTR-XXXXXX entity reports are separate from the consolidated audit PDF. The JSON download gives auditors the raw cross-document findings.
 
 ---
@@ -433,11 +408,11 @@
 
 | Element | Action | Expected Result |
 |---|---|---|
-| Metrics row | Auto-renders (cached) | Shows row counts for Entities, Scans, Document Extractions, Identity Checks, Layered Analysis Entries, Cases, Case Notes, and Entity Reports |
+| Metrics row | Auto-renders (cached) | Shows row counts for Entities, Scans, Document Extractions, Identity Checks, and Entity Reports |
 | "🔄 Refresh" button | Click | Clears the page's cached DB/MinIO data queries and reloads the latest counts / object list |
-| Table selector | Select | Loads up to 500 rows from the chosen table, including `identity_checks`, `layered_analysis_entries`, and `entity_reports` |
+| Table selector | Select | Loads up to 500 rows from the chosen table, including `identity_checks`, `document_extractions`, and `entity_reports` |
 | Data table | Auto-renders | Shows table columns in a wide dataframe. Large JSON fields are rendered into readable summaries, and large binary fields like `identity_checks.pdf_report` are excluded from the cached table query so the page stays serializable and fast |
-| Row inspector | Select a row | Shows the full selected row payload below the dataframe so JSON-heavy tables such as `layered_analysis_entries` remain readable |
+| Row inspector | Select a row | Shows the full selected row payload below the dataframe so JSON-heavy tables such as `document_extractions` remain readable |
 
 ### MinIO Storage Tab
 

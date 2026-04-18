@@ -138,9 +138,44 @@ html, body, [class*="css"] {
 
 /* ---- Layout ----------------------------------------------- */
 .block-container {
-    padding-top: 3rem !important;
+    padding-top: 1rem !important;
     padding-bottom: 3rem !important;
     max-width: 1440px !important;
+}
+
+/* ---- Hide Streamlit sidebar (top-nav layout) --------------- */
+[data-testid="stSidebar"] {
+    display: none !important;
+}
+[data-testid="stSidebarCollapsedControl"] {
+    display: none !important;
+}
+
+/* ---- Top navigation: brand block -------------------------- */
+.bt-topnav-brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 0 2px;
+}
+.bt-topnav-icon {
+    font-size: 26px;
+    line-height: 1;
+    flex-shrink: 0;
+}
+.bt-topnav-name {
+    font-size: 1.1rem;
+    font-weight: 800;
+    color: var(--text-color, #0f172a);
+    letter-spacing: -0.03em;
+    line-height: 1.2;
+}
+.bt-topnav-sub {
+    font-size: 8.5px;
+    color: #94a3b8;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    margin-top: 1px;
 }
 
 /* ---- Hide Streamlit's auto-generated page navigation -------- */
@@ -929,7 +964,7 @@ def _display_truth_score(value: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Sidebar navigation
+# Top navigation
 # ---------------------------------------------------------------------------
 
 _PAGES: Dict[str, str] = {
@@ -942,7 +977,6 @@ _PAGES: Dict[str, str] = {
     "📁  Cases": "cases",
     "🧠  Document Intelligence": "document_intelligence",
     "📊  Reports": "reports",
-    "🧾  Layered Analysis": "layered_analysis",
     "🔗  Datasources": "datasources",
     "📋  Log Analyzer": "logs",
     "🗄️  Database Viewer": "database",
@@ -965,7 +999,7 @@ _PAGE_DISCARD_KEYS: Dict[str, list] = {
         "idv_face_selfie_bytes", "idv_face_pan_bytes",
         "idv_face_forced_ref", "idv_face_extra_identity",
         "idv_face_pan_data", "idv_face_cross_checks",
-        "idv_face_layered_analysis", "idv_face_aadhaar_qr",
+        "idv_face_aadhaar_qr",
         "idv_face_saved_ref", "idv_face_saved_pdf",
         "idv_ei_fn", "idv_ei_ln", "idv_ei_pan", "idv_ei_aadh",
         "idv_ei_email", "idv_ei_phone", "_idv_auto_key",
@@ -1057,54 +1091,66 @@ def _unsaved_changes_dialog(pending_page: str) -> None:
         st.rerun()
 
 
-def _sidebar() -> str:
-    with st.sidebar:
+def _topnav() -> str:
+    """Render horizontal top navigation bar. Returns the current page key.
+
+    The nav is split into two rows of 7 buttons each so all 14 destinations
+    are always visible without scrolling.  The brand block occupies a wider
+    left column in the first row; an empty spacer fills the same slot in the
+    second row so both rows of buttons stay left-aligned.
+    """
+    current_page = st.session_state.get("page", "dashboard")
+    items = list(_PAGES.items())
+
+    # Split into two rows of 7 for a 2-row horizontal layout
+    row1 = items[:7]
+    row2 = items[7:]
+
+    def _nav_click(key: str) -> None:
+        """Handle a nav button click with unsaved-changes guard."""
+        if key != current_page and _is_page_dirty(current_page):
+            st.session_state["_nav_pending"] = key
+        else:
+            st.session_state["page"] = key
+            st.session_state.pop("_nav_pending", None)
+        st.rerun()
+
+    # Row 1: brand column + 7 nav buttons
+    brand_col, *r1_cols = st.columns([2] + [1] * len(row1))
+    with brand_col:
         st.markdown(
-            """
-            <div class="bt-brand">
-              <div class="bt-brand-icon">🛡</div>
-              <div class="bt-brand-name">BaseTruth</div>
-              <div class="bt-brand-sub">Document Integrity</div>
-            </div>
-            """,
+            '<div class="bt-topnav-brand">'
+            '<span class="bt-topnav-icon">🛡</span>'
+            '<div><div class="bt-topnav-name">BaseTruth</div>'
+            '<div class="bt-topnav-sub">Document Integrity</div></div>'
+            '</div>',
             unsafe_allow_html=True,
         )
-        st.divider()
-
-        current_page = st.session_state.get("page", "dashboard")
-        for label, key in _PAGES.items():
+    for col, (label, key) in zip(r1_cols, row1):
+        with col:
             if key == "logs":
-                # st.link_button is a native Streamlit component (available
-                # since Streamlit 1.24) that renders identically to st.button
-                # but opens a URL instead of re-running the app.  Using it
-                # means no custom HTML/CSS is needed and alignment is perfect.
+                # link_button opens the URL which re-reads query params.
                 st.link_button(label, "/?page=logs", use_container_width=True)
                 continue
-
             is_active = current_page == key
-            btn_type = "primary" if is_active else "secondary"
-            if st.button(label, key=f"nav_{key}", use_container_width=True, type=btn_type):
-                if key != current_page and _is_page_dirty(current_page):
-                    # Park the destination and let the dialog decide
-                    st.session_state["_nav_pending"] = key
-                else:
-                    st.session_state["page"] = key
-                    st.session_state.pop("_nav_pending", None)
-                st.rerun()
+            if st.button(label, key=f"nav_{key}", use_container_width=True,
+                         type="primary" if is_active else "secondary"):
+                _nav_click(key)
 
-        st.divider()
-        # DB connection status pill
-        if _DB_IMPORTS_OK:
-            _db_up = _db_available_cached()
-            _dot = "🟢" if _db_up else "🔴"
-            _label = "PostgreSQL connected" if _db_up else "DB offline (file mode)"
-            st.markdown(
-                f'<div style="font-size:11px;color:#475569;text-align:center;">'
-                f'{_dot} {_label}</div>',
-                unsafe_allow_html=True,
-            )
+    # Row 2: empty spacer + 7 nav buttons
+    _, *r2_cols = st.columns([2] + [1] * len(row1))
+    for col, (label, key) in zip(r2_cols, row2):
+        with col:
+            if key == "logs":
+                st.link_button(label, "/?page=logs", use_container_width=True)
+                continue
+            is_active = current_page == key
+            if st.button(label, key=f"nav_{key}", use_container_width=True,
+                         type="primary" if is_active else "secondary"):
+                _nav_click(key)
 
-    return str(st.session_state.get("page", "dashboard"))
+    st.divider()
+    return current_page
 
 
 # ---------------------------------------------------------------------------
@@ -3388,18 +3434,22 @@ def _render_index_metrics() -> None:
                        help="Scans flagged high-risk (truth score < 60).")
         try:
             from basetruth.db import db_session
-            from basetruth.db import Case as _Case
+            from basetruth.db import Scan as _Scan
             from sqlalchemy import func as _func
             with db_session() as _s:
-                pending = (
-                    _s.query(_func.count(_Case.id))
-                    .filter(_Case.disposition == "open")
+                high_risk = (
+                    _s.query(_func.count(_Scan.id))
+                    .filter(
+                        _Scan.layered_analysis_json["scan_summary"]["forensic_verdict"].astext.in_(
+                            ["TAMPERED", "LIKELY TAMPERED"]
+                        )
+                    )
                     .scalar() or 0
                 )
-            cols[3].metric("Pending Review", pending,
-                           help="Cases still open — go to Cases to approve or reject.")
+            cols[3].metric("High / Medium Risk", high_risk,
+                           help="Documents flagged as TAMPERED or LIKELY TAMPERED.")
         except Exception:  # noqa: BLE001
-            cols[3].metric("Pending Review", "—")
+            cols[3].metric("High / Medium Risk", "—")
     else:
         # DB offline: show a minimal "offline" notice instead of stale file-system counts
         st.info(
@@ -4361,7 +4411,7 @@ def main() -> None:
         page_title="BaseTruth",
         page_icon="🛡",
         layout="wide",
-        initial_sidebar_state="expanded",
+        initial_sidebar_state="collapsed",
     )
     st.markdown(_CSS, unsafe_allow_html=True)
 
@@ -4385,7 +4435,7 @@ def main() -> None:
         if ok:
             st.session_state["db_init_done"] = True
 
-    page = _sidebar()
+    page = _topnav()
     service = _get_service()
 
     # If a navigation request is pending (user clicked away from a dirty page),
@@ -4403,7 +4453,6 @@ def main() -> None:
     from basetruth.ui.pages.cases import _page_cases as _m_cases  # noqa: PLC0415
     from basetruth.ui.pages.document_intelligence import _page_document_intelligence as _m_records  # noqa: PLC0415
     from basetruth.ui.pages.reports import _page_reports as _m_reports  # noqa: PLC0415
-    from basetruth.ui.pages.layered_analysis import _page_layered_analysis as _m_layered_analysis  # noqa: PLC0415
     from basetruth.ui.pages.datasources import _page_datasources as _m_datasources  # noqa: PLC0415
     from basetruth.ui.pages.logs import _page_logs as _m_logs  # noqa: PLC0415
     from basetruth.ui.pages.database import _page_database as _m_database  # noqa: PLC0415
@@ -4426,8 +4475,6 @@ def main() -> None:
         _m_records()
     elif page == "reports":
         _m_reports(service)
-    elif page == "layered_analysis":
-        _m_layered_analysis(service)
     elif page == "datasources":
         _m_datasources(service)
     elif page == "logs":

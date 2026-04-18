@@ -27,9 +27,6 @@ _DB_TABLE_LABELS: dict[str, str] = {
     "scans": "Scans",
     "document_extractions": "Document Extractions",
     "identity_checks": "Identity Checks",
-    "layered_analysis_entries": "Layered Analysis Entries",
-    "cases": "Cases",
-    "case_notes": "Case Notes",
     "entity_reports": "Entity Reports",
 }
 
@@ -84,33 +81,22 @@ _TABLE_SCHEMA: dict[str, list[tuple[str, str, str]]] = {
         ("details_json", "JSONB", "Full check payload"),
         ("created_at", "TIMESTAMPTZ", "Check timestamp"),
     ],
-    "layered_analysis_entries": [
+    "entity_reports": [
         ("id", "SERIAL", "Primary key"),
-        ("entity_id", "FK → entities.id", "Required — links to applicant"),
-        ("screen_name", "VARCHAR(100)", "Source screen e.g. Identity Verification, Video KYC, Scan Document, Bulk Scan"),
-        ("section_name", "VARCHAR(255)", "Section e.g. Aadhaar, PAN Card, Run Verification, or source filename"),
-        ("details_captured_json", "JSONB", "Structured section payload — all extracted fields and check results"),
-        ("created_at", "TIMESTAMPTZ", "First insert timestamp"),
-        ("updated_at", "TIMESTAMPTZ", "Latest UPSERT timestamp"),
-    ],
-    "cases": [
-        ("id", "SERIAL", "Primary key"),
-        ("case_key", "VARCHAR(50)", "Human-readable case ID e.g. CASE-00042"),
-        ("entity_id", "FK → entities.id", "Linked entity"),
-        ("status", "VARCHAR(30)", "open / in_review / closed"),
-        ("disposition", "VARCHAR(30)", "approved / rejected / pending"),
-        ("priority", "VARCHAR(20)", "low / medium / high / critical"),
-        ("assignee", "VARCHAR(255)", "Assigned reviewer"),
-        ("labels", "TEXT[]", "Tag array for filtering"),
-        ("created_at", "TIMESTAMPTZ", "Case creation timestamp"),
-        ("updated_at", "TIMESTAMPTZ", "Last update timestamp"),
-    ],
-    "case_notes": [
-        ("id", "SERIAL", "Primary key"),
-        ("case_id", "FK → cases.id", "Linked case"),
-        ("author", "VARCHAR(255)", "Note author"),
-        ("text", "TEXT", "Note content"),
-        ("created_at", "TIMESTAMPTZ", "Note timestamp"),
+        ("entity_id", "FK → entities.id (CASCADE)", "Which applicant this report belongs to"),
+        ("report_ref", "VARCHAR(20), UNIQUE", "Human-readable reference e.g. BTR-000001"),
+        ("report_json", "JSONB", "Full cross-document analysis payload"),
+        ("report_minio_key", "VARCHAR(500)", "MinIO object key for the generated PDF"),
+        ("first_level_approval", "VARCHAR(1)", "Y = approved, N = rejected, NULL = pending (initial reviewer)"),
+        ("first_level_approved_by", "VARCHAR(255)", "Who made the 1st-level decision"),
+        ("first_level_approved_at", "TIMESTAMPTZ", "When 1st-level decision was made"),
+        ("first_level_approval_comment", "TEXT", "Optional 1st-level reviewer note"),
+        ("second_level_approval", "VARCHAR(1)", "Y = approved, N = rejected, NULL = pending (senior reviewer)"),
+        ("second_level_approved_by", "VARCHAR(255)", "Who made the 2nd-level decision"),
+        ("second_level_approved_at", "TIMESTAMPTZ", "When 2nd-level decision was made"),
+        ("second_level_approval_comment", "TEXT", "Optional 2nd-level reviewer note"),
+        ("generated_at", "TIMESTAMPTZ", "When the report was first generated"),
+        ("updated_at", "TIMESTAMPTZ", "When the report was last updated"),
     ],
 }
 
@@ -149,7 +135,7 @@ def _page_database() -> None:
             """
 This screen gives you direct visibility into what is stored in the system.
 
-- **PostgreSQL tables** — browse entities, scans, cases, and notes row-by-row.
+- **PostgreSQL tables** — browse entities, scans, document extractions, identity checks, and final reports row-by-row.
 - **MinIO object storage** — list PDF reports and source documents stored in the
   S3-compatible bucket. Files are automatically uploaded here after each scan,
   organised by applicant reference (e.g. `BT-000001/payslip_report.pdf`).
@@ -222,14 +208,25 @@ This screen gives you direct visibility into what is stored in the system.
                 import pandas as pd  # noqa: PLC0415
 
                 def _display_value(value: object) -> object:
+                    import datetime as _dt  # noqa: PLC0415
                     if isinstance(value, bytes):
                         return f"<{len(value)} bytes binary>"
+                    if isinstance(value, _dt.datetime):
+                        # Format as DD/MM/YYYY and HH:MM:SS on separate implicit columns
+                        return value.strftime("%d/%m/%Y %H:%M:%S")
                     if isinstance(value, (dict, list)):
                         try:
                             text = json.dumps(value, ensure_ascii=False)
-                            return text[:300] + "…" if len(text) > 300 else text
+                            return text[:300] + "\u2026" if len(text) > 300 else text
                         except Exception:  # noqa: BLE001
                             return str(value)
+                    # ISO-format timestamp strings (from SQL raw queries) → reformat
+                    if isinstance(value, str) and len(value) >= 19 and "T" in value:
+                        try:
+                            dt = _dt.datetime.fromisoformat(value[:19])
+                            return dt.strftime("%d/%m/%Y %H:%M:%S")
+                        except ValueError:
+                            pass
                     return value
 
                 df = pd.DataFrame([
@@ -341,7 +338,7 @@ This screen gives you direct visibility into what is stored in the system.
 
         with dc1:
             st.markdown("#### 🗄️ Reset PostgreSQL")
-            st.caption("Deletes all entities, scans, cases, and notes.")
+            st.caption("Deletes all entities, scans, document extractions, and identity checks.")
 
             if "db_reset_success" in st.session_state:
                 st.success("✅ Database reset — all tables cleared.")
@@ -412,9 +409,7 @@ This screen gives you direct visibility into what is stored in the system.
             ("Scans", "scans"),
             ("Document Extractions", "document_extractions"),
             ("Identity Checks", "identity_checks"),
-            ("Layered Analysis Entries", "layered_analysis_entries"),
-            ("Cases", "cases"),
-            ("Case Notes", "case_notes"),
+            ("Entity Reports", "entity_reports"),
         ]
 
         # Display one row per table: label | description | confirm input | button

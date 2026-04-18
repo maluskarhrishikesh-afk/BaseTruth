@@ -11,6 +11,7 @@ from basetruth.service import BaseTruthService
 from basetruth.ui.components import (
     _DB_IMPORTS_OK,
     _db_available_cached,
+    _minio_available_cached,
     _page_title,
     get_all_entities_with_scans,
     get_entity_layered_analysis,
@@ -218,10 +219,7 @@ This screen keeps one final report per applicant and nothing else.
                     )
 
             # ── Entity Final Reports ──────────────────────────────────────────
-            # Show any BTR-XXXXXX final verification reports with per-report
-            # JSON download buttons.  These are separate from the consolidated
-            # audit PDF and only exist after the analyst clicks
-            # "Generate Final Report" on the Document Intelligence screen.
+            # Reports generated from the Document Intelligence screen.
             entity_reports = get_entity_reports(entity_ref)
             if entity_reports:
                 st.divider()
@@ -231,26 +229,24 @@ This screen keeps one final report per applicant and nothing else.
                     first_ap   = rpt.get("first_level_approval")
                     second_ap  = rpt.get("second_level_approval")
                     overall    = (rpt.get("report_json") or {}).get("overall_verdict", "?")
-                    gen_at     = rpt.get("generated_at", "")[:10]
+                    gen_at     = str(rpt.get("generated_at", ""))[:10]
+                    ov_icon    = "✅" if overall == "PASS" else "❌" if overall == "FAIL" else "❓"
+
+                    rc1, rc2, rc3 = st.columns([3, 1, 1])
 
                     if second_ap == "Y":
-                        badge = "🟢 Fully Approved"
+                        status_str = "🟢 Fully Approved"
                     elif second_ap == "N" or first_ap == "N":
-                        badge = "🔴 Rejected"
-                    elif first_ap == "Y":
-                        badge = "🟡 Pending 2nd-Level"
+                        status_str = "🔴 Rejected"
                     else:
-                        badge = "⏳ Pending Review"
+                        pending_level = "2nd-level" if first_ap == "Y" else "1st-level"
+                        status_str = f"⏳ Awaiting {pending_level} approval"
 
-                    ov_icon = "✅" if overall == "PASS" else "❌" if overall == "FAIL" else "❓"
-
-                    rc1, rc2 = st.columns([3, 1])
                     rc1.markdown(
                         f"**{report_ref}** &nbsp; {ov_icon} `{overall}` &nbsp; "
-                        f"{badge} &nbsp; _{gen_at}_"
+                        f"{status_str} &nbsp; _{gen_at}_"
                     )
-                    # Serialise the report payload to a pretty JSON string and
-                    # offer it as a direct download.
+
                     json_bytes = json.dumps(
                         rpt.get("report_json") or {}, indent=2, ensure_ascii=False
                     ).encode("utf-8")
@@ -262,3 +258,24 @@ This screen keeps one final report per applicant and nothing else.
                         key=f"reports_dl_rpt_{report_ref}",
                         use_container_width=True,
                     )
+
+                    # PDF download — fetch from MinIO using the stored key.
+                    minio_key = rpt.get("report_minio_key", "")
+                    if minio_key and _minio_available_cached():
+                        try:
+                            pdf_data = minio_get_object(minio_key)
+                            if pdf_data:
+                                rc3.download_button(
+                                    "⬇ PDF",
+                                    data=pdf_data,
+                                    file_name=f"{report_ref}.pdf",
+                                    mime="application/pdf",
+                                    key=f"reports_dl_pdf_{report_ref}",
+                                    use_container_width=True,
+                                )
+                            else:
+                                rc3.caption("PDF N/A")
+                        except Exception:
+                            rc3.caption("PDF error")
+                    else:
+                        rc3.caption("PDF N/A")

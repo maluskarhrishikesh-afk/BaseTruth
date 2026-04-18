@@ -203,20 +203,36 @@ def _safe(text: str) -> str:
     """Replace characters outside Latin-1 with safe ASCII equivalents.
 
     fpdf2 core fonts (Helvetica, Courier, Times) only support Latin-1.  Smart
-    quotes, em/en dashes, ellipses etc. cause a FPDFUnicodeEncodingException
-    unless a Unicode font is registered.  This helper lets us avoid that
-    dependency while keeping output readable.
+    quotes, em/en dashes, ellipses, and status emoji cause a
+    FPDFUnicodeEncodingException unless a Unicode font is registered.
+    This helper maps all common non-Latin-1 characters to readable ASCII so the
+    output stays clean without requiring an external font file.
     """
     return (
         text
-        .replace("\u2014", "--")    # em dash  ->  --
-        .replace("\u2013", "-")     # en dash  ->  -
-        .replace("\u2018", "'")     # left single quote  ->  '
-        .replace("\u2019", "'")     # right single quote / apostrophe ->  '
-        .replace("\u201c", '"')     # left double quote  ->  "
-        .replace("\u201d", '"')     # right double quote ->  "
-        .replace("\u2026", "...")   # ellipsis
-        .replace("\u00a0", " ")     # non-breaking space
+        # ── Status emoji (used throughout the Gemma4 narrative) ──────────────
+        .replace("\u2705", "[PASS]")   # ✅  CHECK MARK BUTTON
+        .replace("\u274c", "[FAIL]")   # ❌  CROSS MARK
+        .replace("\u26a0", "[WARN]")   # ⚠   WARNING SIGN
+        .replace("\ufe0f", "")         # variation selector (used after ⚠️)
+        .replace("\u2714", "[OK]")     # ✔   HEAVY CHECK MARK
+        .replace("\u2716", "[X]")      # ✖   HEAVY MULTIPLICATION MARK
+        .replace("\u2713", "[OK]")     # ✓   CHECK MARK
+        .replace("\u2717", "[X]")      # ✗   BALLOT X
+        # ── Bullet / arrow symbols ────────────────────────────────────────────
+        .replace("\u2022", "-")        # •   BULLET -> hyphen (Latin-1 safe)
+        .replace("\u2192", "->")       # →   RIGHT ARROW
+        .replace("\u2190", "<-")       # ←   LEFT ARROW
+        .replace("\u25ba", ">")        # ►   BLACK RIGHT-POINTING POINTER
+        # ── Typographic punctuation ───────────────────────────────────────────
+        .replace("\u2014", "--")       # em dash
+        .replace("\u2013", "-")        # en dash
+        .replace("\u2018", "'")        # left single quote
+        .replace("\u2019", "'")        # right single quote / apostrophe
+        .replace("\u201c", '"')        # left double quote
+        .replace("\u201d", '"')        # right double quote
+        .replace("\u2026", "...")      # ellipsis
+        .replace("\u00a0", " ")        # non-breaking space
         .encode("latin-1", errors="replace").decode("latin-1")
     )
 
@@ -1834,6 +1850,498 @@ def render_layered_analysis_pdf(
         wrapmode="CHAR",
     )
 
+    buf = io.BytesIO()
+    pdf.output(buf)
+    return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Markdown table renderer for the Gemma4 narrative block
+# ---------------------------------------------------------------------------
+
+def _is_separator_row(cells: list[str]) -> bool:
+    """Return True if every cell in the row is a markdown separator (e.g. :---, ---).
+
+    Separator rows divide the header from the data rows in a Markdown table.
+    They consist purely of hyphens, colons, and spaces — no real content.
+    """
+    import re as _re
+    return all(_re.fullmatch(r":?-+:?", c) for c in cells if c)
+
+
+def _render_narrative_table(pdf: "_ReportPDF", table_lines: list[str], page_w: float) -> None:
+    """Render a block of consecutive Markdown table lines as a proper PDF table.
+
+    Called from the narrative rendering loop whenever we encounter consecutive
+    lines that all start with `|`.  Produces a dark-blue header row and
+    alternating light/white data rows so the table looks identical to the
+    appendix tables elsewhere in the report.
+
+    Parameters
+    ----------
+    pdf:         The active _ReportPDF instance (already positioned at the right Y).
+    table_lines: Every raw Markdown table line in the block (including separator rows).
+    page_w:      Usable page width in mm (pdf.w - left_margin - right_margin).
+    """
+    # Parse each row into a list of cell strings; skip pure-separator rows.
+    parsed: list[list[str]] = []
+    for raw in table_lines:
+        cells = [c.strip() for c in raw.strip("|").split("|")]
+        if _is_separator_row(cells):
+            continue
+        parsed.append(cells)
+
+    if not parsed:
+        return
+
+    n_cols = max(len(row) for row in parsed)
+    if n_cols == 0:
+        return
+
+    # Normalise: pad every row to the same number of columns.
+    for row in parsed:
+        while len(row) < n_cols:
+            row.append("")
+
+    # Distribute column widths evenly across the available page width.
+    col_w = page_w / n_cols
+    row_h = 5.5
+
+    # ── Header row (dark blue fill, white text) ───────────────────────────
+    pdf.set_fill_color(*_C_DARK_BLUE)
+    pdf.set_text_color(*_C_TEXT_LIGHT)
+    pdf.set_font("Helvetica", "B", 8)
+    for j, cell in enumerate(parsed[0]):
+        # Last column takes remaining width to avoid rounding gaps.
+        w = col_w if j < n_cols - 1 else page_w - col_w * (n_cols - 1)
+        pdf.cell(w, row_h, _safe(f"  {cell}"), fill=True, border=0)
+    pdf.ln(row_h)
+
+    # ── Data rows (alternating light-gray / white) ────────────────────────
+    pdf.set_text_color(*_C_TEXT_DARK)
+    for row_idx, row in enumerate(parsed[1:], start=0):
+        bg = _C_LIGHT_GRAY if row_idx % 2 == 0 else _C_WHITE
+        pdf.set_fill_color(*bg)
+
+        # Find the tallest cell in this row to set consistent height.
+        pdf.set_font("Helvetica", "", 8)
+        for j, cell in enumerate(row):
+            w = col_w if j < n_cols - 1 else page_w - col_w * (n_cols - 1)
+            # Use cell() for single-line content (most table cells are short).
+            # Truncate to 60 chars so very long cells don't overflow.
+            text = _safe(f"  {cell[:60]}")
+            pdf.cell(w, row_h, text, fill=True, border=0)
+        pdf.ln(row_h)
+
+    pdf.ln(2)
+
+
+# ---------------------------------------------------------------------------
+# Entity final-verification report PDF
+# ---------------------------------------------------------------------------
+
+def render_entity_report_pdf(
+    report_json: Dict[str, Any],
+    report_ref: str = "",
+    *,
+    photo_bytes: Optional[bytes] = None,
+) -> bytes:
+    """Render the cross-document final verification report as an A4 PDF.
+
+    Takes the enriched dict produced by build_final_report_json() (stored in
+    entity_reports.report_json) and produces a professionally laid-out PDF using
+    the same _ReportPDF class, colour palette, and typography as render_scan_report_pdf().
+    The PDF is stored in MinIO and served to reviewers on the Cases screen so they
+    can read the full analysis before approving or rejecting the report.
+
+    Parameters
+    ----------
+    report_json:
+        The dict from entity_reports.report_json.
+    report_ref:
+        The human-readable BTR-XXXXXX report reference for the header.
+    photo_bytes:
+        Optional JPEG/PNG bytes of the candidate's portrait photo.
+        When provided, the photo is embedded in the Identity section of the PDF.
+
+    Sections (in order):
+      1. Header bar — 'BaseTruth -- Final Verification Report'
+      2. Candidate photo (if available) + identity table
+      3. Overall verdict box — green PASS or red FAIL
+      4. AI Verification Narrative (Gemma4 output or fallback)
+      5. Cross-document consistency checks — 6 rows with traffic-light badges
+      6. Document inventory — one row per scanned document with forensic verdict
+      7. Per-document evidence — extracted identity fields per document
+      8. Forensic summary — status and detail string
+      9. Standard footer — disclaimer + page number (from _ReportPDF.footer())
+    """
+    entity_ref      = report_json.get("entity_ref", "")
+    entity_name     = report_json.get("entity_name", "")
+    overall         = report_json.get("overall_verdict", "")
+    docs_analysed   = report_json.get("documents_analysed", 0)
+    checks          = report_json.get("checks", {}) or {}
+    evidence        = report_json.get("per_document_evidence", []) or []
+    entity_summary  = report_json.get("entity_summary") or {}
+    gemma_narrative = report_json.get("gemma_narrative") or ""
+    gemma_source    = report_json.get("gemma_narrative_source") or ""
+    generated_at    = datetime.now(timezone.utc).strftime("%d %b %Y %H:%M UTC")
+
+    # Choose the verdict box colour and text based on overall outcome.
+    if overall == "PASS":
+        v_title  = "OVERALL VERDICT: PASS"
+        v_body   = (
+            "The cross-document analysis found no significant inconsistencies. "
+            "Identity fields are consistent across all documents. "
+            "A standard manual review is still recommended before approval."
+        )
+        v_colour = _C_PASS_GREEN
+    else:
+        v_title  = "OVERALL VERDICT: FAIL"
+        v_body   = (
+            "The cross-document analysis found one or more inconsistencies. "
+            "Please review the findings below carefully before making a decision."
+        )
+        v_colour = _C_FAIL_RED
+
+    pdf = _ReportPDF(orientation="P", unit="mm", format="A4")
+    pdf.set_margins(left=10, top=5, right=10)
+    pdf.set_auto_page_break(auto=True, margin=18)
+    pdf.add_page()
+    pdf.set_text_color(*_C_TEXT_DARK)
+
+    # ── 1. Header bar ────────────────────────────────────────────────────────
+    # Override the generic header text used by render_scan_report_pdf.
+    pdf.set_fill_color(*_C_DARK_BLUE)
+    pdf.rect(0, 0, 210, 18, "F")
+    pdf.set_y(3)
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.set_text_color(*_C_TEXT_LIGHT)
+    header_text = f"BaseTruth -- Final Verification Report  {report_ref}".strip()
+    pdf.cell(0, 12, _safe(header_text), align="C")
+    pdf.set_text_color(*_C_TEXT_DARK)
+    pdf.ln(20)
+
+    # ── 2. Candidate photo + applicant identity table ──────────────────────────
+    # If a portrait photo was provided, render it on the left with the identity
+    # fields table on the right.  If no photo, render the table full-width.
+    pdf.section_title("Applicant information")
+
+    _photo_w = 32  # photo column width in mm
+    _photo_h = 40  # photo column height in mm (portrait aspect ratio)
+    _gap     = 5   # gap between photo and table
+    _table_x = pdf.l_margin + _photo_w + _gap  # x-start of the identity table
+
+    if photo_bytes:
+        # Save the current Y position so the table starts at the same height as the photo.
+        _start_y = pdf.get_y()
+        # Embed the photo image — fpdf2 accepts a BytesIO stream.
+        try:
+            _img_stream = io.BytesIO(photo_bytes)
+            pdf.image(_img_stream, x=pdf.l_margin, y=_start_y, w=_photo_w, h=_photo_h, keep_aspect_ratio=True)
+        except Exception as _img_err:
+            # If image embedding fails (unsupported format, corrupt data, etc.),
+            # draw a placeholder box instead so layout is not broken.
+            pdf.set_fill_color(*_C_LIGHT_GRAY)
+            pdf.rect(pdf.l_margin, _start_y, _photo_w, _photo_h, "F")
+            pdf.set_font("Helvetica", "I", 7)
+            pdf.set_xy(pdf.l_margin + 2, _start_y + _photo_h / 2 - 3)
+            pdf.cell(_photo_w - 4, 5, _safe("Photo unavailable"), align="C")
+
+        # Position the cursor at the right of the photo for the identity table.
+        pdf.set_xy(_table_x, _start_y)
+        _info_w = pdf.w - _table_x - pdf.r_margin   # remaining width for the table
+
+        def _photo_info_row(label: str, value: str) -> None:
+            """Render a label-value row aligned to the right of the photo."""
+            _row_h = 5.5
+            pdf.set_x(_table_x)
+            pdf.set_font("Helvetica", "B", 8)
+            pdf.cell(28, _row_h, _safe(label))
+            pdf.set_font("Helvetica", "", 8)
+            pdf.cell(_info_w - 28, _row_h, _safe(value), ln=True)
+
+        _photo_info_row("Entity ref:",  _safe(entity_ref or "—"))
+        _photo_info_row("Full name:",   _safe(entity_summary.get("full_name") or entity_name or "—"))
+        _photo_info_row("Date of birth:", _safe(entity_summary.get("dob") or "—"))
+        _photo_info_row("PAN:",         _safe(entity_summary.get("pan_number") or "—"))
+        _photo_info_row("Aadhaar:",     _safe(entity_summary.get("aadhaar_number") or "—"))
+        _photo_info_row("Address:",     _safe(str(entity_summary.get("address") or "—")[:60]))
+        _photo_info_row("Report ref:",  _safe(report_ref or "—"))
+        _photo_info_row("Generated:",   _safe(generated_at))
+        _photo_info_row("Documents:",   str(docs_analysed))
+
+        # Move below the photo before continuing with the next section.
+        _bottom_of_photo = _start_y + _photo_h + 3
+        if pdf.get_y() < _bottom_of_photo:
+            pdf.set_y(_bottom_of_photo)
+
+    else:
+        # No photo — render the identity table full-width.
+        pdf.info_row("Entity ref:",  _safe(entity_ref or "—"))
+        pdf.info_row("Full name:",   _safe(entity_summary.get("full_name") or entity_name or "—"))
+        pdf.info_row("Date of birth:", _safe(entity_summary.get("dob") or "—"))
+        pdf.info_row("PAN:",         _safe(entity_summary.get("pan_number") or "—"))
+        pdf.info_row("Aadhaar:",     _safe(entity_summary.get("aadhaar_number") or "—"))
+        pdf.info_row("Address:",     _safe(str(entity_summary.get("address") or "—")[:80]))
+        pdf.info_row("Report ref:",  _safe(report_ref or "—"))
+        pdf.info_row("Generated:",   _safe(generated_at))
+        pdf.info_row("Documents:",   str(docs_analysed))
+
+    # ── 3. Overall verdict box ────────────────────────────────────────────────
+    pdf.verdict_box(v_title, v_body, v_colour)
+
+    # ── 4. AI Verification Narrative (main report body) ──────────────────────
+    # The Gemma4 narrative contains the full 10-section report matching the
+    # ChatGPT sample format.  We use an index-based loop so we can collect
+    # consecutive Markdown table lines into a single block and render them as
+    # a proper PDF table (with header + alternating rows) rather than raw text.
+    if gemma_narrative:
+        pdf.section_title(f"Verification Report  [{_safe(gemma_source)}]")
+        page_w = pdf.w - pdf.l_margin - pdf.r_margin
+
+        pdf.set_text_color(*_C_TEXT_DARK)
+        all_lines = gemma_narrative.splitlines()
+        i = 0
+        while i < len(all_lines):
+            raw_line = all_lines[i]
+            line = raw_line.strip()
+
+            # ── Empty line → small vertical gap ──────────────────────────────
+            if not line:
+                pdf.ln(2)
+                i += 1
+                continue
+
+            # ── Markdown table: collect ALL consecutive | lines into one block ──
+            # We grab them all at once so _render_narrative_table() can draw
+            # a proper header + data row structure rather than pipe-separated text.
+            if line.startswith("|"):
+                table_block: list[str] = []
+                while i < len(all_lines) and all_lines[i].strip().startswith("|"):
+                    table_block.append(all_lines[i].strip())
+                    i += 1
+                _render_narrative_table(pdf, table_block, page_w)
+                continue  # i already advanced inside the while above
+
+            # ── ## Top-level section heading (e.g. "## 1. EXECUTIVE SUMMARY") ──
+            if line.startswith("## "):
+                pdf.ln(3)
+                pdf.set_font("Helvetica", "B", 10)
+                pdf.set_text_color(*_C_DARK_BLUE)
+                pdf.set_x(pdf.l_margin)
+                pdf.multi_cell(page_w, 6, _safe(line.lstrip("#").strip()))
+                pdf.set_text_color(*_C_TEXT_DARK)
+
+            # ── ### Sub-section heading (e.g. "### A. Identity Validation") ──
+            elif line.startswith("### "):
+                pdf.ln(1)
+                pdf.set_font("Helvetica", "B", 9)
+                pdf.set_text_color(*_C_DARK_BLUE)
+                pdf.set_x(pdf.l_margin + 3)
+                pdf.multi_cell(page_w - 3, 5.5, _safe(line.lstrip("#").strip()))
+                pdf.set_text_color(*_C_TEXT_DARK)
+
+            # ── Bullet point (- or *) ─────────────────────────────────────────
+            elif line.startswith("- ") or line.startswith("* "):
+                pdf.set_font("Helvetica", "", 8)
+                pdf.set_x(pdf.l_margin + 6)
+                # Use ASCII hyphen bullet (• is outside Latin-1 and _safe maps it to -)
+                pdf.multi_cell(page_w - 6, 5, _safe("- " + line[2:].strip()))
+
+            # ── Normal body paragraph ─────────────────────────────────────────
+            else:
+                pdf.set_font("Helvetica", "", 8)
+                pdf.set_x(pdf.l_margin)
+                pdf.multi_cell(page_w, 5, _safe(line))
+
+            i += 1
+
+        pdf.ln(4)
+
+    # ── 5. Supporting Details — Consistency checks ────────────────────────────
+    pdf.section_title("Appendix A — Cross-Document Consistency Checks")
+
+    col_w_check  = 40
+    col_w_status = 30
+    col_w_detail = 110
+    row_h        = 6.5
+
+    pdf.set_fill_color(*_C_DARK_BLUE)
+    pdf.set_text_color(*_C_TEXT_LIGHT)
+    pdf.set_font("Helvetica", "B", 8)
+    pdf.cell(col_w_check,  row_h, "  Check",   fill=True, border=0)
+    pdf.cell(col_w_status, row_h, "Status",    fill=True, border=0, align="C")
+    pdf.cell(col_w_detail, row_h, "  Finding", fill=True, border=0)
+    pdf.ln(row_h)
+
+    check_order = ["name", "pan", "aadhaar", "address", "salary", "forensics"]
+    for i, check_name in enumerate(check_order):
+        chk    = checks.get(check_name, {}) or {}
+        status = chk.get("status", "—")
+        detail = chk.get("detail", "—")
+
+        bg = _C_LIGHT_GRAY if i % 2 == 0 else _C_WHITE
+        pdf.set_fill_color(*bg)
+        pdf.set_text_color(*_C_TEXT_DARK)
+        pdf.set_font("Helvetica", "B", 8)
+        pdf.cell(col_w_check, row_h, _safe(f"  {check_name.capitalize()}"), fill=True, border=0)
+
+        if status in ("PASS", "CLEAR"):
+            badge_colour = _C_PASS_GREEN
+        elif status == "SKIP":
+            badge_colour = (120, 120, 120)
+        else:
+            badge_colour = _C_FAIL_RED
+
+        pdf.set_fill_color(*badge_colour)
+        pdf.set_text_color(*_C_TEXT_LIGHT)
+        pdf.set_font("Helvetica", "B", 7)
+        pdf.cell(col_w_status, row_h, _safe(f"  {status}  "), fill=True, border=0, align="C")
+
+        pdf.set_fill_color(*bg)
+        pdf.set_text_color(*_C_TEXT_DARK)
+        pdf.set_font("Helvetica", "", 8)
+        pdf.cell(col_w_detail, row_h, _safe(f"  {str(detail)[:90]}"), fill=True, border=0)
+        pdf.ln(row_h)
+
+    pdf.set_draw_color(*_C_MID_GRAY)
+    pdf.set_line_width(0.3)
+    pdf.line(pdf.get_x(), pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(3)
+
+    # ── 6. Supporting Details — Document inventory ────────────────────────────
+    pdf.section_title("Appendix B — Document Inventory")
+
+    col_n   = 8
+    col_fn  = 75
+    col_dt  = 45
+    col_fv  = 35
+    col_sc  = 17
+
+    pdf.set_fill_color(*_C_DARK_BLUE)
+    pdf.set_text_color(*_C_TEXT_LIGHT)
+    pdf.set_font("Helvetica", "B", 8)
+    pdf.cell(col_n,  row_h, " #",      fill=True, border=0)
+    pdf.cell(col_fn, row_h, "  File",  fill=True, border=0)
+    pdf.cell(col_dt, row_h, "  Type",  fill=True, border=0)
+    pdf.cell(col_fv, row_h, "Verdict", fill=True, border=0, align="C")
+    pdf.cell(col_sc, row_h, "Score",   fill=True, border=0, align="C")
+    pdf.ln(row_h)
+
+    for idx, ev in enumerate(evidence, start=1):
+        fname    = _safe(str(ev.get("file_name", "—"))[:50])
+        doc_type = _safe((ev.get("document_type") or "unknown").replace("_", " ").title()[:30])
+        fv       = str(ev.get("forensic_verdict", "") or "")
+        score    = ev.get("forgery_score")
+
+        if fv == "ORIGINAL":
+            fv_colour = _C_PASS_GREEN
+        elif "TAMPERED" in fv:
+            fv_colour = _C_FAIL_RED
+        elif fv in ("UNCERTAIN",) or "LIKELY" in fv:
+            fv_colour = _C_WARN_AMBER
+        else:
+            fv_colour = (120, 120, 120)
+
+        score_str = f"{score:.1f}" if isinstance(score, (int, float)) else "—"
+        bg = _C_LIGHT_GRAY if idx % 2 == 1 else _C_WHITE
+
+        pdf.set_fill_color(*bg)
+        pdf.set_text_color(*_C_TEXT_DARK)
+        pdf.set_font("Helvetica", "", 8)
+        pdf.cell(col_n,  row_h, f" {idx}",     fill=True, border=0)
+        pdf.cell(col_fn, row_h, f"  {fname}",  fill=True, border=0)
+        pdf.cell(col_dt, row_h, f"  {doc_type}", fill=True, border=0)
+
+        pdf.set_fill_color(*fv_colour)
+        pdf.set_text_color(*_C_TEXT_LIGHT)
+        pdf.set_font("Helvetica", "B", 7)
+        pdf.cell(col_fv, row_h, _safe(fv or "—"), fill=True, border=0, align="C")
+
+        pdf.set_fill_color(*bg)
+        pdf.set_text_color(*_C_TEXT_DARK)
+        pdf.set_font("Helvetica", "", 8)
+        pdf.cell(col_sc, row_h, _safe(score_str), fill=True, border=0, align="C")
+        pdf.ln(row_h)
+
+    pdf.set_draw_color(*_C_MID_GRAY)
+    pdf.set_line_width(0.3)
+    pdf.line(pdf.get_x(), pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(3)
+
+    # ── 7. Per-document evidence ──────────────────────────────────────────────
+    pdf.section_title("Appendix C — Per-Document Evidence")
+    pdf.set_font("Helvetica", "", 8)
+    pdf.set_text_color(80, 80, 80)
+    page_w = pdf.w - pdf.l_margin - pdf.r_margin
+    pdf.set_x(pdf.l_margin)
+    pdf.multi_cell(
+        page_w, 5,
+        _safe(
+            "Identity fields extracted from each document. "
+            "These values were used in the consistency checks above."
+        ),
+    )
+    pdf.set_text_color(*_C_TEXT_DARK)
+    pdf.ln(2)
+
+    for idx, ev in enumerate(evidence, start=1):
+        fname    = ev.get("file_name", "—")
+        doc_type = (ev.get("document_type") or "unknown").replace("_", " ").title()
+
+        pdf.set_font("Helvetica", "B", 8)
+        pdf.set_text_color(*_C_DARK_BLUE)
+        pdf.set_x(pdf.l_margin)
+        pdf.cell(0, 6, _safe(f"{idx}. {fname}  ({doc_type})"), ln=True)
+        pdf.set_text_color(*_C_TEXT_DARK)
+
+        field_map = [
+            ("Name",           ev.get("name")),
+            ("PAN",            ev.get("pan")),
+            ("Aadhaar",        ev.get("aadhaar")),
+            ("Address",        ev.get("address")),
+            ("Salary (slip)",  ev.get("salary_payslip")),
+            ("Salary (offer)", ev.get("salary_offer")),
+        ]
+        has_any = any(v for _, v in field_map)
+        if has_any:
+            for field_label, val in field_map:
+                if val:
+                    pdf.set_font("Helvetica", "", 8)
+                    pdf.set_x(pdf.l_margin + 5)
+                    pdf.cell(0, 5, _safe(f"{field_label}: {val}"), ln=True)
+        else:
+            pdf.set_font("Helvetica", "I", 8)
+            pdf.set_text_color(120, 120, 120)
+            pdf.set_x(pdf.l_margin + 5)
+            pdf.cell(0, 5, "No identity fields extracted.", ln=True)
+            pdf.set_text_color(*_C_TEXT_DARK)
+        pdf.ln(1)
+
+    # ── 8. Forensic summary ───────────────────────────────────────────────────
+    forensic_chk    = checks.get("forensics", {}) or {}
+    forensic_status = forensic_chk.get("status", "—")
+    forensic_detail = forensic_chk.get("detail", "—")
+
+    if forensic_status in ("TAMPERED", "FAIL", "MISMATCH"):
+        f_colour = _C_FAIL_RED
+    elif forensic_status == "CLEAR":
+        f_colour = _C_PASS_GREEN
+    else:
+        f_colour = _C_WARN_AMBER
+
+    pdf.section_title("Forensic Overview")
+    pdf.set_font("Helvetica", "B", 9)
+    pdf.set_text_color(*f_colour)
+    pdf.set_x(pdf.l_margin)
+    pdf.cell(0, 6, _safe(f"Forensic status: {forensic_status}"), ln=True)
+    pdf.set_text_color(*_C_TEXT_DARK)
+    pdf.set_font("Helvetica", "", 8)
+    pdf.set_x(pdf.l_margin)
+    pdf.multi_cell(pdf.w - pdf.l_margin - pdf.r_margin, 5, _safe(str(forensic_detail)))
+    pdf.ln(2)
+
+    # ── Output ───────────────────────────────────────────────────────────────
     buf = io.BytesIO()
     pdf.output(buf)
     return buf.getvalue()

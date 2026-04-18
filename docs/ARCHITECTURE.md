@@ -251,10 +251,8 @@ and local runs.
 | `entities` | One row per verified person/organisation; searchable by name, PAN, Aadhaar, email, phone |
 | `scans` | One row per document scan; stores `report_json` (JSONB) + `pdf_report` (LargeBinary) + `layered_analysis_json` (JSONB, 11-layer forensics) + a **two-level approval workflow** (`first_level_approval` / `second_level_approval`, each `Y`/`N`/NULL) |
 | `document_extractions` | One row per document extraction; stores typed extracted fields (salary, marks, name, UID, etc.); `scan_id` is nullable (NULL for identity_verification rows); `file_name` stores the uploaded filename and is the per-entity UPSERT key; `source_screen` identifies which screen created the row (`scan_document`, `bulk_scan`, `identity_verification`). For bulk scans, the row is **always** written on save — deterministic OCR/layout parsers now run first for layout-heavy documents such as marksheets, while Gemma4 is kept as a normalisation/fallback layer when the OCR text is incomplete or the layout family is unknown. A forensics-summary stub (`_extraction_unavailable: true`) is still used when Ollama is offline and no deterministic parser can produce structured data. The `_has_gemma4_data` gate uses `bool(_bulk_ext)` not a key-count heuristic, so even all-null Gemma4 results are saved correctly. For identity_verification PAN card rows, `extracted_data` also includes `pan_signature_minio_key` (the MinIO object key for the cropped signature image) when signature extraction succeeds. |
-| `layered_analysis_entries` | One upserted row per `(entity, screen, section)` explainability snapshot; powers the Layered Analysis screen and final report |
+| `identity_checks` | One row per face-match / KYC / liveness check |
 | `entity_reports` | One row per entity-level cross-document verification report; `report_ref` = `BTR-XXXXXX`; stores the full analysis JSON (name / address / PAN / Aadhaar / salary / forensics consistency checks) plus same two-level approval workflow as `scans`; created when analyst clicks "Generate Final Report" on Document Intelligence |
-| `cases` | Case-management workflow record linked to an entity |
-| `case_notes` | Timestamped analyst notes on a case |
 
 **Local development fallback:**
 - When BaseTruth is started outside Docker and `DATABASE_URL` is not set in the shell, `src/basetruth/db.py` falls back to the Docker Compose PostgreSQL instance on `localhost:5432` using the default local credentials from `docker-compose.yml`.
@@ -265,12 +263,6 @@ and local runs.
 - `approved = 'rejected'` → Rejected (excluded from all downstream screens)
 
 The application degrades gracefully to file-only mode when `DATABASE_URL` is not set.
-
-`entities` also stores the Layered Analysis final-report state:
-- `layered_report_generated` — boolean gate that prevents duplicate report generation for unchanged evidence
-- `layered_report_generated_at` — timestamp of the latest generated final report
-- `layered_analysis_updated_at` — timestamp of the latest upserted layered-analysis evidence
-- `layered_report_minio_key` — object-storage key for the current final report
 
 ### 9. REST API Layer (`src/basetruth/api.py`)
 
@@ -317,9 +309,7 @@ Each sidebar entry maps a display label → session-state page key.  The label e
 ### Explainability split
 
 - Primary workflow pages such as Identity Verification are intentionally kept concise for operators.
-- Explainability-heavy evidence such as extracted fields, deterministic cross-check outcomes, model metrics, and raw saved payloads are surfaced on `pages/layered_analysis.py`.
-- The Layered Analysis page reads from `layered_analysis_entries`, not directly from `scans` or `identity_checks`.
-- Save flows upsert section-level evidence into `layered_analysis_entries` and reset the entity-level final-report flag whenever fresh evidence arrives.
+- Explainability evidence (extracted fields, forensic check outcomes, metrics) is embedded in the `scans.layered_analysis_json` JSONB column and surfaced through the Scans and Document Intelligence screens.
 
 ### Performance: cached availability checks
 

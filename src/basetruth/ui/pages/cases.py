@@ -12,10 +12,12 @@ from basetruth.ui.components import (
     _badge,
     _page_title,
     _db_available_cached,
+    _minio_available_cached,
     first_level_approve_entity_report,
     first_level_reject_entity_report,
     list_all_entity_reports,
     list_cases_from_db,
+    minio_get_object,
     second_level_approve_entity_report,
     second_level_reject_entity_report,
 )
@@ -234,13 +236,151 @@ def _render_case_card(
                     )
 
 
+def _render_report_expander(rpt: Dict[str, Any], *, key_prefix: str = "") -> None:
+    """Render a single entity report inside an st.expander.
+
+    Shows a PDF download button BEFORE the approve/reject buttons so the reviewer
+    can read the full report before making a decision, mirroring the Scans screen.
+    Also shows the cross-document checks summary and the two-level approval workflow.
+    """
+    report_ref   = rpt.get("report_ref", "?")
+    entity_ref   = rpt.get("entity_ref", "")
+    entity_name  = rpt.get("entity_name", entity_ref)
+    first_ap     = rpt.get("first_level_approval")
+    second_ap    = rpt.get("second_level_approval")
+    overall      = (rpt.get("report_json") or {}).get("overall_verdict", "?")
+    gen_at       = rpt.get("generated_at", "")[:10]
+    minio_key    = rpt.get("report_minio_key", "")
+
+    if second_ap == "Y":
+        status_label = "🟢 Fully Approved"
+    elif second_ap == "N" or first_ap == "N":
+        status_label = "🔴 Rejected"
+    elif first_ap == "Y":
+        status_label = "🟡 Awaiting 2nd Review"
+    else:
+        status_label = "⏳ Pending Review"
+
+    ov_icon = "✅" if overall == "PASS" else "❌" if overall == "FAIL" else "❓"
+    header  = (
+        f"{report_ref}  ·  {entity_name} ({entity_ref})  "
+        f"·  {ov_icon} {overall}  ·  {status_label}  ·  {gen_at}"
+    )
+
+    with st.expander(header, expanded=(first_ap is None and second_ap is None)):
+        # ── PDF download button (BEFORE approve/reject buttons) ──────────────
+        # Reviewers can read the full report before making a decision.
+        if minio_key and _minio_available_cached():
+            try:
+                pdf_data = minio_get_object(minio_key)
+                if pdf_data:
+                    st.download_button(
+                        "📥 Download Report PDF",
+                        data=pdf_data,
+                        file_name=f"{report_ref}.pdf",
+                        mime="application/pdf",
+                        key=f"{key_prefix}pdf_{report_ref}",
+                    )
+                else:
+                    st.caption("⚠️ PDF not available in MinIO.")
+            except Exception:
+                st.caption("⚠️ Could not fetch PDF from MinIO.")
+        elif minio_key:
+            st.caption("⚠️ MinIO unavailable — PDF download not available.")
+
+        # ── Checks summary ───────────────────────────────────────────────────
+        checks = (rpt.get("report_json") or {}).get("checks", {})
+        for check_name, chk in checks.items():
+            icon = "✅" if chk["status"] == "PASS" else (
+                   "❌" if chk["status"] in ("MISMATCH", "TAMPERED") else "➖"
+            )
+            st.markdown(f"**{icon} {check_name.capitalize()}** — {chk['detail']}")
+
+        st.divider()
+
+        # ── 1st-Level Approval ────────────────────────────────────────────────
+        if first_ap is None:
+            st.markdown("**1st-Level Review**")
+            l1_by = st.text_input(
+                "Reviewer name", key=f"{key_prefix}l1_by_{report_ref}", placeholder="Your name"
+            )
+            l1_comment = st.text_input(
+                "Comment (optional)", key=f"{key_prefix}l1_cmt_{report_ref}"
+            )
+            l1c1, l1c2, _ = st.columns([1, 1, 3])
+            if l1c1.button(
+                "✅ 1st Approve", key=f"{key_prefix}l1_app_{report_ref}",
+                use_container_width=True, type="primary"
+            ):
+                if first_level_approve_entity_report(report_ref, l1_by, l1_comment):
+                    st.toast(f"✅ {report_ref} — 1st-level approved", icon="✅")
+                    st.rerun()
+                else:
+                    st.error("Could not update approval. Check the database.")
+            if l1c2.button(
+                "❌ 1st Reject", key=f"{key_prefix}l1_rej_{report_ref}",
+                use_container_width=True
+            ):
+                if first_level_reject_entity_report(report_ref, l1_by, l1_comment):
+                    st.toast(f"❌ {report_ref} — 1st-level rejected", icon="❌")
+                    st.rerun()
+                else:
+                    st.error("Could not update approval. Check the database.")
+
+        elif first_ap == "Y" and second_ap is None:
+            st.success(f"✅ 1st-level approved by {rpt.get('first_level_approved_by') or 'unknown'}")
+            st.markdown("**2nd-Level Review**")
+            l2_by = st.text_input(
+                "Senior reviewer name", key=f"{key_prefix}l2_by_{report_ref}", placeholder="Your name"
+            )
+            l2_comment = st.text_input(
+                "Comment (optional)", key=f"{key_prefix}l2_cmt_{report_ref}"
+            )
+            l2c1, l2c2, _ = st.columns([1, 1, 3])
+            if l2c1.button(
+                "✅ 2nd Approve", key=f"{key_prefix}l2_app_{report_ref}",
+                use_container_width=True, type="primary"
+            ):
+                if second_level_approve_entity_report(report_ref, l2_by, l2_comment):
+                    st.toast(f"✅ {report_ref} — fully approved!", icon="✅")
+                    st.rerun()
+                else:
+                    st.error("Could not update approval. Check the database.")
+            if l2c2.button(
+                "❌ 2nd Reject", key=f"{key_prefix}l2_rej_{report_ref}",
+                use_container_width=True
+            ):
+                if second_level_reject_entity_report(report_ref, l2_by, l2_comment):
+                    st.toast(f"❌ {report_ref} — 2nd-level rejected", icon="❌")
+                    st.rerun()
+                else:
+                    st.error("Could not update approval. Check the database.")
+
+        elif first_ap == "N":
+            st.error(
+                f"❌ Rejected at 1st level by {rpt.get('first_level_approved_by') or 'unknown'}  "
+                f"— {rpt.get('first_level_approval_comment') or ''}"
+            )
+        elif second_ap == "Y":
+            st.success("🟢 Fully approved — no further action required.")
+            st.caption(
+                f"1st: {rpt.get('first_level_approved_by') or 'unknown'}  |  "
+                f"2nd: {rpt.get('second_level_approved_by') or 'unknown'}"
+            )
+        elif second_ap == "N":
+            st.error(
+                f"❌ Rejected at 2nd level by {rpt.get('second_level_approved_by') or 'unknown'}  "
+                f"— {rpt.get('second_level_approval_comment') or ''}"
+            )
+
+
 def _page_entity_reports_tab() -> None:
     """Render the Entity Reports approval sub-tab inside the Cases screen.
 
-    Shows all generated final-verification reports (BTR-XXXXXX) and lets
-    analysts run them through the same two-level approval workflow used for
-    individual document scans.  1st-level approve/reject is shown first;
-    2nd-level actions only appear after 1st-level approval.
+    Organises reports into 5 filtered sub-tabs so reviewers can quickly find what
+    needs attention without scrolling through all records.  A PDF download button
+    appears inside each report expander BEFORE the approve/reject buttons, letting
+    reviewers read the full analysis before making a decision.
     """
     reports = list_all_entity_reports()
     if not reports:
@@ -251,124 +391,49 @@ def _page_entity_reports_tab() -> None:
         )
         return
 
-    st.caption(f"{len(reports)} final report(s) across all entities.")
+    # Partition reports into meaningful groups.
+    pending     = [r for r in reports if r.get("first_level_approval") is None]
+    awaiting2   = [r for r in reports if r.get("first_level_approval") == "Y" and r.get("second_level_approval") is None]
+    approved    = [r for r in reports if r.get("second_level_approval") == "Y"]
+    rejected    = [r for r in reports if r.get("first_level_approval") == "N" or r.get("second_level_approval") == "N"]
 
-    for rpt in reports:
-        report_ref   = rpt.get("report_ref", "?")
-        entity_ref   = rpt.get("entity_ref", "")
-        entity_name  = rpt.get("entity_name", entity_ref)
-        first_ap     = rpt.get("first_level_approval")
-        second_ap    = rpt.get("second_level_approval")
-        overall      = (rpt.get("report_json") or {}).get("overall_verdict", "?")
-        gen_at       = rpt.get("generated_at", "")[:10]
+    tab_pend, tab_await, tab_appr, tab_rej, tab_all = st.tabs([
+        f"⏳ Pending ({len(pending)})",
+        f"🔄 Awaiting 2nd ({len(awaiting2)})",
+        f"✅ Approved ({len(approved)})",
+        f"❌ Rejected ({len(rejected)})",
+        f"📋 All ({len(reports)})",
+    ])
 
-        # Build a readable status badge.
-        if second_ap == "Y":
-            status_label = "🟢 Fully Approved"
-        elif second_ap == "N" or first_ap == "N":
-            status_label = "🔴 Rejected"
-        elif first_ap == "Y":
-            status_label = "🟡 1st-Level Approved"
-        else:
-            status_label = "⏳ Pending Review"
+    with tab_pend:
+        if not pending:
+            st.info("No reports pending 1st-level review.")
+        for rpt in pending:
+            _render_report_expander(rpt, key_prefix="pnd_")
 
-        ov_icon = "✅" if overall == "PASS" else "❌" if overall == "FAIL" else "❓"
-        header  = (
-            f"{report_ref}  ·  {entity_name} ({entity_ref})  "
-            f"·  {ov_icon} {overall}  ·  {status_label}  ·  {gen_at}"
-        )
+    with tab_await:
+        if not awaiting2:
+            st.info("No reports awaiting 2nd-level review.")
+        for rpt in awaiting2:
+            _render_report_expander(rpt, key_prefix="aw2_")
 
-        with st.expander(header, expanded=(first_ap is None)):
-            # Checks summary.
-            checks = (rpt.get("report_json") or {}).get("checks", {})
-            for check_name, chk in checks.items():
-                icon = "✅" if chk["status"] == "PASS" else (
-                       "❌" if chk["status"] in ("MISMATCH", "TAMPERED") else "➖"
-                )
-                st.markdown(f"**{icon} {check_name.capitalize()}** — {chk['detail']}")
+    with tab_appr:
+        if not approved:
+            st.info("No fully approved reports yet.")
+        for rpt in approved:
+            _render_report_expander(rpt, key_prefix="apr_")
 
-            st.divider()
+    with tab_rej:
+        if not rejected:
+            st.info("No rejected reports.")
+        for rpt in rejected:
+            _render_report_expander(rpt, key_prefix="rej_")
 
-            # ── 1st-Level Approval ─────────────────────────────────────────
-            if first_ap is None:
-                st.markdown("**1st-Level Review**")
-                l1_by = st.text_input(
-                    "Reviewer name", key=f"l1_by_{report_ref}", placeholder="Your name"
-                )
-                l1_comment = st.text_input(
-                    "Comment (optional)", key=f"l1_cmt_{report_ref}"
-                )
-                l1c1, l1c2, _ = st.columns([1, 1, 3])
-                if l1c1.button(
-                    "✅ 1st Approve", key=f"l1_app_{report_ref}", use_container_width=True, type="primary"
-                ):
-                    result = first_level_approve_entity_report(report_ref, l1_by, l1_comment)
-                    if result:
-                        st.toast(f"✅ {report_ref} — 1st-level approved", icon="✅")
-                        st.rerun()
-                    else:
-                        st.error("Could not update approval. Check the database.")
-                if l1c2.button(
-                    "❌ 1st Reject", key=f"l1_rej_{report_ref}", use_container_width=True
-                ):
-                    result = first_level_reject_entity_report(report_ref, l1_by, l1_comment)
-                    if result:
-                        st.toast(f"❌ {report_ref} — 1st-level rejected", icon="❌")
-                        st.rerun()
-                    else:
-                        st.error("Could not update approval. Check the database.")
-
-            elif first_ap == "Y" and second_ap is None:
-                # 1st-level done; show 2nd-level buttons.
-                st.success(
-                    f"✅ 1st-level approved by "
-                    f"{rpt.get('first_level_approved_by') or 'unknown'}"
-                )
-                st.markdown("**2nd-Level Review**")
-                l2_by = st.text_input(
-                    "Senior reviewer name", key=f"l2_by_{report_ref}", placeholder="Your name"
-                )
-                l2_comment = st.text_input(
-                    "Comment (optional)", key=f"l2_cmt_{report_ref}"
-                )
-                l2c1, l2c2, _ = st.columns([1, 1, 3])
-                if l2c1.button(
-                    "✅ 2nd Approve", key=f"l2_app_{report_ref}", use_container_width=True, type="primary"
-                ):
-                    result = second_level_approve_entity_report(report_ref, l2_by, l2_comment)
-                    if result:
-                        st.toast(f"✅ {report_ref} — fully approved!", icon="✅")
-                        st.rerun()
-                    else:
-                        st.error("Could not update approval. Check the database.")
-                if l2c2.button(
-                    "❌ 2nd Reject", key=f"l2_rej_{report_ref}", use_container_width=True
-                ):
-                    result = second_level_reject_entity_report(report_ref, l2_by, l2_comment)
-                    if result:
-                        st.toast(f"❌ {report_ref} — 2nd-level rejected", icon="❌")
-                        st.rerun()
-                    else:
-                        st.error("Could not update approval. Check the database.")
-
-            elif first_ap == "N":
-                st.error(
-                    f"❌ Rejected at 1st level by "
-                    f"{rpt.get('first_level_approved_by') or 'unknown'}  "
-                    f"— {rpt.get('first_level_approval_comment') or ''}"
-                )
-            elif second_ap == "Y":
-                st.success("🟢 Fully approved — no further action required.")
-                st.caption(
-                    f"1st: {rpt.get('first_level_approved_by') or 'unknown'}  |  "
-                    f"2nd: {rpt.get('second_level_approved_by') or 'unknown'}"
-                )
-            elif second_ap == "N":
-                st.error(
-                    f"❌ Rejected at 2nd level by "
-                    f"{rpt.get('second_level_approved_by') or 'unknown'}  "
-                    f"— {rpt.get('second_level_approval_comment') or ''}"
-                )
+    with tab_all:
+        if not reports:
+            st.info("No reports found.")
+        for rpt in reports:
+            _render_report_expander(rpt, key_prefix="all_")
 
 
 def _page_cases(service: BaseTruthService) -> None:
@@ -395,18 +460,13 @@ Falling back to local files when the database is offline.
     else:
         cases = service.list_cases()
 
-    if not cases:
-        st.info(
-            "No cases yet. Scan documents first and cases will appear here automatically."
-        )
-        return
-
+    # Filter and bucket cases — even when empty we still need the Entity Reports tab.
     cases_filter = st.text_input(
         "🔍 Filter cases",
         placeholder="Entity name, BT-reference, case key, or document type…",
         key="cases_filter",
     ).strip().lower()
-    if cases_filter:
+    if cases_filter and cases:
         cases = [
             c for c in cases
             if cases_filter in (c.get("entity_name") or "").lower()
@@ -414,9 +474,6 @@ Falling back to local files when the database is offline.
             or cases_filter in (c.get("document_type") or "").lower()
             or cases_filter in (c.get("case_key") or "").lower()
         ]
-        if not cases:
-            st.info("No cases match your filter.")
-            return
 
     needs_review = [c for c in cases if c.get("needs_review")]
     resolved = [
@@ -435,7 +492,21 @@ Falling back to local files when the database is offline.
     ]
     if auto_ok:
         tab_labels.append(f"🔵 Auto-Approved ({len(auto_ok)})")
-    tab_labels.append("📑 Entity Reports")
+
+    # Fetch entity reports once so we can show counts in the tab labels.
+    _all_reports       = list_all_entity_reports() if _DB_IMPORTS_OK and _db_available_cached() else []
+    _rpt_pending       = [r for r in _all_reports if r.get("first_level_approval") is None]
+    _rpt_awaiting2     = [r for r in _all_reports if r.get("first_level_approval") == "Y" and r.get("second_level_approval") is None]
+    _rpt_approved      = [r for r in _all_reports if r.get("second_level_approval") == "Y"]
+    _rpt_rejected      = [r for r in _all_reports if r.get("first_level_approval") == "N" or r.get("second_level_approval") == "N"]
+
+    tab_labels += [
+        f"⏳ Pending ({len(_rpt_pending)})",
+        f"🔄 Awaiting 2nd ({len(_rpt_awaiting2)})",
+        f"✅ Approved ({len(_rpt_approved)})",
+        f"❌ Rejected ({len(_rpt_rejected)})",
+        f"📋 All ({len(_all_reports)})",
+    ]
 
     tabs = st.tabs(tab_labels)
 
@@ -458,7 +529,13 @@ Falling back to local files when the database is offline.
                     )
 
     with tabs[0]:
-        if not needs_review:
+        if not cases and cases_filter:
+            st.info("No cases match your filter.")
+        elif not cases:
+            st.info(
+                "No cases yet. Scan documents first and cases will appear here automatically."
+            )
+        elif not needs_review:
             st.success(
                 "🎉 No cases pending review — all documents have been assessed."
             )
@@ -475,6 +552,44 @@ Falling back to local files when the database is offline.
         with tabs[2]:
             _render_grouped(auto_ok, show_actions=False)
 
-    # ── Entity Reports tab ────────────────────────────────────────────────────
-    with tabs[-1]:
-        _page_entity_reports_tab()
+    # ── Entity Reports tabs — flattened directly into the Cases top-level tabs ─
+    # Offset: 2 base tabs + 1 if auto_ok tab is shown.
+    _er_offset = 3 if auto_ok else 2
+
+    if not _all_reports:
+        _no_reports_msg = (
+            "No entity final reports yet. "
+            "Go to **🧠 Document Intelligence**, select an entity, "
+            "and click **🎯 Generate Final Report**."
+        )
+        for _ti in range(_er_offset, _er_offset + 5):
+            with tabs[_ti]:
+                st.info(_no_reports_msg)
+    else:
+        with tabs[_er_offset]:        # ⏳ Pending
+            if not _rpt_pending:
+                st.info("No reports pending 1st-level review.")
+            for rpt in _rpt_pending:
+                _render_report_expander(rpt, key_prefix="pnd_")
+
+        with tabs[_er_offset + 1]:    # 🔄 Awaiting 2nd
+            if not _rpt_awaiting2:
+                st.info("No reports awaiting 2nd-level review.")
+            for rpt in _rpt_awaiting2:
+                _render_report_expander(rpt, key_prefix="aw2_")
+
+        with tabs[_er_offset + 2]:    # ✅ Approved
+            if not _rpt_approved:
+                st.info("No fully approved reports yet.")
+            for rpt in _rpt_approved:
+                _render_report_expander(rpt, key_prefix="apr_")
+
+        with tabs[_er_offset + 3]:    # ❌ Rejected
+            if not _rpt_rejected:
+                st.info("No rejected reports.")
+            for rpt in _rpt_rejected:
+                _render_report_expander(rpt, key_prefix="rej_")
+
+        with tabs[_er_offset + 4]:    # 📋 All
+            for rpt in _all_reports:
+                _render_report_expander(rpt, key_prefix="all_")

@@ -1,0 +1,152 @@
+BASETRUTH FINAL VERIFICATION REPORT
+
+Report Reference: BTR-000001
+Entity Reference: BT-000001
+Subject Name: Hrishikesh Namdeo Maluskar
+Date of Issue: 18 April 2026
+Verification Type: Comprehensive Identity, Education, Employment & Document Forensics Review
+Final Outcome: ❌ FAIL – HIGH RISK
+
+1. EXECUTIVE SUMMARY
+
+BaseTruth conducted a multi-layer verification review of the documents submitted for Hrishikesh Namdeo Maluskar, including identity proofs, academic credentials, employment records, and supporting documents.
+
+While the core government-issued identity information (PAN / Aadhaar / Date of Birth) appears internally consistent, a significant number of supporting documents demonstrated indicators of digital tampering, alteration, OCR inconsistencies, or authenticity concerns.
+
+A total of 9 out of 11 reviewed documents were flagged with medium to severe manipulation risk markers.
+
+Due to the volume and severity of anomalies, this case is assessed as High Risk and does not meet verification acceptance standards.
+
+2. SUBJECT PROFILE
+Field	Verified Data
+Full Name	Hrishikesh Namdeo Maluskar
+Date of Birth	20 October 1983
+PAN	AQVPM3058P
+Aadhaar	Ending 3705
+Primary Region Seen	Pune, Maharashtra, India
+Total Documents Reviewed	11
+3. DOCUMENT REVIEW SUMMARY
+Category	Documents Reviewed	Status
+Government Identity	PAN, Aadhaar	✅ Core Match
+Employment	Offer Letter, Payslip	❌ High Risk
+Academic	SSC, HSC, Degrees, Marksheets	❌ Multiple Concerns
+Passport / Address	Passport Files	❌ Reliability Concern
+Overall Forensics	11 Total Files	❌ 9 Flagged
+4. KEY FINDINGS
+A. Identity Validation
+
+The following core identifiers were largely consistent across submitted KYC records:
+
+Name: Hrishikesh Namdeo Maluskar
+DOB: 20/10/1983
+PAN: AQVPM3058P
+Aadhaar number matched internal records submitted
+Result:
+
+✅ Core identity appears plausible.
+
+B. Name Consistency Issues
+
+Multiple name variations were observed:
+
+Hrishikesh Namdeo Maluskar
+Hrishikesh Maluskar
+Hrishikesh Namdeo
+Maluskar Hrishikesh Namdeo
+Maluskar Hrishikesh Namded
+Risk Assessment:
+
+Minor variations may occur due to formatting; however spelling deviations and truncated names across academic records weaken reliability.
+
+Result:
+
+⚠️ Medium Concern
+
+C. Employment Verification Concerns
+
+Reviewed files:
+
+NeoZoom Offer Letter
+December 2025 Payslip
+
+Both records showed forensic indicators commonly associated with:
+
+Edited text overlays
+Re-compression anomalies
+Structural inconsistencies
+Missing metadata
+Potential copy/paste regions
+Result:
+
+❌ Employment proof cannot be relied upon without direct employer confirmation.
+
+D. Education Verification Concerns
+
+Reviewed:
+
+SSC Marksheet
+HSC Marksheet
+B.E Degree
+B.E Marksheet
+Psychology Degree
+
+Several academic documents were flagged for possible modification or authenticity concerns.
+
+Particular issues:
+
+OCR irregularities
+Name mismatch in academic records
+Suspicious rendering artifacts
+Multiple files showing alteration markers
+Result:
+
+❌ Academic credentials require direct issuing authority validation.
+
+E. Passport / Address Records
+
+Passport-related files returned extraction inconsistencies and mixed classifications during OCR processing, reducing confidence in file quality and source integrity.
+
+Result:
+
+⚠️ Requires re-submission of clean scans or direct verification.
+
+5. FORENSIC RISK SUMMARY
+Risk Factor	Severity
+Metadata Removed	High
+Compression Irregularities	High
+Clone / Copy Regions	High
+Font / Overlay Inconsistency	Medium
+Cross-file Data Variance	High
+OCR Integrity Issues	Medium
+6. OVERALL RISK CONCLUSION
+
+This submission demonstrates a pattern of multiple materially compromised supporting documents, especially within employment and education categories.
+
+Even if some original documents may exist, the versions submitted for verification cannot be considered dependable evidence in their present form.
+
+7. FINAL VERDICT
+❌ FAIL – HIGH RISK
+
+This case does not satisfy standard onboarding / compliance / trust verification thresholds.
+
+8. RECOMMENDED NEXT ACTIONS
+Immediate Actions
+Request fresh original PDFs directly from issuing sources
+Obtain employer-side HR verification from NeoZoom Technologies
+Validate degrees directly with university / board databases
+Request passport live capture or DigiLocker source copy
+Re-run verification only after clean resubmission
+9. DECISION GUIDANCE FOR CLIENTS
+Use Case	Recommendation
+Hiring Decision	Hold
+Vendor Approval	Reject Pending Clean Docs
+KYC Acceptance	Conditional Hold
+Lending / Credit Use	High Caution
+Compliance Clearance	Not Approved
+10. CERTIFICATION NOTE
+
+This report is based on submitted digital files, extracted data, consistency checks, and forensic screening signals. It is an investigative risk assessment and should be considered alongside direct source verification.
+
+Prepared By: BaseTruth Verification Intelligence Unit
+Report Status: Final
+Confidentiality: Restricted Use Only

@@ -273,10 +273,16 @@ def _run_cross_doc_analysis(entity: dict, extractions: list, scans: list) -> dic
             )
 
     # ── Forensic verdict summary ──────────────────────────────────────────────
-    verdicts = [s.get("verdict") or "" for s in scans]
+    # Forensic verdict is stored in layered_analysis_json.scan_summary.forensic_verdict,
+    # not at the top level of the scan dict — so we extract it from the nested path.
+    def _forensic_verdict(s: dict) -> str:
+        """Pull the forensic verdict string from a scan's nested layered_analysis_json."""
+        return (s.get("layered_analysis_json") or {}).get("scan_summary", {}).get("forensic_verdict") or ""
+
+    verdicts = [_forensic_verdict(s) for s in scans]
     tampered_docs = [
         s.get("source_name", "?") for s in scans
-        if "TAMPERED" in (s.get("verdict") or "").upper()
+        if "TAMPERED" in _forensic_verdict(s).upper()
     ]
     forensic_status = "CLEAR" if not tampered_docs else "TAMPERED"
     forensic_detail = (
@@ -312,11 +318,12 @@ def _run_cross_doc_analysis(entity: dict, extractions: list, scans: list) -> dic
     }
 
 
-def _render_entity_reports_section(entity_ref: str) -> None:
-    """Display existing EntityReport records for this entity and allow regeneration.
+def _render_entity_reports_status(entity_ref: str) -> None:
+    """Show a minimal one-line status strip for each saved entity report.
 
-    Shows a summary card for each saved report with its approval status and a
-    collapsible JSON payload so analysts can inspect the full findings.
+    The Document Intelligence screen is not an approval screen, so we only
+    show the reference, current approval state, and generation date.  Full
+    details (checks breakdown, JSON, approval buttons) live on the Cases screen.
     """
     reports = get_entity_reports(entity_ref)
     if not reports:
@@ -324,50 +331,20 @@ def _render_entity_reports_section(entity_ref: str) -> None:
         return
 
     for rpt in reports:
-        first = rpt.get("first_level_approval")
+        first  = rpt.get("first_level_approval")
         second = rpt.get("second_level_approval")
         if second == "Y":
             badge = "🟢 Fully Approved"
         elif second == "N" or first == "N":
             badge = "🔴 Rejected"
         elif first == "Y":
-            badge = "🟡 Pending 2nd-Level"
+            badge = "🟡 Awaiting 2nd Review"
         else:
             badge = "⏳ Pending Review"
 
-        overall = (rpt.get("report_json") or {}).get("overall_verdict", "?")
-        ov_icon = "✅" if overall == "PASS" else "❌" if overall == "FAIL" else "❓"
-
-        with st.expander(
-            f"{rpt['report_ref']}  ·  {ov_icon} {overall}  ·  {badge}  "
-            f"·  Generated {rpt.get('generated_at', '')[:10]}",
-            expanded=(second is None and first is None),
-        ):
-            # Summarise each check as a pass/fail row.
-            checks = (rpt.get("report_json") or {}).get("checks", {})
-            for check_name, chk in checks.items():
-                icon = "✅" if chk["status"] == "PASS" else (
-                       "❌" if chk["status"] in ("MISMATCH", "TAMPERED", "FAIL") else "➖"
-                )
-                st.markdown(f"**{icon} {check_name.capitalize()}** — {chk['detail']}")
-
-            # Full JSON payload is available but collapsed to avoid clutter.
-            with st.expander("Full report JSON", expanded=False):
-                st.json(rpt.get("report_json") or {})
-
-            # Show approval trail.
-            if first:
-                st.caption(
-                    f"1st-level: {'✅ Approved' if first == 'Y' else '❌ Rejected'} "
-                    f"by {rpt.get('first_level_approved_by') or 'unknown'}"
-                    f"  {rpt.get('first_level_approval_comment') or ''}"
-                )
-            if second:
-                st.caption(
-                    f"2nd-level: {'✅ Approved' if second == 'Y' else '❌ Rejected'} "
-                    f"by {rpt.get('second_level_approved_by') or 'unknown'}"
-                    f"  {rpt.get('second_level_approval_comment') or ''}"
-                )
+        gen_date = rpt.get("generated_at", "")[:10]
+        # One compact line per report — analysts go to Cases for the full detail.
+        st.caption(f"{rpt['report_ref']}  ·  {badge}  ·  {gen_date}")
 
 
 def _page_document_intelligence() -> None:
@@ -570,27 +547,39 @@ grouped by applicant.
     )
 
     if _has_pending:
-        st.info(
-            "ℹ️ A pending report already exists. Generating again will refresh it "
-            "with the latest document data (it can be regenerated until approved)."
+        st.caption(
+            "\u2139\ufe0f Regenerating will refresh the pending report with the latest document data."
+        )
+
+    # Show success banner from a prior generate-report run (survives the st.rerun).
+    if "di_gen_report_success" in st.session_state:
+        _sref = st.session_state.pop("di_gen_report_success")
+        st.success(
+            f"✅ Report **{_sref}** generated and PDF saved. "
+            "Go to **📁 Cases** for the 2-level approval."
         )
 
     if st.button("🎯 Generate Final Report", type="primary", key="di_gen_report"):
-        with st.spinner("Running cross-document analysis…"):
-            # Fetch all document extractions for this entity.
+        with st.spinner("Building evidence bundle, running Gemma4 analysis, generating PDF…"):
+            # Fetch all document extractions and all scans for this entity.
             extractions = get_entity_document_information(selected_ref)
-            report_payload = _run_cross_doc_analysis(selected_entity, extractions, all_scans)
+            # Use build_final_report_json from the final_report_builder module which:
+            #   1. Extracts identity summary (name/DOB/address/PAN/Aadhaar) from Aadhaar/PAN rows
+            #   2. Finds the candidate photo in MinIO
+            #   3. Builds a comprehensive evidence markdown (all raw data)
+            #   4. Sends the evidence markdown to Gemma4 for systematic narrative writing
+            #   5. Returns the complete enriched report_json payload
+            from basetruth.reporting.final_report_builder import build_final_report_json
+            report_payload = build_final_report_json(selected_ref, selected_entity, extractions, all_scans)
             result = save_entity_report(selected_ref, report_payload)
 
         if result:
-            st.success(
-                f"✅ Report **{result['report_ref']}** saved. "
-                "Go to **📂 Cases** to approve it, or download it from **📊 Reports**."
-            )
             log.info(
                 "Final report generated from Document Intelligence",
                 extra={"entity_ref": selected_ref, "report_ref": result["report_ref"]},
             )
+            # Store success ref in session_state so the banner survives st.rerun().
+            st.session_state["di_gen_report_success"] = result["report_ref"]
             st.rerun()
         else:
             st.error(
@@ -600,4 +589,4 @@ grouped by applicant.
     # ── Existing reports section ──────────────────────────────────────────────
     if _existing_reports:
         st.markdown("##### Saved Reports")
-        _render_entity_reports_section(selected_ref)
+        _render_entity_reports_status(selected_ref)

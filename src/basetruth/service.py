@@ -586,64 +586,6 @@ class BaseTruthService:
         else:
             log.info("scan_document: DB persist skipped by caller", extra={"document": path.name})
 
-        # Auto-manage case lifecycle based on risk level (non-fatal)
-        try:
-            _risk = tamper_assessment.get("risk_level", "low")
-            _doc_type = report_dict.get("structured_summary", {}).get("document", {}).get("type", "generic")
-            _entity_ref_for_case = report_dict.get("_entity_ref")
-            # Prefer DB-style case key (doc_type::entity_ref) when we have an entity_ref;
-            # fall back to the legacy key derived from report fields.
-            if _entity_ref_for_case:
-                _case_key = f"{_doc_type}::{_entity_ref_for_case}"
-            else:
-                _case_key = self._case_key_for_report(report_dict)
-            _existing = self._load_case_records()
-            _rec = _existing.get(_case_key)
-            # Never override a case already closed by an analyst
-            if _rec is None or _rec.disposition not in ("cleared", "fraud_confirmed"):
-                if _risk in ("high", "medium"):
-                    self.update_case(
-                        _case_key,
-                        status="triage" if _risk == "high" else "new",
-                        priority="high" if _risk == "high" else "normal",
-                        note_text=(
-                            f"Auto-flagged: {_risk.upper()} risk detected in '{path.name}'. "
-                            "Please review and Approve or Reject."
-                        ),
-                        note_author="system",
-                    )
-                    log.info(
-                        "scan_document: case auto-flagged for review",
-                        extra={"case_key": _case_key, "risk": _risk},
-                    )
-                else:
-                    # Low risk — auto-approve only when no prior record exists in file OR DB
-                    if _rec is None:
-                        try:
-                            from basetruth.store import case_exists_in_db  # noqa: PLC0415
-                            _db_exists = case_exists_in_db(_case_key)
-                        except Exception:  # noqa: BLE001
-                            _db_exists = False
-                        if not _db_exists:
-                            self.update_case(
-                                _case_key,
-                                status="closed",
-                                disposition="cleared",
-                                note_text=f"Auto-approved: LOW risk scan of '{path.name}'.",
-                                note_author="system",
-                            )
-                            log.info(
-                                "scan_document: case auto-approved (low risk)",
-                                extra={"case_key": _case_key},
-                            )
-                        else:
-                            log.info(
-                                "scan_document: low risk but case already exists in DB, skipping auto-approve",
-                                extra={"case_key": _case_key},
-                            )
-        except Exception:  # noqa: BLE001
-            log.warning("scan_document: auto-case management failed", exc_info=True)
-
         log.info(
             "scan_document: DONE",
             extra={

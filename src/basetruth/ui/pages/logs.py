@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import streamlit as st
@@ -13,14 +14,29 @@ from basetruth.ui.components import _LOGGER_OK, _log_path, _page_title
 # Helpers
 # ---------------------------------------------------------------------------
 
+# Indian Standard Time is UTC+5:30 (no DST)
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
 def _fmt_ts(ts_str: str) -> str:
-    """Extract HH:MM:SS from an ISO-8601 timestamp written by the JSON formatter.
+    """Parse an ISO-8601 UTC timestamp and return HH:MM:SS in IST (UTC+5:30).
 
     The logger writes timestamps like '2026-04-15T14:32:45.123456+00:00'.
-    We take characters 11-19 to get 'HH:MM:SS'.  Any shorter/malformed
-    strings fall back gracefully so the UI never crashes on bad data.
+    We convert to IST so the Log Analyzer always shows local Indian time,
+    matching the timestamps the user sees in Docker logs / console output.
+    Falls back to slicing raw characters for any malformed entry so the
+    UI never crashes on bad data.
     """
     s = str(ts_str or "")
+    try:
+        if "T" in s:
+            # datetime.fromisoformat handles offsets like +00:00 (Python 3.7+)
+            dt_utc = datetime.fromisoformat(s)
+            dt_ist = dt_utc.astimezone(_IST)
+            return dt_ist.strftime("%H:%M:%S")
+    except (ValueError, TypeError):
+        pass
+    # Graceful fallback for non-ISO strings (plain HH:MM:SS etc.)
     if len(s) >= 19 and "T" in s:
         return s[11:19]
     if len(s) >= 8:
@@ -186,7 +202,7 @@ def _page_logs() -> None:
 
     # ── Filters ──────────────────────────────────────────────────────────────
     _f1, _f2, _f3 = st.columns([1.5, 2, 3])
-    level_opts = ["ALL"] + sorted(df["level"].unique().tolist())
+    level_opts = ["ALL"] + sorted(df["level"].astype(str).unique().tolist())
     module_opts = ["ALL"] + sorted([m for m in df["logger"].unique() if m])
     
     if "log_level_sel_v3" not in st.session_state:
