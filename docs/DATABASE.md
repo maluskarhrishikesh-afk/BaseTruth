@@ -80,20 +80,6 @@ Stores the outcome every time someone's face is compared to their ID document, o
 
 ---
 
-### `layered_analysis_entries` — Detailed audit trail
-
-A very detailed logbook. For every major action (each scan, each identity check), detailed notes are written here — one row per screen section. This powers the Layered Analysis view and the final PDF report.
-
-**Created automatically** whenever a scan or identity check is saved.
-
----
-
-### `cases` and `case_notes` — Manual review workflow
-
-When a document is flagged as risky and needs manual analysis, you open a Case (like a support ticket). Case Notes are the comment thread on a case.
-
----
-
 ### `entity_reports` — Final cross-document verification reports (BTR-XXXXXX)
 
 After all of an applicant’s documents have been scanned and approved, an analyst can generate a **Final Verification Report**. This report compares every document the applicant submitted and checks whether the name, address, PAN, Aadhaar, and salary are consistent across all of them. It also summarises whether any documents failed the forensic check.
@@ -119,10 +105,9 @@ The report goes through the same two-level human approval process as individual 
 ## Design Principles
 
 1. `entities` is the canonical applicant table.
-2. `scans`, `identity_checks`, and `layered_analysis_entries` use operational UPSERT behavior so the UI shows one current record per natural entity-scoped key.
-3. `layered_analysis_entries` stores the latest explainability snapshot per entity/screen/section using UPSERT semantics.
-4. Final layered-analysis report generation is controlled at the entity level so the same evidence set cannot be reported twice.
-5. Saving fresh evidence for an entity automatically invalidates the previously generated final report and re-enables generation.
+2. `scans`, `identity_checks`, `document_extractions`, and `entity_reports` use operational UPSERT behaviour so the UI shows one current record per natural entity-scoped key.
+3. Final reports (`entity_reports`) for a pending entity are refreshed in-place; once approved or rejected a new `BTR-XXXXXX` row is created so the audit trail is preserved.
+4. Deleting an entity cascades to all related rows across every table.
 
 ---
 
@@ -140,10 +125,6 @@ Stores the basic profile of every person or organisation in the system (like the
 | `first_name` / `last_name` | VARCHAR | Searchable identity fields |
 | `email` / `phone` | VARCHAR | Contact fields |
 | `pan_number` / `aadhar_number` | VARCHAR | Strong identity keys |
-| `layered_report_generated` | BOOLEAN | `true` only when the latest evidence has already been reported |
-| `layered_report_generated_at` | TIMESTAMPTZ | When the current final report was generated |
-| `layered_analysis_updated_at` | TIMESTAMPTZ | When any layered-analysis section was last upserted |
-| `layered_report_minio_key` | VARCHAR(500) | MinIO object key for the current final report |
 | `created_at` / `updated_at` | TIMESTAMPTZ | Audit timestamps |
 
 **Entity matching order:**
@@ -221,39 +202,10 @@ Stores the results of biometric checks like Face Matching (comparing a selfie to
 
 ---
 
-### `layered_analysis_entries`
+### `document_extractions`
 
 **What is it used for?**
-A very detailed logbook that records every tiny piece of information captured during a user's verification journey (like the exact text pulled from their Aadhaar scan or details from their identity check). This table's main job is to collect all evidence to magically generate the final PDF "Layered Analysis" report.
-
-| Column | Type | Notes |
-|---|---|---|
-| `id` | SERIAL | Primary key |
-| `entity_id` | FK → `entities.id` | Required |
-| `screen_name` | VARCHAR(100) | e.g. `Identity Verification`, `Video KYC`, `Scan Document`, `Bulk Scan` |
-| `section_name` | VARCHAR(255) | e.g. `Aadhaar`, `PAN Card`, `Run Verification`, or source filename |
-| `details_captured_json` | JSONB | Structured section payload |
-| `created_at` | TIMESTAMPTZ | First insert timestamp |
-| `updated_at` | TIMESTAMPTZ | Latest UPSERT timestamp |
-
-**Uniqueness rule:**
-- Unique on `(entity_id, screen_name, section_name)`
-
-**UPSERT behavior:**
-- If the entity/screen/section tuple already exists, the row is updated.
-- Otherwise, a new row is inserted.
-- Every UPSERT also resets `entities.layered_report_generated = false` and clears the stored final-report pointer so the report can be generated again for fresh evidence.
-
----
-
-### `document_extractions`, `cases`, `case_notes`
-
-**What are they used for?**
-- **`document_extractions`** (formerly `document_information`): Stores the rich extracted JSON for a scanned or verified document so operators and auditors can review the normalized document profile without re-parsing the source file. This table is populated from three sources: the Scan Document screen (OCR path), the Bulk Scan screen (Gemma4 AI extraction after forensics), and the Identity Verification screen (Aadhaar/PAN fields from face matching).
-- **`cases`**: Like a to-do list for human analysts. When a document is flagged as risky and needs manual review, a "case" is created here to track its status (open, closed, under review).
-- **`case_notes`**: The comment section for cases. Analysts can leave text notes explaining why they approved or rejected a document.
-
-#### `document_extractions`
+Stores the rich extracted JSON for a scanned or verified document so operators and auditors can review the normalised document profile without re-parsing the source file. Populated from three sources: the Scan Document screen (OCR path), the Bulk Scan screen (Gemma4 AI extraction after forensics), and the Identity Verification screen (Aadhaar/PAN fields from face matching).
 
 | Column | Type | Notes |
 |---|---|---|
@@ -324,35 +276,12 @@ Stores the output of the cross-document consistency analysis that an analyst run
 
 ---
 
-## Layered Analysis Capture Model
+## Entity Report Generation Rules
 
-Examples of current section capture:
-
-### Identity Verification
-- `Aadhaar`
-- `PAN Card`
-- `Photo Upload`
-- `Run Verification`
-
-### Video KYC
-- `Remote Session`
-- `In-Person Session`
-
-### Scan Document / Bulk Scan
-- One section per saved source document, keyed by filename
-
----
-
-## Final Report Generation Rules
-
-1. The Layered Analysis final report is generated only from `layered_analysis_entries`.
-2. When a final report is generated successfully:
-   - the PDF is uploaded to MinIO under the entity-specific key
-   - `entities.layered_report_generated` becomes `true`
-   - `entities.layered_report_generated_at` is set
-   - `entities.layered_report_minio_key` stores the active object key
-3. While `layered_report_generated = true` for the current evidence set, the Layered Analysis screen must not allow regeneration.
-4. Any fresh UPSERT into `layered_analysis_entries` for that entity resets the flag and unlocks report generation again.
+1. The Document Intelligence screen generates a final `entity_reports` row by reading the entity's `document_extractions` and `scans`.
+2. A pending (unapproved) report is refreshed in-place — no duplicate row is created.
+3. Once a report is approved or rejected, re-generation creates a new row with a new `BTR-XXXXXX` reference, preserving the audit trail of past decisions.
+4. The rendered PDF is uploaded to MinIO under the `BTR-reports/{entity_ref}/` prefix.
 
 ---
 
@@ -364,24 +293,21 @@ Objects are stored under the entity reference prefix:
 {entity_ref}/
   {source_document}
   {scan_or_identity_report}.pdf
-  consolidated_report.pdf
-  layered_analysis_report.pdf
-  case_reports/
-    {timestamp}_case_report.pdf
+  face_match_report.pdf
+  video_kyc_report.pdf
+BTR-reports/{entity_ref}/
+  {BTR-XXXXXX}.pdf
 ```
 
-`layered_analysis_report.pdf` is the current final explainability report and is downloadable from both the Layered Analysis screen and the Reports screen.
+`face_match_report.pdf` and `video_kyc_report.pdf` are the current identity PDFs under the entity prefix. Re-saving Identity Verification replaces the current object in-place.
 
-`face_match_report.pdf` and `video_kyc_report.pdf` are stored as the current identity PDFs under the entity prefix. Legacy timestamped identity report objects are cleaned up by the new upsert flow.
+Final verification reports (`BTR-XXXXXX.pdf`) are stored under the `BTR-reports/` prefix and are downloadable from the Document Intelligence and Reports screens.
 
 ---
 
 ## Reset Behaviour
 
-Database reset truncates:
-- `layered_analysis_entries`
-- `case_notes`
-- `cases`
+Database reset truncates all five tables in dependency order:
 - `entity_reports`
 - `document_extractions`
 - `identity_checks`

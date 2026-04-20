@@ -186,7 +186,13 @@ def _extract_pan_info_ocr(img_bytes: bytes) -> Dict[str, Any]:
     try:
         text, engine = ocr_image_bytes_directly(img_bytes)
         if engine != "paddleocr" or not text.strip():
+            log.warning("_extract_pan_info_ocr: PaddleOCR returned no text — engine=%s", engine)
             return {}
+
+        log.debug(
+            "_extract_pan_info_ocr: PaddleOCR raw text (%d chars): %s",
+            len(text), text[:300],
+        )
 
         _pan_re_global = _re.compile(r"[A-Z]{5}[0-9]{4}[A-Z]")
         _skip_words = {
@@ -219,29 +225,42 @@ def _extract_pan_info_ocr(img_bytes: bytes) -> Dict[str, Any]:
             result["full_name"] = result["name"]
         if result:
             result["engine"] = "paddleocr"
+            log.info(
+                "_extract_pan_info_ocr: PaddleOCR extraction complete — "
+                "pan=%s name=%s",
+                result.get("pan_number", ""),
+                result.get("full_name", ""),
+            )
+        else:
+            log.warning("_extract_pan_info_ocr: PaddleOCR found no recognisable PAN fields")
         return result
     except Exception:  # noqa: BLE001
+        log.warning("_extract_pan_info_ocr: unexpected error during PaddleOCR extraction", exc_info=True)
         return {}
 
 
 def _extract_pan_info(img_bytes: bytes) -> Dict[str, Any]:
     """Extract PAN fields using Gemma4 first, then PaddleOCR recovery when needed.
 
-    Uses the combined Gemma4 call that returns both PAN text fields and the
-    signature bounding-box in a single request, halving the Ollama round-trips
+    Uses the combined VLM call that returns both PAN text fields and the
+    signature bounding-box in a single request, halving the LLM round-trips
     compared to the previous two-call approach.
     """
     log.info(
-        "Identity Verification: Initiating combined PAN detail and signature extraction using Gemma4.",
-        extra={"engine": "gemma4_ollama"}
+        "_extract_pan_info: initiating combined PAN+signature VLM extraction "
+        "(provider resolved from settings.json feature_models.pan_extraction)",
     )
-    # One Gemma4 call returns both PAN fields AND sig_box — no second call needed
+    # One VLM call returns both PAN fields AND sig_box — no second call needed
     gemma_data = extract_pan_details_and_signature_with_ollama(img_bytes)
-    
+    vlm_provider = gemma_data.get("engine", "vlm")
+    vlm_model = gemma_data.get("model", "unknown")
     log.info(
-        "Identity Verification: Running fallback PaddleOCR sequence on PAN image.",
-        extra={"engine": "paddleocr"}
+        "_extract_pan_info: VLM call returned — engine=%s model=%s fields_found=%d",
+        vlm_provider, vlm_model,
+        sum(1 for k in ("pan_number", "full_name", "father_name", "date_of_birth") if gemma_data.get(k)),
     )
+
+    log.info("_extract_pan_info: running PaddleOCR as fallback / cross-check")
     ocr_data = _extract_pan_info_ocr(img_bytes)
 
     merged: Dict[str, Any] = {}
@@ -300,8 +319,17 @@ def _extract_pan_info(img_bytes: bytes) -> Dict[str, Any]:
         merged["gemma_raw_response"] = gemma_data["raw_response"]
 
     log.info(
-        f"Identity Verification: Completed PAN extraction. Fields retrieved from: {merged.get('extraction_source', 'none')}.",
-        extra={"engine": merged.get("engine"), "pan_number_found": bool(merged.get("pan_number"))}
+        "_extract_pan_info: merge complete — provider=%s model=%s source=%s "
+        "pan=%s name=%s father=%s dob=%s sig_box=%s field_sources=%s",
+        gemma_data.get("engine", "vlm"),
+        gemma_data.get("model", "unknown"),
+        merged.get("extraction_source", "none"),
+        merged.get("pan_number", ""),
+        merged.get("full_name", ""),
+        merged.get("father_name", ""),
+        merged.get("date_of_birth", ""),
+        "yes" if merged.get("sig_box") else "not found",
+        merged.get("field_sources", {}),
     )
     return merged
 
@@ -369,10 +397,14 @@ _SIG_SYSTEM_PROMPT = (
 _SIG_USER_PROMPT = (
     "Look at this document image. There is a handwritten signature somewhere "
     "on the document (often a cursive ink stroke below printed text).\n\n"
-    "Locate ONLY the handwritten signature strokes -- do NOT include:\n"
-    "  - the printed word 'Signature' (label below the strokes)\n"
-    "  - the PAN number or any other printed text\n"
-    "  - the hologram or photo area\n\n"
+    "Locate ONLY the handwritten signature ink strokes — do NOT include:\n"
+    "  - The PAN number (a 10-character code like ABCDE1234F printed ABOVE the signature)\n"
+    "  - The printed word 'Signature' (label below the strokes)\n"
+    "  - Any printed text, logos, numbers, or government seals\n"
+    "  - The hologram or photo area\n\n"
+    "CRITICAL y1 rule: The PAN number is printed text that always appears ABOVE the\n"
+    "handwritten signature. Your y1 value MUST be strictly below the bottom edge of the\n"
+    "PAN number — never set y1 high enough to include the PAN number line itself.\n\n"
     "IMPORTANT: Signatures often start very close to the left margin. "
     "Make sure x1 captures the very beginning of the LEFTMOST ink stroke. "
     "When in doubt, bias x1 slightly to the left.\n\n"
@@ -380,7 +412,7 @@ _SIG_USER_PROMPT = (
     "FULL image dimensions (0.0 = left/top edge, 1.0 = right/bottom edge):\n\n"
     "{\n"
     '  "x1": <left edge of ink strokes / image width>,\n'
-    '  "y1": <top edge of ink strokes / image height>,\n'
+    '  "y1": <top edge of ink strokes / image height — MUST be below the PAN number>,\n'
     '  "x2": <right edge of ink strokes / image width>,\n'
     '  "y2": <bottom edge of ink strokes / image height>,\n'
     '  "confidence": <0.0-1.0>\n'
@@ -388,9 +420,9 @@ _SIG_USER_PROMPT = (
     "Rules:\n"
     "- All values must be between 0.0 and 1.0.\n"
     "- x1 < x2 and y1 < y2.\n"
-    "- Max 3% padding around ink strokes -- tight fit only.\n"
+    "- Max 3% padding around ink strokes — tight fit, ink strokes only.\n"
     "- If no signature found, set all coordinates and confidence to 0.0.\n"
-    "- Output JSON only -- no extra text."
+    "- Output JSON only — no extra text."
 )
 
 # Fixed ratios used as fallback when Gemma4 is unavailable.
@@ -498,6 +530,14 @@ def _crop_pan_signature(
                     "stream": False,
                     "options": {"temperature": 0},
                 }
+                log.info(
+                    "_crop_pan_signature: sending signature-box VLM request | model=%s base_url=%s image_bytes=%d",
+                    model,
+                    base_url,
+                    len(img_bytes),
+                )
+                log.info("_crop_pan_signature: exact system prompt follows:\n%s", _SIG_SYSTEM_PROMPT)
+                log.info("_crop_pan_signature: exact user prompt follows:\n%s", _SIG_USER_PROMPT)
                 try:
                     resp = requests.post(  # nosemgrep: basetruth-ssrf
                         f"{base_url}/api/chat",
@@ -506,6 +546,10 @@ def _crop_pan_signature(
                     )
                     resp.raise_for_status()
                     raw  = str(resp.json().get("message", {}).get("content", "")).strip()
+                    log.info(
+                        "_crop_pan_signature: exact raw VLM response follows:\n%s",
+                        raw,
+                    )
                     text = _extract_json_object(raw)
                     data = json.loads(text) if text else {}
                     x1, y1, x2, y2 = (
@@ -569,6 +613,17 @@ def _crop_pan_signature(
         min_area    = max(20, coarse_area * 0.0008)  # lower floor catches thin strokes
         y_cutoff    = coarse_h * 0.85  # reject bottom 15% (card edge / 'Signature' label)
 
+        # Safety top-cutoff: when Gemma4 sets y1 too high and the bounding box
+        # accidentally captures the PAN number (printed text above the signature),
+        # the top rows of the crop contain those uniform text glyphs. Filtering
+        # contours whose centroid is in the top 20% of a suspiciously tall crop
+        # removes the PAN number blobs without touching the actual signature strokes
+        # which sit in the lower portion. We only apply this cutoff when the crop is
+        # taller than 15% of the full image — a realistic handwritten signature
+        # never needs that much vertical space on a PAN card.
+        crop_to_img_ratio = (py1 - py0) / max(h, 1)
+        y_top_cutoff = coarse_h * 0.20 if crop_to_img_ratio > 0.15 else 0
+
         valid: list = []
         for c in contours:
             if cv2.contourArea(c) < min_area:
@@ -579,6 +634,8 @@ def _crop_pan_signature(
             cy = M["m01"] / M["m00"]
             if cy > y_cutoff:
                 continue  # card edge / background noise
+            if y_top_cutoff and cy < y_top_cutoff:
+                continue  # skip top portion — likely PAN number text, not signature ink
             valid.append(c)
 
         if valid:
@@ -835,7 +892,16 @@ def _check_document_type(img_bytes: bytes, slot: str) -> Dict[str, Any]:
         f"Identity Verification: Checking if uploaded image matches the expected slot '{slot}' ({_SLOT_DISPLAY_NAMES.get(slot, slot)}).",
         extra={"slot": slot}
     )
-    result = classify_document_type_with_ollama(img_bytes)
+    # Map the slot name to the matching feature key so the classify call uses
+    # the same provider as the full extraction that will follow.  This ensures
+    # that when active_provider=feature_models, the pre-flight check doesn't
+    # fall back to the global Ollama default (which may be unavailable or slow).
+    _SLOT_FEATURE_MAP: Dict[str, str] = {
+        "aadhaar": "aadhaar_extraction",
+        "pan":     "pan_extraction",
+    }
+    classify_feature = _SLOT_FEATURE_MAP.get(slot)  # None for "selfie" slot
+    result = classify_document_type_with_ollama(img_bytes, feature=classify_feature)
 
     # Ollama is not reachable — skip silently so we never block the user
     if not result or not result.get("available"):

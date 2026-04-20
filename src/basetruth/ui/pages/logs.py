@@ -134,8 +134,11 @@ def _page_logs() -> None:
     # ── Header ──────────────────────────────────────────────────────────────
     _h1, _h2, _h3 = st.columns([5, 1, 1])
     _h1.markdown(_page_title("📋", "Log Analyzer"), unsafe_allow_html=True)
-    if _h2.button("🔄 Refresh", use_container_width=True, key="log_refresh"):
-        st.rerun()
+    
+    # WebSocket simulated Auto-refresh Toggle instead of manual refresh button
+    with _h2:
+        st.write("") # spacing
+        live_update = st.toggle("Live stream", value=True, help="Continuously read logs via WebSocket without refreshing the page")
 
     lp = _log_path() if _LOGGER_OK else None
     if lp is None or not lp.exists():
@@ -153,57 +156,25 @@ def _page_logs() -> None:
         except Exception as _clr_exc:  # noqa: BLE001
             st.error(f"Could not clear log file: {_clr_exc}")
 
-    # ── Read & parse JSONL ───────────────────────────────────────────────────
-    raw_lines: list = []
+    # ── Quick read for Filter Options ─────────────────────────────────────────
+    v_levels = set()
+    v_modules = set()
     try:
         with open(lp, "r", encoding="utf-8") as fh:
             for _line in fh:
-                _line = _line.strip()
-                if _line:
-                    raw_lines.append(_line)
-    except Exception as exc:  # noqa: BLE001
-        st.error(f"Could not read log file: {exc}")
-        return
-
-    records: list = []
-    for _line in raw_lines:
-        try:
-            records.append(json.loads(_line))
-        except json.JSONDecodeError:
-            records.append({"ts": "", "level": "RAW", "msg": _line, "module": "", "func": "", "logger": ""})
-
-    if not records:
-        st.info("Log file exists but is empty. Run some scans first.")
-        return
-
-    df = pd.DataFrame(records)
-    for col in ["ts", "level", "logger", "module", "func", "line", "msg"]:
-        if col not in df.columns:
-            df[col] = ""
-    df = df.fillna("")
-
-    n_total = len(df)
-    n_err   = int((df["level"] == "ERROR").sum())
-    n_warn  = int((df["level"] == "WARNING").sum())
-    n_info  = int(df["level"].isin(["INFO", "DEBUG"]).sum())
-
-    # ── Summary metrics ──────────────────────────────────────────────────────
-    st.markdown(
-        f"""
-        <div class="bt-metric-row">
-          <div class="bt-metric-card btm-total"><span class="val">{n_total:,}</span><span class="lbl">Total Entries</span></div>
-          <div class="bt-metric-card btm-error"><span class="val">{n_err:,}</span><span class="lbl">🔴 Errors</span></div>
-          <div class="bt-metric-card btm-warn"><span class="val">{n_warn:,}</span><span class="lbl">🟡 Warnings</span></div>
-          <div class="bt-metric-card btm-info"><span class="val">{n_info:,}</span><span class="lbl">🟢 Info + Debug</span></div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+                try:
+                    _d = json.loads(_line)
+                    v_levels.add(str(_d.get("level", "")))
+                    v_modules.add(str(_d.get("logger", "")))
+                except json.JSONDecodeError:
+                    pass
+    except Exception:
+        pass
 
     # ── Filters ──────────────────────────────────────────────────────────────
     _f1, _f2, _f3 = st.columns([1.5, 2, 3])
-    level_opts = ["ALL"] + sorted(df["level"].astype(str).unique().tolist())
-    module_opts = ["ALL"] + sorted([m for m in df["logger"].unique() if m])
+    level_opts = ["ALL"] + sorted([l for l in v_levels if l])
+    module_opts = ["ALL"] + sorted([m for m in v_modules if m])
     
     if "log_level_sel_v3" not in st.session_state:
         st.session_state["log_level_sel_v3"] = "ALL"
@@ -223,97 +194,160 @@ def _page_logs() -> None:
     for _col, (_lbl, _val) in zip(_qf, _qf_labels):
         _col.button(_lbl, use_container_width=True, key=f"qf_{_val}", on_click=_set_log_level, args=(_val,))
 
-    # ── Apply filters ─────────────────────────────────────────────────────────
-    view = df.copy()
-    if chosen_level != "ALL":
-        view = view[view["level"] == chosen_level]
-    if chosen_module != "ALL":
-        view = view[view["logger"] == chosen_module]
-    if search_text:
-        # Search across the message, error extra, and file extra fields.
-        _mask = (
-            view["msg"].str.contains(search_text, case=False, na=False)
-            | view.get("error", pd.Series(dtype=str)).fillna("").str.contains(search_text, case=False, na=False)
-            | view.get("file",  pd.Series(dtype=str)).fillna("").str.contains(search_text, case=False, na=False)
-        )
-        view = view[_mask]
+    # ── Live Feed Fragment (Runs every 2s via WebSocket) ─────────────────────
+    run_every_val = 2 if live_update else None
 
-    # Ascending order — oldest entries at the top so the user can scroll
-    # down naturally to reach the most recent log lines (same reading
-    # direction as a terminal / tail -f output).
-    view = view.reset_index(drop=True)
+    @st.fragment(run_every=run_every_val)
+    def _live_feed():
+        raw_lines: list = []
+        try:
+            with open(lp, "r", encoding="utf-8") as fh:
+                for _line in fh:
+                    _line = _line.strip()
+                    if _line:
+                        raw_lines.append(_line)
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Could not read log file: {exc}")
+            return
 
-    st.caption(f"Showing **{len(view):,}** of {n_total:,} entries — oldest first")
+        records: list = []
+        for _line in raw_lines:
+            try:
+                records.append(json.loads(_line))
+            except json.JSONDecodeError:
+                records.append({"ts": "", "level": "RAW", "msg": _line, "module": "", "func": "", "logger": ""})
 
-    # ── Main log table (CloudWatch Style View) ────────────────────────────────
-    if len(view) > 0:
-        log_lines = []
-        for _, row in view.iterrows():
-            ts = _fmt_ts(row.get("ts", ""))
-            lvl = str(row.get("level", "")).ljust(7)
-            src = ".".join(str(row.get("logger", "")).split(".")[-2:]) if "." in str(row.get("logger", "")) else str(row.get("logger", ""))
-            msg = _build_display_msg(row.to_dict())
-            
-            # Simple color coding for level
-            color = "#d4d4d4"
-            if "ERROR" in lvl: color = "#ef4444"
-            elif "WARN" in lvl: color = "#f59e0b"
-            elif "INFO" in lvl: color = "#22c55e"
-            
-            log_lines.append(f"<span style='color:#888'>{ts}</span> <span style='color:{color}; font-weight:bold'>{lvl}</span> <span style='color:#a78bfa'>[{src}]</span> {msg}")
-            
-        cloudwatch_html = "<br/>".join(log_lines)
-        
+        if not records:
+            st.info("Log file exists but is empty. Run some scans first.")
+            return
+
+        df = pd.DataFrame(records)
+        for col in ["ts", "level", "logger", "module", "func", "line", "msg"]:
+            if col not in df.columns:
+                df[col] = ""
+        df = df.fillna("")
+
+        n_total = len(df)
+        n_err   = int((df["level"] == "ERROR").sum())
+        n_warn  = int((df["level"] == "WARNING").sum())
+        n_info  = int(df["level"].isin(["INFO", "DEBUG"]).sum())
+
+        # Show metrics
         st.markdown(
             f"""
-            <div style="background-color: #0d1117; color: #c9d1d9; padding: 12px; border-radius: 6px; 
-                        font-family: 'Consolas', 'Courier New', monospace; height: 80vh; 
-                        overflow-y: auto; white-space: pre-wrap; font-size: 0.85rem; line-height: 1.4;
-                        border: 1px solid #30363d;">
-{cloudwatch_html}
+            <div class="bt-metric-row">
+              <div class="bt-metric-card btm-total"><span class="val">{n_total:,}</span><span class="lbl">Total Entries</span></div>
+              <div class="bt-metric-card btm-error"><span class="val">{n_err:,}</span><span class="lbl">🔴 Errors</span></div>
+              <div class="bt-metric-card btm-warn"><span class="val">{n_warn:,}</span><span class="lbl">🟡 Warnings</span></div>
+              <div class="bt-metric-card btm-info"><span class="val">{n_info:,}</span><span class="lbl">🟢 Info + Debug</span></div>
             </div>
             """,
-            unsafe_allow_html=True
+            unsafe_allow_html=True,
         )
-    else:
-        st.info("No log entries match your filters.")
 
-    # ── Errors & Tracebacks ───────────────────────────────────────────────────
-    # Show the most recent errors with their full traceback so the developer
-    # gets all the context needed to diagnose a failure without digging through
-    # the raw JSONL file.
-    _err_view = view[view["level"] == "ERROR"].head(20)
-    if len(_err_view) > 0:
-        st.divider()
-        st.markdown("#### 🔴 Recent Errors & Tracebacks")
-        st.caption(f"Showing the {len(_err_view)} most recent error(s) from the current filter.")
-        for _, _erow in _err_view.iterrows():
-            _edict   = _erow.to_dict()
-            _emsg    = _build_display_msg(_edict)
-            _ets     = _fmt_ts(_edict.get("ts", ""))
-            _esrc    = ".".join(str(_edict.get("logger", "")).split(".")[-2:]) or "?"
-            _exc_txt = str(_edict.get("exc", "") or "")
-            # Extra context fields (doc, scan, path etc.) — skip internal keys.
-            _skip = {"ts", "level", "logger", "module", "func", "line", "msg", "exc"}
-            _extras = {k: v for k, v in _edict.items() if k not in _skip and v not in (None, "", [], {})}
+        # Apply filters
+        view = df.copy()
+        if chosen_level != "ALL":
+            view = view[view["level"] == chosen_level]
+        if chosen_module != "ALL":
+            view = view[view["logger"] == chosen_module]
+        if search_text:
+            _mask = (
+                view["msg"].str.contains(search_text, case=False, na=False)
+                | view.get("error", pd.Series(dtype=str)).fillna("").str.contains(search_text, case=False, na=False)
+                | view.get("file",  pd.Series(dtype=str)).fillna("").str.contains(search_text, case=False, na=False)
+            )
+            view = view[_mask]
 
-            with st.expander(f"🔴 {_ets}  ·  {_esrc}  —  {_emsg[:120]}", expanded=False):
-                # Full message in a styled box.
-                st.markdown(
-                    f'<div class="bt-log-row bt-log-error"><strong>[ERROR]</strong> {_ets} — {_emsg}</div>',
-                    unsafe_allow_html=True,
+        view = view.reset_index(drop=True)
+
+        if live_update:
+            st.caption(f"🟢 **Live Sync Active** — Showing **{len(view):,}** of {n_total:,} entries — oldest first")
+        else:
+            st.caption(f"Showing **{len(view):,}** of {n_total:,} entries — oldest first")
+
+        # Main log table (CloudWatch Style View)
+        if len(view) > 0:
+            log_lines = []
+            for _, row in view.iterrows():
+                ts = _fmt_ts(row.get("ts", ""))
+                lvl = str(row.get("level", "")).ljust(7)
+                src = ".".join(str(row.get("logger", "")).split(".")[-2:]) if "." in str(row.get("logger", "")) else str(row.get("logger", ""))
+                msg = _build_display_msg(row.to_dict())
+                
+                # Simple color coding for level
+                color = "#d4d4d4"
+                if "ERROR" in lvl: color = "#ef4444"
+                elif "WARN" in lvl: color = "#f59e0b"
+                elif "INFO" in lvl: color = "#22c55e"
+                
+                log_lines.append(f"<span style='color:#888'>{ts}</span> <span style='color:{color}; font-weight:bold'>{lvl}</span> <span style='color:#a78bfa'>[{src}]</span> {msg}")
+                
+            cloudwatch_html = "<br/>".join(log_lines)
+            
+            st.markdown(
+                f"""
+                <div style="background-color: #0d1117; color: #c9d1d9; padding: 12px; border-radius: 6px; 
+                            font-family: 'Consolas', 'Courier New', monospace; height: 80vh; 
+                            overflow-y: auto; white-space: pre-wrap; font-size: 0.85rem; line-height: 1.4;
+                            border: 1px solid #30363d;">
+{cloudwatch_html}
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+            
+            # Auto-scroll JavaScript to always keep bottom in view when live
+            if live_update:
+                st.components.v1.html(
+                    '''
+                    <script>
+                    const parentDoc = window.parent.document;
+                    const logBoxes = parentDoc.querySelectorAll('div[style*="background-color: #0d1117"]');
+                    if (logBoxes && logBoxes.length > 0) {
+                        const box = logBoxes[logBoxes.length - 1];
+                        box.scrollTop = box.scrollHeight;
+                    }
+                    </script>
+                    ''',
+                    height=0,
+                    width=0
                 )
-                # Traceback block if present.
-                if _exc_txt:
-                    st.markdown("**Traceback:**")
+        else:
+            st.info("No log entries match your filters.")
+
+        # Errors & Tracebacks
+        _err_view = view[view["level"] == "ERROR"].head(20)
+        if len(_err_view) > 0:
+            st.divider()
+            st.markdown("#### 🔴 Recent Errors & Tracebacks")
+            st.caption(f"Showing the {len(_err_view)} most recent error(s) from the current filter.")
+            for _, _erow in _err_view.iterrows():
+                _edict   = _erow.to_dict()
+                _emsg    = _build_display_msg(_edict)
+                _ets     = _fmt_ts(_edict.get("ts", ""))
+                _esrc    = ".".join(str(_edict.get("logger", "")).split(".")[-2:]) or "?"
+                _exc_txt = str(_edict.get("exc", "") or "")
+                _skip = {"ts", "level", "logger", "module", "func", "line", "msg", "exc"}
+                _extras = {k: v for k, v in _edict.items() if k not in _skip and v not in (None, "", [], {})}
+
+                with st.expander(f"🔴 {_ets}  ·  {_esrc}  —  {_emsg[:120]}", expanded=False):
                     st.markdown(
-                        f'<div class="bt-traceback">{_exc_txt}</div>',
+                        f'<div class="bt-log-row bt-log-error"><strong>[ERROR]</strong> {_ets} — {_emsg}</div>',
                         unsafe_allow_html=True,
                     )
-                # Context extras (file, path, error string, etc.).
-                if _extras:
-                    st.markdown("**Context:**")
-                    st.json(_extras)
+                    if _exc_txt:
+                        st.markdown("**Traceback:**")
+                        st.markdown(
+                            f'<div class="bt-traceback">{_exc_txt}</div>',
+                            unsafe_allow_html=True,
+                        )
+                    if _extras:
+                        st.markdown("**Context:**")
+                        st.json(_extras)
+
+    # Call the fragment
+    _live_feed()
 
 
 

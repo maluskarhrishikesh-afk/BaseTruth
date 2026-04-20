@@ -13,6 +13,8 @@ from basetruth.ui.components import (
     db_table_counts,
     db_table_rows,
     minio_bucket_stats,
+    minio_docs_bucket_stats,
+    minio_list_docs_objects,
     minio_list_objects,
     minio_truncate_bucket,
     reset_db,
@@ -121,6 +123,16 @@ def _cached_minio_list_objects(limit: int = 500) -> list:
     return minio_list_objects(limit=limit)
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_minio_docs_bucket_stats() -> dict:
+    return minio_docs_bucket_stats()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_minio_list_docs_objects(limit: int = 200) -> list:
+    return minio_list_docs_objects(limit=limit)
+
+
 def _page_database() -> None:
     st.markdown(_page_title("🗄️", "Database Viewer"), unsafe_allow_html=True)
     if st.button("🔄 Refresh", key="db_viewer_refresh"):
@@ -129,6 +141,8 @@ def _page_database() -> None:
         _cached_db_table_rows.clear()
         _cached_minio_bucket_stats.clear()
         _cached_minio_list_objects.clear()
+        _cached_minio_docs_bucket_stats.clear()
+        _cached_minio_list_docs_objects.clear()
         st.rerun()
     with st.expander("ℹ️ How to use this screen", expanded=False):
         st.markdown(
@@ -137,8 +151,8 @@ This screen gives you direct visibility into what is stored in the system.
 
 - **PostgreSQL tables** — browse entities, scans, document extractions, identity checks, and final reports row-by-row.
 - **MinIO object storage** — list PDF reports and source documents stored in the
-  S3-compatible bucket. Files are automatically uploaded here after each scan,
-  organised by applicant reference (e.g. `BT-000001/payslip_report.pdf`).
+    main S3-compatible bucket, plus technical reference files kept in the separate
+    `basetruth-docs` bucket (including `DATABASE.md`).
 - **Danger Zone** — reset (empty) both stores; useful during testing.
   Type `RESET` to confirm before anything is deleted.
 """
@@ -325,6 +339,32 @@ This screen gives you direct visibility into what is stored in the system.
                     st.dataframe(obj_df, hide_index=True, use_container_width=True, height=400)
                 else:
                     st.info("The bucket is empty.")
+
+                st.divider()
+                docs_stats = _cached_minio_docs_bucket_stats()
+                dc1, dc2, dc3 = st.columns(3)
+                dc1.metric("Docs Bucket", docs_stats.get("bucket", "—"))
+                dc2.metric("Docs Objects", f"{docs_stats.get('object_count', 0):,}")
+                dc3.metric("Docs Total Size", f"{docs_stats.get('total_mb', 0):.3f} MB")
+
+                docs_objs = _cached_minio_list_docs_objects(limit=200)
+                if docs_objs:
+                    import pandas as pd  # noqa: PLC0415
+
+                    st.subheader("Docs bucket objects")
+                    docs_df = pd.DataFrame(
+                        [
+                            {
+                                "Key": o["key"],
+                                "Size (KB)": o["size_kb"],
+                                "Last Modified": o["last_modified"][:19].replace("T", " "),
+                            }
+                            for o in docs_objs
+                        ]
+                    )
+                    st.dataframe(docs_df, hide_index=True, use_container_width=True, height=220)
+                else:
+                    st.info("The docs bucket is empty.")
 
     # ── Danger Zone tab ──────────────────────────────────────────────────────
     with danger_tab:

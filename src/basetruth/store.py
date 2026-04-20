@@ -2245,6 +2245,115 @@ def minio_get_object(key: str) -> Optional[bytes]:
         return None
 
 
+# ---------------------------------------------------------------------------
+# MinIO docs bucket — stores platform reference files (DATABASE.md, prompts,
+# etc.) so that Docker containers can always load the latest versions even
+# when the docs/ directory is not mounted into the container filesystem.
+# ---------------------------------------------------------------------------
+
+_DOCS_BUCKET = "basetruth-docs"
+
+
+def minio_docs_put(key: str, data: bytes, content_type: str = "text/plain") -> bool:
+    """Upload *data* to the 'basetruth-docs' MinIO bucket under *key*.
+
+    Used at startup to push DATABASE.md and other reference files so that
+    Docker containers can load them via minio_docs_get() as a filesystem
+    fallback. Creates the bucket automatically if it does not yet exist.
+
+    Returns True on success. Never raises — failures are logged and ignored.
+    """
+    import io as _io
+    client = _get_minio_s3_client()
+    if client is None:
+        return False
+    try:
+        # Ensure the docs bucket exists before uploading
+        try:
+            client.head_bucket(Bucket=_DOCS_BUCKET)
+        except Exception:
+            try:
+                client.create_bucket(Bucket=_DOCS_BUCKET)
+                log.info("minio_docs_put: created bucket '%s'", _DOCS_BUCKET)
+            except Exception:
+                pass  # bucket may already exist on some MinIO versions
+        client.put_object(
+            Bucket=_DOCS_BUCKET,
+            Key=key,
+            Body=_io.BytesIO(data),
+            ContentLength=len(data),
+            ContentType=content_type,
+        )
+        log.info("minio_docs_put: uploaded %d bytes → %s/%s", len(data), _DOCS_BUCKET, key)
+        return True
+    except Exception as exc:
+        log.warning("minio_docs_put: upload failed for key '%s' — %s", key, exc)
+        return False
+
+
+def minio_docs_get(key: str) -> Optional[bytes]:
+    """Download *key* from the 'basetruth-docs' MinIO bucket and return its bytes.
+
+    Used as a fallback in _load_database_md() when the local docs/ directory
+    is not available (e.g. inside a Docker container). Returns None when the
+    object does not exist or MinIO is unreachable. Never raises.
+    """
+    client = _get_minio_s3_client()
+    if client is None:
+        log.warning("minio_docs_get: no S3 client — docs bucket unavailable")
+        return None
+    try:
+        resp = client.get_object(Bucket=_DOCS_BUCKET, Key=key)
+        data = resp["Body"].read()
+        log.info("minio_docs_get: fetched %d bytes ← %s/%s", len(data), _DOCS_BUCKET, key)
+        return data
+    except Exception as exc:
+        log.warning("minio_docs_get: failed to fetch %s/%s — %s", _DOCS_BUCKET, key, exc)
+        return None
+
+
+def minio_docs_bucket_stats() -> Dict[str, Any]:
+    """Return object-count and size metrics for the MinIO docs bucket."""
+    client = _get_minio_s3_client()
+    if client is None:
+        return {"available": False, "bucket": _DOCS_BUCKET, "object_count": 0, "total_mb": 0.0}
+    try:
+        objects = client.list_objects_v2(Bucket=_DOCS_BUCKET).get("Contents", [])
+        total_bytes = sum(int(obj.get("Size", 0)) for obj in objects)
+        return {
+            "available": True,
+            "bucket": _DOCS_BUCKET,
+            "object_count": len(objects),
+            "total_mb": round(total_bytes / (1024 * 1024), 3),
+        }
+    except Exception as exc:
+        log.warning("minio_docs_bucket_stats failed: %s", exc)
+        return {"available": False, "bucket": _DOCS_BUCKET, "object_count": 0, "total_mb": 0.0}
+
+
+def minio_list_docs_objects(limit: int = 200) -> List[Dict[str, Any]]:
+    """List objects from the MinIO docs bucket, newest first."""
+    client = _get_minio_s3_client()
+    if client is None:
+        return []
+    try:
+        resp = client.list_objects_v2(Bucket=_DOCS_BUCKET)
+        objects = resp.get("Contents", [])
+        rows = [
+            {
+                "key": obj.get("Key", ""),
+                "size_kb": round(int(obj.get("Size", 0)) / 1024, 2),
+                "last_modified": obj.get("LastModified").isoformat() if obj.get("LastModified") else "",
+            }
+            for obj in objects
+        ]
+        rows.sort(key=lambda row: row.get("last_modified", ""), reverse=True)
+        return rows[:limit]
+    except Exception as exc:
+        log.warning("minio_list_docs_objects failed: %s", exc)
+        return []
+
+
 def get_all_entities_with_scans(limit: int = 200) -> List[Dict[str, Any]]:
     """Return all entities (most-recent first) with their full scan summaries."""
     try:

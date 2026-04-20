@@ -11,7 +11,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import streamlit as st
 
-from basetruth.datasources import DatasourceConfig, DatasourceRegistry  # noqa: F401 — re-exported
 from basetruth.service import BaseTruthService
 from basetruth.ui.theme import (  # noqa: F401 — re-exported for page modules
     _DISPOSITION_ICONS,
@@ -51,9 +50,11 @@ try:
         list_recent_scans,
         minio_available,
         minio_bucket_stats,
+        minio_docs_bucket_stats,
         minio_get_object,
         minio_delete_object,
         minio_list_entity_objects,
+        minio_list_docs_objects,
         minio_list_objects,
         minio_truncate_bucket,
         minio_upload,
@@ -119,6 +120,9 @@ except Exception:  # noqa: BLE001
     def minio_bucket_stats() -> dict:  # type: ignore[misc]
         return {}
 
+    def minio_docs_bucket_stats() -> dict:  # type: ignore[misc]
+        return {}
+
     def minio_get_object(key: str) -> Optional[bytes]:  # type: ignore[misc]
         return None
 
@@ -126,6 +130,9 @@ except Exception:  # noqa: BLE001
         return False
 
     def minio_list_entity_objects(entity_ref: str) -> list:  # type: ignore[misc]
+        return []
+
+    def minio_list_docs_objects(limit: int = 200) -> list:  # type: ignore[misc]
         return []
 
     def minio_list_objects(limit: int = 500) -> list:  # type: ignore[misc]

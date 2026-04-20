@@ -310,7 +310,7 @@ def _render_scan_row(scan: dict, show_approve_buttons: bool = True, key_prefix: 
 # ---------------------------------------------------------------------------
 
 def _page_scans() -> None:
-    st.markdown(_page_title("🔬", "Scans"), unsafe_allow_html=True)
+    st.markdown(_page_title("🔬", "Review Scans"), unsafe_allow_html=True)
 
     st.markdown(
         "Review each scan's 11-layer forensic analysis. "

@@ -45,12 +45,15 @@ def test_extract_pan_details_with_ollama_uses_probe_and_normalizes_payload(monke
     def _fake_probe() -> tuple[str, list[str], list[str]]:
         return "http://localhost:11434", ["gemma4:latest"], ["http://localhost:11434"]
 
-    def _fake_post(url: str, json: dict, timeout: tuple[int, int]):
+    def _fake_post(url: str, json: dict, timeout: tuple[int, int], **kwargs):
+        # Accept any kwargs so the test is not coupled to the exact requests.post signature
         captured["url"] = url
         captured["json"] = json
         captured["timeout"] = timeout
         return _DummyResponse()
 
+    # Force the Ollama provider path regardless of what settings.json contains
+    monkeypatch.setattr(ollama, "_load_llm_config", lambda: {"active_provider": "ollama"})
     monkeypatch.setattr(ollama, "probe_ollama", _fake_probe)
     monkeypatch.setattr(ollama.requests, "post", _fake_post)
 

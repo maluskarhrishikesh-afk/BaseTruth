@@ -1,39 +1,60 @@
 ﻿
-Clean up ->
+1) In case of structured pdf like payslip , offer letter etc shall we send image of the original pdf ?
+**Total Net Payable = Gross Earnings - Total Deductions
+12:12:14 INFO    [integrations.document_extract] document_extract: STRUCTURED PDF detected — skipping PaddleOCR | embedded text: 855 chars | will send embedded text + page image to LLM
+12:12:14 INFO    [integrations.document_extract] document_extract: cloud provider 'google' configured for document_extraction — skipping Ollama probe
+12:12:14 INFO    [integrations.document_extract] document_extract: routing to cloud provider for doc_type=payslip
+12:12:14 INFO    [integrations.document_extract] document_extract: sending to LLM — inputs: embedded PDF text (855 chars) + page image (JPEG) | doc_type=payslip | model=gemma-4-31b-it
+12:12:14 INFO    [integrations.document_extract] document_extract: exact LLM user prompt follows | image_attached=True
+Analyse this financial document image and extract all data into JSON.
 
-1) From the left panel remove "Layered Analysis" option and also remove any code related to it. We
-are no longer going to use this screen.
+--------------------------------------------------------------------------------------
 
-Remove these also from the left panel as its of no use to the end customer -> 🟢 PostgreSQL connected
+2) Can you revisit and check altogether how many fields should we extract from payslips,
+offer letters, experience and releiving letters, form 16 etc? I mean what fields are really
+required and vry useful?
 
--------------------------------------------------------------------------------------------------
+Lets make it proper now.
 
-2) Can you move the entire left panel to the top so that all options are visible without 
-scrolling down. There is lot of space wasted above BaseTruth logo.
+--------------------------------------------------------------------------------------
 
--------------------------------------------------------------------------------------------------
+3) Currently I am getitng the chat this way ->
+How many users have uploaded documents in the system?
 
-3) We are no longer using these tables in the database ->
-Layered Analysis Entries
-Cases 
-Case Notes
+💬
+Executive Summary: 📊 There are currently 3 unique applicants in the system who have uploaded documents for verification.
 
-Remove them from the system and also any code refrencing them as its no loger required.
-Remove it from "Database Viewer" screen also.
-Remove these tables from the documentation also.
+Key Findings: • Active Volume: A total of 3 entities have submitted files that have entered either the forensic scanning or data extraction pipeline. • Verification Scope: These applicants are now eligible for multi-layer forensic analysis and cross-document consistency checks.
 
--------------------------------------------------------------------------------------------------
+Recommended Action: • 🔍 Queue Review: Given the low volume, I recommend an immediate review of these 3 cases to ensure all mandatory document types are present and that no TAMPERED verdicts are awaiting senior sign-off.
 
-4) In the databe for all tables we should capture 
-created_on in this format -> Day/Month/Year
-created_at in this format -> Hours:Minutes:Seconds
+👤
+Can you tell their names?
 
-Basically any date and time should be captured in this format only so it becomes easy to work with it.
+💬
+Executive Summary: 📋 The three applicants who have uploaded documents are Hrishikesh Namdeo Maluskar, Maluskar Hrishkesh Namdeo, and Hrishikesh Maluskar.
 
--------------------------------------------------------------------------------------------------
+Key Findings: • Entity BT-000001: Hrishikesh Namdeo Maluskar • Entity BT-000002: Maluskar Hrishkesh Namdeo • Entity BT-000003: Hrishikesh Maluskar
 
-5) Now I want to test the application with  "GITHUB_TOKEN": "<stored in artifacts/config/settings.json — gitignored>",
-so can you make that setting active. Will switch to gemma4 later.
+⚠️ Critical Observation: There is a high probability of duplicate entity creation. All three records appear to belong to the same individual, but they have been registered as three separate entities with slight variations in name ordering and spelling.
 
-Also tell me how to change the settings so that I will be able to do it myself.
+Recommended Action: • 🔍 Identity De-duplication: I strongly recommend performing an immediate cross-check of the PAN and Aadhaar numbers for these three entities. • Consolidation: If the identity keys match, these records should be merged into a single entity to prevent fragmented verification and potential "gaming" of the system. • Investigation: Determine if these duplicates were created due to a system error during onboarding or a deliberate attempt to submit multiple applications.
 
+👤
+Can you give the list of all the documents submitted by Hrishikesh Namdeo Maluskar?
+
+💬
+Executive Summary: 📋 Applicant Hrishikesh Namdeo Maluskar (BT-000001) has submitted a comprehensive dossier of 12 documents. The majority of the professional and academic records are fully verified, while the primary identity documents remain pending.
+
+Key Findings: • ✅ Fully Approved Documents: 10 documents have passed both levels of review, including: • Education: Psychology Degree, and BE, HSC, and SSC Marksheets. • Employment: Offer Letter from NeoZoom and two monthly payslips (Dec 2025, Jan 2026). • Identity/Supporting: Passport (Front & Back) and a Signature sample. • ⏳ Pending Review: 2 critical identity documents submitted via the Identity Verification screen are still awaiting first-level approval: • Aadhaar Card (Aadhar.jpg) • PAN Card (pan_card.jpg) • 🔍 Submission Path: Most documents were processed via Bulk Scan, while the primary IDs were captured through the Identity Verification workflow.
+
+Recommended Action: • 🚀 Prioritize ID Approval: I recommend an immediate review of the Aadhaar and PAN card uploads. Once these two identity anchors are approved, this applicant's file can move to the Final Verification Report (BTR) stage. • 🛡️ Consistency Check: Ensure the name on the pending PAN/Aadhaar cards matches the name on the already approved Passport and Offer Letter to rule out identity inconsistency.
+
+Improvement -> Can we make it even better like bullets and numbers on separate line,
+icons and titles on new lines. I mean it has to look user friendly and readable similar
+to how chatGPT shows it.
+
+--------------------------------------------------------------------------------------
+
+Dont forget to add comments in the code in very simple language so that it becomes easy to 
+understand and debug the code.

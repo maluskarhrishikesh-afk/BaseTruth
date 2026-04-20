@@ -300,23 +300,44 @@ FOR PAYSLIPS return:
   "location": "",
   "joining_date": "",
   "pan_number": "",
-  "pf_number": "",
+  "pf_account_number": "",
   "uan_number": "",
+  "esic_number": "",
   "bank_account_last4": "",
+  "bank_name": "",
   "pay_period": "",
+  "pay_period_month": "",
+  "pay_period_year": null,
+  "working_days": null,
+  "paid_days": null,
+  "leave_days_taken": null,
   "basic_salary": null,
   "gross_salary": null,
   "total_deductions": null,
   "net_salary": null,
+  "ctc_per_annum": null,
+  "employer_pf_contribution": null,
   "allowances": {
     "basic": null,
     "hra": null,
-    "special_allowance": null
+    "special_allowance": null,
+    "conveyance_allowance": null,
+    "medical_allowance": null,
+    "lta": null,
+    "food_allowance": null,
+    "variable_pay": null,
+    "bonus": null,
+    "arrears": null,
+    "other_allowances": null
   },
   "deductions": {
     "provident_fund": null,
     "income_tax": null,
-    "professional_tax": null
+    "professional_tax": null,
+    "esic": null,
+    "loan_recovery": null,
+    "advance_recovery": null,
+    "other_deductions": null
   },
   "data_quality_notes": []
 }
@@ -324,24 +345,34 @@ FOR PAYSLIPS return:
 CRITICAL RULES FOR PAYSLIPS:
 1. EARNINGS: The "allowances" dict must contain EVERY individual earnings component
    you see in the Earnings/Income section (e.g. Basic, HRA, Special Allowance,
-   Conveyance, Medical, LTA, Bonus, etc.). Add one key per component. Use lowercase
-   snake_case keys (e.g. "special_allowance", "conveyance_allowance").
+   Conveyance, Medical, LTA, Bonus, Arrears, Variable Pay, etc.). Add one key per
+   component. Use lowercase snake_case keys (e.g. "special_allowance",
+   "conveyance_allowance"). Set each to null if not present — never omit a key.
 2. DEDUCTIONS: The "deductions" dict must contain EVERY individual deduction item
    you see (e.g. Provident Fund / PF, Income Tax / ITAX, Professional Tax / Prof Tax,
-   ESIC, Loan EMI, etc.). Add one key per item. Use lowercase snake_case keys.
-3. NUMBERS ONLY: All numeric values must be plain numbers with no currency symbols
+   ESIC, Loan EMI, Advance Recovery, etc.). Add one key per item.
+   Use lowercase snake_case keys.
+3. EMPLOYER PF: "employer_pf_contribution" is an employer cost and must NOT be placed
+   inside "deductions". It goes only in the top-level field. Leave it null if the
+   payslip does not show employer contributions separately.
+4. NUMBERS ONLY: All numeric values must be plain numbers with no currency symbols
    and no commas. Write 129791 not "₹1,29,791" or "1,29,791".
-4. basic_salary is the "Basic" or "Basic Pay" earnings component value.
-5. gross_salary is the Grand Total / Gross Pay of ALL earnings BEFORE any deduction.
-6. total_deductions is the sum total of ALL deductions shown on the slip.
-7. net_salary is the final take-home / Net Pay (gross_salary minus total_deductions).
-8. CROSS-CHECK: After extracting, verify that the sum of all values in "allowances"
-   equals gross_salary. If they differ, re-read the payslip carefully and fix it.
-9. CROSS-CHECK: Verify that gross_salary - total_deductions equals net_salary.
-   If they differ, re-check your values.
-10. For Indian payslips, check for a separate Income Tax / Tax Worksheet section
+5. basic_salary is the "Basic" or "Basic Pay" earnings component value.
+6. gross_salary is the Grand Total / Gross Pay of ALL earnings BEFORE any deduction.
+7. total_deductions is the sum total of ALL deductions shown on the slip.
+8. net_salary is the final take-home / Net Pay (gross_salary minus total_deductions).
+9. pay_period_month: the full month name as printed (e.g. "October", "January").
+   pay_period_year: the 4-digit year as an integer (e.g. 2025).
+10. working_days: total number of working days in the pay period (as printed).
+    paid_days: actual days the employee was paid for (working days minus unpaid leave).
+    leave_days_taken: number of leave days taken (if printed).
+11. CROSS-CHECK: After extracting, verify that the sum of all non-null values in
+    "allowances" equals gross_salary. If they differ, re-read the payslip and fix.
+12. CROSS-CHECK: Verify that gross_salary - total_deductions equals net_salary.
+    If they differ, re-check your values.
+13. For Indian payslips, check for a separate Income Tax / Tax Worksheet section
     and always populate income_tax in deductions from there.
-11. If any field is genuinely not present in the document, set it to null (not "N/A").
+14. If any field is genuinely not present in the document, set it to null (not "N/A").
 
 FOR BANK STATEMENTS return:
 {
@@ -351,9 +382,16 @@ FOR BANK STATEMENTS return:
   "bank_name": "",
   "branch": "",
   "ifsc_code": "",
+  "micr_code": "",
+  "account_type": "",
   "statement_period": "",
+  "statement_from_date": "",
+  "statement_to_date": "",
   "opening_balance": null,
   "closing_balance": null,
+  "total_credits": null,
+  "total_debits": null,
+  "average_monthly_balance": null,
   "data_quality_notes": []
 }
 
@@ -361,23 +399,65 @@ FOR FORM16 return:
 {
   "document_type": "Form16",
   "employee_name": "",
-  "pan_number": "",
+  "employee_pan": "",
   "employer_name": "",
   "employer_tan": "",
+  "employer_pan": "",
   "financial_year": "",
+  "assessment_year": "",
+  "period_of_employment": "",
   "gross_salary": null,
-  "total_tax_deducted": null,
+  "standard_deduction": null,
+  "hra_exemption": null,
+  "other_exemptions_section_10": null,
+  "income_chargeable_under_salary": null,
+  "deductions_chapter_via": {
+    "section_80c": null,
+    "section_80d": null,
+    "section_80e": null,
+    "section_80g": null,
+    "section_80gg": null,
+    "total_vi_a_deductions": null
+  },
+  "net_taxable_income": null,
+  "tax_on_total_income": null,
+  "surcharge": null,
+  "education_cess": null,
+  "relief_under_section_89": null,
+  "total_tax_payable": null,
+  "total_tds_deducted": null,
   "data_quality_notes": []
 }
+
+RULES FOR FORM16:
+1. Form 16 has two parts: Part A (TDS certificate with quarterly deposit details)
+   and Part B (income computation showing how taxable income was calculated).
+   Extract all fields you can see — not every Form 16 shows all fields.
+2. "standard_deduction" is the flat ₹50,000 deduction available to all salaried employees.
+3. "hra_exemption" is the House Rent Allowance exemption under Section 10(13A).
+4. "other_exemptions_section_10" covers all other Section 10 exemptions (LTA, uniform, etc.).
+5. "income_chargeable_under_salary" = gross_salary - standard_deduction - hra_exemption
+   - other_exemptions_section_10.
+6. "deductions_chapter_via" lists tax-saving investments/payments the employee declared
+   (80C = PF/PPF/ELSS/LIC, 80D = health insurance, 80E = education loan interest, etc.).
+7. "net_taxable_income" = income_chargeable_under_salary - total_vi_a_deductions.
+8. "total_tds_deducted" is the actual tax deducted from salary throughout the year.
+9. Set any field to null if it is not present or not readable on the document.
 
 FOR INCREMENT LETTERS return:
 {
   "document_type": "Increment Letter",
   "employee_name": "",
+  "employee_id": "",
   "company_name": "",
+  "designation": "",
+  "department": "",
   "effective_date": "",
-  "previous_salary": null,
-  "new_salary": null,
+  "letter_date": "",
+  "previous_ctc": null,
+  "new_ctc": null,
+  "previous_gross_monthly": null,
+  "new_gross_monthly": null,
   "increment_amount": null,
   "increment_percentage": null,
   "data_quality_notes": []
@@ -387,11 +467,12 @@ FOR GIFT LETTERS return:
 {
   "document_type": "Gift Letter",
   "donor_name": "",
+  "donor_relationship_to_recipient": "",
   "recipient_name": "",
-  "relationship": "",
   "gift_amount": null,
   "gift_date": "",
   "purpose": "",
+  "is_repayable": null,
   "data_quality_notes": []
 }
 
@@ -405,7 +486,18 @@ Analyse this employment document image and extract all data into JSON.
 FIRST: Is the image clear enough to read? If too blurry or dark, return ONLY:
 {"document_type":"Unreadable","message":"Image is not clear enough to extract data."}
 
-THEN determine type: "Offer Letter" or "Employment Letter".
+THEN determine the document type. Choose from:
+  "Offer Letter", "Experience Letter", "Relieving Letter", or "Employment Letter".
+
+  - "Offer Letter"      : issued BEFORE joining; contains salary offer and joining date.
+  - "Experience Letter" : issued AFTER the employee has left; confirms work history and
+                          designation held. Also called "Experience Certificate" or
+                          "Service Certificate".
+  - "Relieving Letter"  : issued on the last day; formally releases the employee from
+                          duties and confirms all dues/assets are cleared.
+  - "Employment Letter" : any other HR letter that does not clearly fit the above
+                          (e.g. an employment confirmation letter, a letter of appointment
+                          for a current employee, or a salary certificate).
 
 FOR OFFER LETTERS return:
 {
@@ -414,16 +506,92 @@ FOR OFFER LETTERS return:
   "company_name": "",
   "designation": "",
   "department": "",
+  "employment_type": "",
+  "grade_or_band": "",
   "joining_date": "",
-  "ctc_per_annum": null,
-  "gross_monthly": null,
   "offer_date": "",
   "location": "",
+  "reporting_manager": "",
   "probation_period": "",
+  "notice_period": "",
+  "bond_period": "",
+  "ctc_per_annum": null,
+  "gross_monthly": null,
+  "ctc_breakdown": {
+    "basic": null,
+    "hra": null,
+    "special_allowance": null,
+    "conveyance": null,
+    "medical": null,
+    "lta": null,
+    "pf_employer_contribution": null,
+    "gratuity": null,
+    "variable_pay": null,
+    "other": null
+  },
+  "benefits": "",
   "data_quality_notes": []
 }
 
-FOR EMPLOYMENT LETTERS return:
+RULES FOR OFFER LETTERS:
+1. "employment_type": use "Permanent", "Contractual", "Fixed-Term", or "Probation" as printed.
+2. "ctc_per_annum" is the total annual cost to the company (all components combined).
+   "gross_monthly" is the monthly in-hand pay before deductions but after employer costs are excluded.
+3. "ctc_breakdown" shows the individual salary components. Set each key to null if not listed.
+   Add extra keys for any components printed that are not in the template.
+4. "notice_period": e.g. "3 months", "30 days". Use the exact phrase from the letter.
+5. "bond_period": e.g. "2 years", "18 months". Set to null if no bond is mentioned.
+6. "benefits": a short description of other perks (medical insurance, gratuity, etc.) if mentioned.
+
+FOR EXPERIENCE LETTERS return:
+{
+  "document_type": "Experience Letter",
+  "employee_name": "",
+  "employee_id": "",
+  "company_name": "",
+  "designation": "",
+  "department": "",
+  "employment_start_date": "",
+  "employment_end_date": "",
+  "total_experience": "",
+  "last_drawn_salary": null,
+  "performance_note": "",
+  "letter_date": "",
+  "issued_by": "",
+  "data_quality_notes": []
+}
+
+RULES FOR EXPERIENCE LETTERS:
+1. "total_experience": compute or copy the total tenure if printed (e.g. "2 years 4 months").
+2. "last_drawn_salary": numeric monthly salary if mentioned; null otherwise.
+3. "performance_note": any phrase describing conduct or performance (e.g. "sincere and
+   hardworking", "satisfactory performance"). Leave blank if not mentioned.
+4. "issued_by": the name/designation of the signatory if visible.
+
+FOR RELIEVING LETTERS return:
+{
+  "document_type": "Relieving Letter",
+  "employee_name": "",
+  "employee_id": "",
+  "company_name": "",
+  "designation": "",
+  "last_working_date": "",
+  "letter_date": "",
+  "clearance_confirmed": null,
+  "assets_returned": null,
+  "dues_cleared": null,
+  "issued_by": "",
+  "data_quality_notes": []
+}
+
+RULES FOR RELIEVING LETTERS:
+1. "clearance_confirmed": true if the letter explicitly states all formalities/clearances
+   are complete; false if it says pending; null if not mentioned.
+2. "assets_returned": true if company assets (laptop, ID card, etc.) are confirmed returned;
+   null if not mentioned.
+3. "dues_cleared": true if the letter confirms all financial dues are settled; null otherwise.
+
+FOR EMPLOYMENT LETTERS (catch-all) return:
 {
   "document_type": "Employment Letter",
   "employee_name": "",

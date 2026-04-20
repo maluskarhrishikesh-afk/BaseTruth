@@ -49,8 +49,12 @@ desktop.ini
 your_data/
 artifacts/
 
-# ── Documentation (not needed at runtime) ─────────────────────────────────────
+# ── Documentation (not needed at runtime except DATABASE.md) ─────────────────
+# DATABASE.md is the authoritative schema reference read by the AI Copilot
+# at runtime — it must be INCLUDED in the image so _load_database_md() can
+# find it inside the container via the filesystem (fastest, no MinIO needed).
 docs/
+!docs/DATABASE.md
 documentation/
 
 # ── Model cache (large, mount separately if needed) ───────────────────────────

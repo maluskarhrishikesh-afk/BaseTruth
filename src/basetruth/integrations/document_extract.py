@@ -38,6 +38,7 @@ from basetruth.logger import get_logger
 from basetruth.integrations.ollama import (
     probe_ollama,
     select_ollama_model,
+    get_provider_config_for_feature,
     OLLAMA_CONNECT_TIMEOUT_SEC,
     OLLAMA_READ_TIMEOUT_SEC,
 )
@@ -539,6 +540,39 @@ def _layout_text_from_ocr_results(results: List[tuple], engine_name: str) -> tup
     return plain_text, markdown_text
 
 
+def _format_ocr_rows_with_coordinates(results: List[tuple]) -> str:
+    """Format OCR results as coordinate-annotated rows for the LLM prompt.
+
+    Each row is prefixed with its approximate pixel position in the format
+    [y=NNNpx x=NNNpx], telling the LLM exactly where each piece of text sits
+    on the page. This helps the model understand table structure: it can see
+    that label column (low x) and value column (high x) share the same y-row,
+    and that different sections are separated by larger vertical gaps.
+
+    For example a payslip might produce:
+        [y=120px x=10px]  Basic Salary      [y=120px x=200px]  25,000.00
+    The LLM uses those spatial clues to correctly pair labels with values even
+    when the markdown text loses alignment in a narrow display context.
+    """
+    words = _collect_layout_words(results)
+    if not words:
+        return ""
+
+    rows = _group_layout_words_into_rows(words)
+    lines: List[str] = []
+    for row in rows:
+        if not row:
+            continue
+        # Average vertical centre of all words in this row
+        y_avg = sum(w["y_centre"] for w in row) / len(row)
+        # Leftmost x position — shows where this row starts horizontally
+        x_min = min(w["x_left"] for w in row)
+        # Join words with double-space to keep column gaps visible
+        row_text = "  ".join(w["text"] for w in row)
+        lines.append(f"[y={y_avg:.0f}px x={x_min:.0f}px] {row_text}")
+    return "\n".join(lines)
+
+
 def _normalise_marksheet_markdown_text(ocr_text: str) -> str:
     """Turn row-preserving OCR text into a plain markdown body.
 
@@ -637,16 +671,23 @@ def _get_paddleocr_reader() -> tuple[Optional[str], Any]:
     return None, None
 
 
-def _paddleocr_to_text(img_bytes: bytes) -> tuple[str, str, str]:
-    """Run PaddleOCR and rebuild parser text plus markdown text.
+def _paddleocr_to_text(img_bytes: bytes) -> tuple[str, str, str, str]:
+    """Run PaddleOCR and rebuild parser text, markdown text, and coordinates text.
 
-    The plain text output is used by the deterministic parsers and Gemma4.
-    The markdown output keeps spacing so the saved OCR artifact still looks
-    structurally similar to the original marksheet.
+    Returns a 4-tuple:
+      (backend_name, parser_text, markdown_text, coords_text)
+
+    - parser_text   : flat plain-text reading order for deterministic parsers
+    - markdown_text : horizontally-spaced text preserving column alignment
+    - coords_text   : each row prefixed with [y=Npx x=Npx] for LLM spatial context
+
+    The coordinates text is the key improvement over the old image-only approach:
+    the LLM can now reason about table structure using numeric positions rather
+    than having to guess column alignment from character spacing alone.
     """
     backend_name, reader = _get_paddleocr_reader()
     if backend_name is None or reader is None:
-        return "", "", ""
+        return "", "", "", ""
 
     try:
         import numpy as np
@@ -682,11 +723,13 @@ def _paddleocr_to_text(img_bytes: bytes) -> tuple[str, str, str]:
                 results.append((bbox, text, conf))
 
         parser_text, markdown_text = _layout_text_from_ocr_results(results, backend_name)
-        return backend_name, parser_text, markdown_text
+        # Also build the coordinate-annotated text that shows row positions in pixels
+        coords_text = _format_ocr_rows_with_coordinates(results)
+        return backend_name, parser_text, markdown_text, coords_text
 
     except Exception as exc:
         log.warning("document_extract: %s extraction failed: %s", backend_name, exc)
-        return backend_name, "", ""
+        return backend_name, "", "", ""
 
 
 def _reformat_hsc_ocr_table(ocr_text: str) -> str:
@@ -2434,20 +2477,46 @@ def _attach_extraction_metadata(
 def _extract_json_from_text(text: str) -> str:
     """Pull the first complete JSON object out of a text string.
 
-    Gemma4 sometimes wraps its reply in markdown code fences or adds a
-    sentence before the JSON.  This strips all that away.
+    Uses two strategies in order:
+    1. If a markdown code fence (```json or ```) appears *anywhere* in the
+       text, extract the content inside it — Google/cloud models often add
+       preamble text before the fence so a plain startswith("```") check fails.
+    2. Fall back to brace-depth scanning on the raw text so postamble text
+       containing '}' characters cannot confuse the parser (the old rfind
+       approach returned garbage in that case, causing json.loads to raise
+       'Extra data' errors on retry responses).
     """
-    stripped = text.strip()
-    # Remove ```json ... ``` fences if present
-    if stripped.startswith("```"):
-        stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
-        stripped = re.sub(r"\s*```$", "", stripped)
-    # Find the first { ... } block
-    start = stripped.find("{")
-    end = stripped.rfind("}")
-    if start == -1 or end == -1:
+    if not text:
         return ""
-    return stripped[start: end + 1]
+
+    # Strategy 1: find a ```json ... ``` or ``` ... ``` fence anywhere.
+    fence_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", text, re.DOTALL)
+    if fence_match:
+        candidate = fence_match.group(1).strip()
+        brace_start = candidate.find("{")
+        if brace_start != -1:
+            depth = 0
+            for i, ch in enumerate(candidate[brace_start:], brace_start):
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return candidate[brace_start : i + 1]
+
+    # Strategy 2: brace-depth scan on the raw text.
+    brace_start = text.find("{")
+    if brace_start == -1:
+        return ""
+    depth = 0
+    for i, ch in enumerate(text[brace_start:], brace_start):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[brace_start : i + 1]
+    return ""
 
 
 def _validate_educational(data: Dict[str, Any]) -> List[str]:
@@ -2685,6 +2754,16 @@ def _validate_payslip(data: Dict[str, Any]) -> List[str]:
     If either check fails we return an error asking the model to re-read.
     We also auto-calculate total_deductions when the model left it null so
     the cross-check can still run.
+
+    NOTE: "employer_pf_contribution" lives at the TOP LEVEL of the extraction
+    result (not inside "deductions") because employer PF is an employer cost —
+    it is NOT deducted from the employee's gross salary. This keeps the
+    deductions sum correct and avoids inflating total_deductions.
+
+    The expanded allowances dict (conveyance, medical, lta, bonus, arrears, etc.)
+    and deductions dict (esic, loan_recovery, advance_recovery, other_deductions)
+    are all handled automatically here because we sum all non-null values
+    regardless of which specific keys are present.
     """
     errors: List[str] = []
     allowances = data.get("allowances") or {}
@@ -2754,16 +2833,38 @@ def _validate_extraction(data: Dict[str, Any], category: str) -> List[str]:
 
 
 def _resolve_ollama() -> tuple:
-    """Find a reachable Ollama endpoint and return (base_url, model).
+    """Find a reachable Ollama endpoint, or indicate that a cloud provider is active.
 
-    Uses probe_ollama() from the shared ollama.py module so that both
-    localhost:11434 and host.docker.internal:11434 (Docker environments) are
-    tried in order.  Also picks the best available model automatically, so
-    that model-name mismatches (e.g. 'gemma4:latest' vs 'gemma4:12b') are
-    handled correctly.
+    When active_provider=feature_models and document_extraction is routed to a
+    cloud provider (GitHub Models, OpenAI, Google, etc.), there is no Ollama
+    endpoint to probe.  In that case we return the sentinel ("cloud", "") so
+    that extract_document_fields() skips the Ollama availability check but still
+    calls _ollama_chat(), which will route the request to the correct cloud provider.
 
-    Returns (None, None) when Ollama is completely unreachable.
+    Returns:
+      (base_url, model) — Ollama is available; use these for local inference
+      ("cloud", "")     — a cloud provider is configured; skip Ollama probe
+      (None, None)      — Ollama is offline and no cloud provider is configured
     """
+    from .ollama import _load_llm_config  # lazy import to avoid circular dependency at module level
+
+    cfg = _load_llm_config()
+    active_provider = str(cfg.get("active_provider", "ollama") or "ollama").strip().lower()
+
+    # When feature_models routing is active, check if document_extraction is
+    # directed to a cloud provider — if so, skip the Ollama probe entirely.
+    if active_provider == "feature_models":
+        feat_cfg = get_provider_config_for_feature("document_extraction")
+        effective_provider = feat_cfg.get("provider", "ollama").lower().strip()
+        if effective_provider != "ollama":
+            log.info(
+                "document_extract: cloud provider '%s' configured for document_extraction "
+                "— skipping Ollama probe",
+                effective_provider,
+            )
+            return "cloud", feat_cfg.get("model", "")  # sentinel: cloud provider in use
+
+    # No cloud provider override — probe Ollama as usual
     base_url, models, _ = probe_ollama()
     if not base_url:
         return None, None
@@ -2774,27 +2875,42 @@ def _resolve_ollama() -> tuple:
 def _ollama_chat(messages: List[Dict[str, Any]], base_url: str, model: str) -> str:
     """Send a chat request to the configured VLM provider and return the text reply.
 
-    When active_provider is 'ollama', this posts directly to the local Ollama
-    API at the supplied base_url.  When a cloud provider is configured
-    (github_models, openai, anthropic), the messages are decomposed into
-    system_prompt + user_prompt + image bytes and routed through the shared
-    provider helpers in ollama.py.
+    Supports Ollama (local), OpenAI-compatible (GitHub Models, OpenAI), Anthropic,
+    and Google AI Studio.  When active_provider=feature_models, the actual provider
+    for document_extraction is resolved from per-feature routing config.
 
-    Raises requests.RequestException if Ollama is offline or returns an error.
-    Cloud provider errors raise requests.RequestException or return empty string.
+    The Ollama-format messages list is decomposed into system_prompt, user_prompt,
+    and image bytes before sending to cloud providers, since they use different
+    request formats than Ollama's native API.
+
+    Returns the text response from the model, or "" on any error.
     """
+    import base64 as _b64
     from .ollama import (
         _load_llm_config,
         _openai_compatible_vlm_chat,
         _anthropic_vlm_chat,
     )
+    from basetruth.integrations.llm_client import VLMClient
 
     cfg = _load_llm_config()
-    provider = str(cfg.get("active_provider", "ollama") or "ollama").strip().lower()
+    active_provider = str(cfg.get("active_provider", "ollama") or "ollama").strip().lower()
 
-    if provider != "ollama":
+    # When active_provider=feature_models, resolve the actual provider via
+    # per-feature routing for the document_extraction feature key.
+    if active_provider == "feature_models":
+        feat_cfg = get_provider_config_for_feature("document_extraction")
+        effective_provider = feat_cfg.get("provider", "ollama").lower().strip()
+        effective_provider_cfg = feat_cfg
+    else:
+        effective_provider = active_provider
+        effective_provider_cfg = cfg.get("providers", {}).get(effective_provider, {})
+
+    if effective_provider != "ollama":
         # Decompose the Ollama-format messages list into the generic interface
         # used by the cloud provider helpers: system_prompt, user_prompt, images.
+        # Note: only the last system and user messages are extracted, so cloud
+        # providers receive the most recent instruction in multi-turn flows.
         system_prompt = ""
         user_prompt = ""
         image_bytes_list: List[bytes] = []
@@ -2804,26 +2920,44 @@ def _ollama_chat(messages: List[Dict[str, Any]], base_url: str, model: str) -> s
             elif msg.get("role") == "user":
                 user_prompt = str(msg.get("content", ""))
                 for b64_str in msg.get("images", []):
-                    import base64 as _b64
                     image_bytes_list.append(_b64.b64decode(b64_str))
 
-        provider_cfg = cfg.get("providers", {}).get(provider, {})
-
-        if provider in ("github_models", "openai", "openai_compatible"):
+        if effective_provider in ("github_models", "openai", "openai_compatible"):
             content, _engine, _model = _openai_compatible_vlm_chat(
                 system_prompt, user_prompt, image_bytes_list,
-                provider_cfg,
+                effective_provider_cfg,
                 timeout_sec=OLLAMA_READ_TIMEOUT_SEC,
             )
             return content
 
-        if provider == "anthropic":
+        if effective_provider == "anthropic":
             content, _engine, _model = _anthropic_vlm_chat(
                 system_prompt, user_prompt, image_bytes_list,
-                provider_cfg,
+                effective_provider_cfg,
                 timeout_sec=OLLAMA_READ_TIMEOUT_SEC,
             )
             return content
+
+        if effective_provider == "google":
+            client = VLMClient(
+                "google",
+                str(effective_provider_cfg.get("model", "gemini-2.0-flash")),
+                base_url=str(effective_provider_cfg.get("base_url", "")).rstrip("/"),
+                api_key=str(effective_provider_cfg.get("api_key", "")).strip(),
+            )
+            content, _engine, _model, _base = client.chat_vision(
+                system_prompt, user_prompt, image_bytes_list,
+                timeout_sec=OLLAMA_READ_TIMEOUT_SEC,
+            )
+            return content
+
+    # Ollama path: use the feature-configured model when set (overrides the
+    # select_ollama_model() choice made earlier by _resolve_ollama).
+    if active_provider == "feature_models":
+        feat_cfg = get_provider_config_for_feature("document_extraction")
+        feature_model = feat_cfg.get("model", "") if feat_cfg.get("provider", "ollama") == "ollama" else ""
+        if feature_model:
+            model = feature_model  # honour the per-feature Ollama model override
 
     # Default: post directly to the local Ollama API
     payload = {
@@ -2888,25 +3022,67 @@ def extract_document_fields(
             "document_extract: text-based PDF detected — embedding raw text in prompt (%d chars)",
             len(raw_pdf_text),
         )
+        log.info(
+            "document_extract: exact embedded PDF text follows:\n%s",
+            raw_pdf_text,
+        )
 
-    # Step 2c: For scanned images (where PDF text extraction yields nothing),
-    # run PaddleOCR with bounding boxes and reconstruct the text row-by-row.
-    # This is the user's required top-to-bottom, left-to-right OCR pass.
-    # The result is a proper line-per-row text representation that preserves
-    # the table structure, so Gemma4 can match labels to values reliably instead
-    # of trying to parse the raw image pixels of a blurry scan.
+    # Step 2c: Decide whether to run PaddleOCR and extract text + bounding boxes.
     #
-    # IMPORTANT: We render the PDF page DIRECTLY at 3× zoom for PaddleOCR,
-    # rather than reusing the already-scaled Gemma4 JPEG.  The Gemma4 JPEG
-    # is scaled down to max_dim=2048 and JPEG-compressed, which degrades OCR
-    # quality.  The direct 3× PNG render gives PaddleOCR a cleaner image and
-    # avoids the spatial scrambling that occurs at lower resolutions.
+    # Two cases:
+    #   A) SCANNED IMAGE or SCANNED PDF — no embedded text layer.
+    #      PaddleOCR runs to extract text and pixel-level bounding box coordinates.
+    #      These coordinates tell the LLM exactly where each word sits on the page
+    #      so it can pair "Basic Salary" (left column, y=120) with "25,000" (right
+    #      column, y=120) even when the layout looks confusing in plain text.
+    #      Both the OCR text and the document image are sent to the LLM together.
+    #
+    #   B) STRUCTURED / DIGITAL PDF — _extract_pdf_text already found >200 chars
+    #      of clean embedded text (e.g. a payslip generated by payroll software).
+    #      PaddleOCR is SKIPPED because the embedded text is already perfect — no
+    #      OCR noise, no column scrambling.  We send the embedded text + the JPEG
+    #      render of the page to the LLM.  The image provides layout context; the
+    #      text provides exact numbers.  Running PaddleOCR on a software-generated
+    #      PDF would waste time and introduce unnecessary OCR errors.
+    #
+    # Exception: Marksheets ALWAYS use PaddleOCR regardless of PDF type because
+    # their complex table structures (rows of subjects + marks) need spatial
+    # coordinate data to be extracted correctly by the LLM.
+    #
+    # IMPORTANT (scanned path only): We render the PDF page DIRECTLY at 3× zoom
+    # for PaddleOCR, rather than reusing the already-scaled Gemma4 JPEG.  The
+    # Gemma4 JPEG is scaled down to max_dim=2048 and JPEG-compressed, which
+    # degrades OCR quality.  The direct 3× PNG render gives PaddleOCR a cleaner
+    # image and avoids the spatial scrambling that occurs at lower resolutions.
     ocr_text = ""
+    ocr_coords_text = ""  # coordinate-annotated OCR text fed to the LLM alongside the image
     ocr_engine_used = ""
     ocr_engine_comparison: List[Dict[str, Any]] = []
     layout_family = _LAYOUT_UNKNOWN
     raw_ocr_markdown_path = ""
-    if doc_type == "marksheet" or not raw_pdf_text:
+    marksheet_direct_hint: Dict[str, Any] | None = None
+
+    # Structured digital PDFs skip PaddleOCR — their embedded text is already perfect.
+    # Marksheets always use PaddleOCR because their table layouts need spatial coords.
+    _is_structured_pdf = bool(raw_pdf_text) and doc_type != "marksheet"
+    if _is_structured_pdf:
+        # Case B: structured PDF — log clearly and skip OCR
+        log.info(
+            "document_extract: STRUCTURED PDF detected — skipping PaddleOCR"
+            " | embedded text: %d chars | will send embedded text + page image to LLM",
+            len(raw_pdf_text),
+            extra={"doc_type": doc_type, "source_filename": filename},
+        )
+    else:
+        # Case A: scanned image or scanned PDF (or marksheet) — run PaddleOCR
+        log.info(
+            "document_extract: SCANNED DOCUMENT (or marksheet) detected — running PaddleOCR"
+            " to extract text and bounding box coordinates",
+            extra={"doc_type": doc_type, "source_filename": filename},
+        )
+    if not _is_structured_pdf:
+        # Only run PaddleOCR for scanned documents and marksheets.
+        # Structured PDFs already have perfect embedded text from Step 2b above.
         try:
             # Determine the raw source bytes for rendering
             if isinstance(source, (str, Path)):
@@ -2919,19 +3095,32 @@ def extract_document_fields(
             _src_suffix = Path(_src_filename).suffix.lower() if _src_filename else ""
 
             if _src_suffix == ".pdf" or _src_data[:4] == b"%PDF":
-                # Render page 1 at 3× zoom directly to PNG bytes for OCR
+                # Render page 1 at 3× zoom directly to PNG bytes for OCR.
+                # We avoid reusing the Gemma4 JPEG because it is JPEG-compressed
+                # and scaled, which reduces OCR accuracy on small text.
                 import fitz  # PyMuPDF
                 _doc = fitz.open(stream=_src_data, filetype="pdf")
                 _page = _doc.load_page(0)
-                _mat = fitz.Matrix(3.0, 3.0)  # same 3× as _file_to_jpeg_b64
+                _mat = fitz.Matrix(3.0, 3.0)  # 3× zoom = ~300 DPI equivalent
                 _pix = _page.get_pixmap(matrix=_mat)
-                ocr_image_bytes: bytes = _pix.tobytes("png")  # lossless PNG
+                ocr_image_bytes: bytes = _pix.tobytes("png")  # lossless PNG for best OCR quality
                 _doc.close()
+                log.info(
+                    "document_extract: rendered scanned PDF page to %dx%d PNG for PaddleOCR",
+                    _pix.width, _pix.height,
+                    extra={"doc_type": doc_type, "source_filename": filename},
+                )
             else:
-                # For image files, decode from the already-converted JPEG
+                # Image file (JPG, PNG etc.) — decode the already-converted JPEG
                 ocr_image_bytes = base64.b64decode(img_b64)
+                log.info(
+                    "document_extract: using decoded JPEG image for PaddleOCR"
+                    " (%d bytes)",
+                    len(ocr_image_bytes),
+                    extra={"doc_type": doc_type, "source_filename": filename},
+                )
 
-            paddle_engine, paddle_text, paddle_markdown_text = _paddleocr_to_text(ocr_image_bytes)
+            paddle_engine, paddle_text, paddle_markdown_text, paddle_coords_text = _paddleocr_to_text(ocr_image_bytes)
 
             if doc_type == "marksheet":
                 if not paddle_engine or not paddle_text:
@@ -2976,18 +3165,12 @@ def extract_document_fields(
                 )
                 direct_data = best_candidate.get("direct_data")
                 if direct_data is not None:
+                    marksheet_direct_hint = direct_data
                     log.info(
-                        "document_extract: %s direct parse succeeded (%d subjects, conf=%s) — skipping Gemma4",
+                        "document_extract: %s direct parse succeeded (%d subjects, conf=%s) — will pass this structured hint to Gemma4",
                         layout_family,
                         len(direct_data.get("subjects", [])),
                         direct_data.get("extraction_confidence"),
-                    )
-                    return _attach_extraction_metadata(
-                        direct_data,
-                        layout_family=layout_family,
-                        ocr_engine_used=ocr_engine_used,
-                        ocr_engine_comparison=ocr_engine_comparison,
-                        raw_ocr_markdown_path=raw_ocr_markdown_path,
                     )
             else:
                 # Use the spatially-aware markdown text (horizontal spacing preserved)
@@ -2996,7 +3179,27 @@ def extract_document_fields(
                 # paddle_markdown_text keeps row spacing so e.g. "Division: First Class"
                 # stays on the same line instead of being split across two.
                 ocr_text = paddle_markdown_text or paddle_text
+                ocr_coords_text = paddle_coords_text or ""  # coordinate-annotated rows
                 ocr_engine_used = paddle_engine or ""
+                # Log what PaddleOCR found so operators can see the extracted text in logs
+                _coord_rows = ocr_coords_text.count("\n") + 1 if ocr_coords_text else 0
+                log.info(
+                    "document_extract: PaddleOCR finished"
+                    " | text: %d chars | bounding box rows: %d"
+                    " | will pass text + coordinates + image to LLM",
+                    len(ocr_text),
+                    _coord_rows,
+                    extra={"doc_type": doc_type, "source_filename": filename},
+                )
+                log.info(
+                    "document_extract: exact PaddleOCR text follows:\n%s",
+                    ocr_text,
+                )
+                if ocr_coords_text:
+                    log.info(
+                        "document_extract: exact PaddleOCR bounding-box coordinates follow:\n%s",
+                        ocr_coords_text,
+                    )
 
             if ocr_text:
                 log.info(
@@ -3060,9 +3263,12 @@ def extract_document_fields(
             raw_ocr_markdown_path=raw_ocr_markdown_path,
         )
 
-    # Log the exact model that will be used so operators can confirm which
-    # Gemma4 variant is running (e.g. gemma4:12b vs gemma4:27b).
-    log.info("document_extract: using model=%s at %s for doc_type=%s", _model, _base_url, doc_type)
+    # Log the active inference backend so operators can confirm which model is running.
+    # When _base_url=="cloud", a cloud provider handles the request via _ollama_chat().
+    if _base_url == "cloud":
+        log.info("document_extract: routing to cloud provider for doc_type=%s", doc_type)
+    else:
+        log.info("document_extract: using model=%s at %s for doc_type=%s", _model, _base_url, doc_type)
 
     # Step 4: Choose the right prompt based on document category.
     # Marksheets now always use one generic marksheet prompt, regardless of
@@ -3126,6 +3332,17 @@ def extract_document_fields(
         )
         if structure_hint:
             prompt += structure_hint + "\n"
+        if marksheet_direct_hint:
+            # Even when the deterministic parser reads the marks table cleanly,
+            # we still call Gemma4 for the final extraction. Passing the parsed
+            # rows here gives the model a strong baseline while still letting it
+            # verify names, totals, and header fields against the actual image.
+            prompt += (
+                "\nDIRECT PARSE BASELINE (from deterministic PaddleOCR table parsing; "
+                "use this as a strong hint, then verify against the image before returning JSON):\n"
+                + json.dumps(marksheet_direct_hint, ensure_ascii=True)
+                + "\n"
+            )
 
     # If we have any supplementary text (embedded PDF text or PaddleOCR), append it
     # to the prompt.  We cap at 6000 chars to stay within the model's context window.
@@ -3155,31 +3372,98 @@ def extract_document_fields(
             + f"\n---\n{trust_note}"
         )
 
+    # For non-marksheet documents, always append PaddleOCR coordinates as a second
+    # section so the LLM has both human-readable text AND exact pixel positions.
+    # The coordinates let the model understand table structure — it can see that
+    # "Basic Salary" at [x=10px] and "25,000.00" at [x=220px] share the same
+    # [y=120px] row and therefore form a label-value pair.  This dramatically
+    # reduces column misalignment errors on payslips and bank statements.
+    if doc_type != "marksheet" and ocr_coords_text:
+        prompt = (
+            prompt
+            + "\n\n---\nPADDLEOCR BOUNDING BOX COORDINATES (each row prefixed with [y=Npx x=Npx]):\n"
+            + ocr_coords_text[:4000]
+            + "\n---\n"
+            "Use the y-coordinate to identify rows and the x-coordinate to separate "
+            "label columns (low x) from value columns (high x) in the same table row."
+        )
+        log.info(
+            "document_extract: appended PaddleOCR coordinates to prompt (%d chars, %d rows)",
+            len(ocr_coords_text),
+            ocr_coords_text.count("\n") + 1,
+        )
+
     log.debug(
-        "document_extract: category=%s doc_type=%s pdf_text=%s ocr_text=%s",
-        category, doc_type, bool(raw_pdf_text), bool(ocr_text),
+        "document_extract: category=%s doc_type=%s pdf_text=%s ocr_text=%s coords=%s",
+        category, doc_type, bool(raw_pdf_text), bool(ocr_text), bool(ocr_coords_text),
     )
 
     # Step 5: Build the initial chat message to Gemma4.
-    # When supplementary text is available (embedded PDF text or PaddleOCR), we send
-    # text-only — the model already has all the field values it needs from the text,
-    # and skipping the large JPEG dramatically reduces inference time (60s vs 600s+ on
-    # 16GB RAM).  The image is only included when no text could be extracted at all,
-    # so the model can fall back to reading the raw pixels.
-    user_msg: Dict[str, Any] = {"role": "user", "content": prompt}
-    if not supplementary_text:
-        # No OCR or embedded text available — include the image as the sole data source
-        user_msg["images"] = [img_b64]
+    # We ALWAYS include the document image alongside any text, even for structured
+    # PDFs that already have clean embedded text.  The reason: embedded text tells
+    # us WHAT is on the page (accurate characters and numbers), but the image tells
+    # us HOW it looks (table borders, column alignment, fonts, layout).  Sending
+    # both together gives the LLM the best chance of correctly pairing labels with
+    # values — especially on dense payslip tables where column alignment matters.
+    #
+    # For structured PDFs  → image + embedded text (both sent to LLM)
+    # For scanned images   → image + PaddleOCR text (both sent to LLM)
+    # For marksheets       → image + OCR text + deterministic hint (all three sent)
+    user_msg: Dict[str, Any] = {"role": "user", "content": prompt, "images": [img_b64]}
     messages: List[Dict[str, Any]] = [
         {"role": "system", "content": _get_prompt("system")},
         user_msg,
     ]
 
-    # Step 6: Send to Gemma4, validate, retry once if needed
+    # Log what we are sending to the LLM so operators can trace the full pipeline
+    _input_summary = []
+    if raw_pdf_text:
+        _input_summary.append(f"embedded PDF text ({len(raw_pdf_text)} chars)")
+    if ocr_text:
+        _input_summary.append(f"OCR text ({len(ocr_text)} chars)")
+    if ocr_coords_text:
+        _input_summary.append(f"bounding box coords ({ocr_coords_text.count(chr(10)) + 1} rows)")
+    _input_summary.append("page image (JPEG)")
+    log.info(
+        "document_extract: sending to LLM — inputs: %s | doc_type=%s | model=%s",
+        " + ".join(_input_summary),
+        doc_type,
+        _model,
+        extra={"source_filename": filename},
+    )
+    log.info(
+        "document_extract: exact LLM user prompt follows | image_attached=%s\n%s",
+        bool(user_msg.get("images")),
+        prompt,
+    )
+
+    # Step 6: Send to Gemma4, validate, retry once if needed.
+    # Two retry triggers:
+    #   1. Validation errors (wrong field types, missing required fields)
+    #   2. Model reports LOW extraction_confidence — this means it was uncertain
+    #      and we ask it to look again more carefully with stronger guidance.
     for attempt in range(MAX_RETRIES + 1):
         log.debug("document_extract: attempt %d/%d", attempt + 1, MAX_RETRIES + 1)
         try:
             raw_text = _ollama_chat(messages, _base_url, _model)
+
+            # Log the raw LLM response so operators can debug extraction issues
+            # without needing to replay the full pipeline.
+            log.info(
+                "document_extract: LLM response received (attempt %d/%d)"
+                " | length=%d chars | doc_type=%s",
+                attempt + 1,
+                MAX_RETRIES + 1,
+                len(raw_text),
+                doc_type,
+                extra={"source_filename": filename},
+            )
+            log.info(
+                "document_extract: exact raw LLM response follows (attempt %d):\n%s",
+                attempt + 1,
+                raw_text,
+            )
+
             json_str = _extract_json_from_text(raw_text)
 
             if not json_str:
@@ -3189,7 +3473,37 @@ def extract_document_fields(
             errors = _validate_extraction(data, category)
 
             if not errors:
-                # All good — return the clean extraction
+                # No structural validation errors — but also check if the model
+                # reported LOW extraction confidence. If it did and we still have
+                # a retry available, ask it to look again more carefully.
+                # confidence can be a string ("LOW"/"MEDIUM"/"HIGH") or a float (0-1).
+                model_conf = str(data.get("extraction_confidence") or data.get("confidence") or "").strip().upper()
+                is_low_confidence = (model_conf == "LOW")
+
+                if is_low_confidence and attempt < MAX_RETRIES:
+                    log.info(
+                        "document_extract: model reported LOW confidence on attempt %d — triggering retry",
+                        attempt + 1,
+                        extra={"doc_type": doc_type, "attempt": attempt + 1},
+                    )
+                    # Ask the model to try harder. Passing the original response lets
+                    # it see what it said before and correct specific uncertain fields.
+                    messages.append({"role": "assistant", "content": raw_text})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "Your previous extraction had LOW confidence. Please look at the document "
+                            "image and the OCR text again very carefully — pay special attention to:\n"
+                            "- Numbers in tables (salary rows, marks, amounts)\n"
+                            "- Names and identifiers that appear near the top of the document\n"
+                            "- Dates and period references\n"
+                            "Re-extract ALL fields with as much precision as possible. "
+                            "Return the FULL updated JSON only, with confidence set to MEDIUM or HIGH."
+                        ),
+                    })
+                    continue  # go to the next attempt
+
+                # All good (or already on last attempt) — return the clean extraction
                 data["_extraction_attempts"] = attempt + 1
                 log.info(
                     "document_extract: extraction succeeded",
@@ -3203,7 +3517,7 @@ def extract_document_fields(
                     raw_ocr_markdown_path=raw_ocr_markdown_path,
                 )
 
-            # There are errors — if we have retries left, ask Gemma4 to fix them
+            # There are structural errors — if we have retries left, ask Gemma4 to fix them
             if attempt < MAX_RETRIES:
                 log.debug("document_extract: validation errors on attempt %d: %s", attempt + 1, errors)
                 messages.append({"role": "assistant", "content": raw_text})

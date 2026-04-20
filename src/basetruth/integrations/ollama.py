@@ -1,7 +1,12 @@
-"""Shared Ollama helpers for Gemma4-powered BaseTruth features."""
+"""Shared Ollama helpers and VLM routing for BaseTruth features.
+
+This module owns the *routing* logic — reading settings.json, resolving which
+provider and model to use for each feature, and probing Ollama for a live
+endpoint.  The actual HTTP calls to each provider are delegated to VLMClient
+in llm_client.py so that provider-specific code stays in one place.
+"""
 from __future__ import annotations
 
-import base64
 import json
 import os
 import pathlib
@@ -9,6 +14,64 @@ import re
 from typing import Any, Dict, List, Sequence
 
 import requests
+
+from basetruth.logger import get_logger
+from basetruth.integrations.llm_client import (
+    VLMClient,
+    OLLAMA_CONNECT_TIMEOUT_SEC,
+    OLLAMA_READ_TIMEOUT_SEC,
+)
+
+log = get_logger(__name__)
+
+
+def _log_vlm_request(
+    operation: str,
+    *,
+    feature: str | None,
+    model: str | None,
+    base_url: str | None,
+    system_prompt: str,
+    user_prompt: str,
+    image_bytes_list: List[bytes],
+) -> None:
+    """Log the exact request we are sending to a vision model.
+
+    The log intentionally includes the full system and user prompts so operators
+    can reproduce the same call during debugging. Images are logged by count and
+    byte size only because dumping binary image data would make the logs unreadable.
+    """
+    log.info(
+        "%s: sending VLM request | feature=%s model=%s base_url=%s image_count=%d image_sizes=%s",
+        operation,
+        feature or "",
+        model or "",
+        base_url or "",
+        len(image_bytes_list),
+        [len(img) for img in image_bytes_list],
+    )
+    log.info("%s: exact system prompt follows:\n%s", operation, system_prompt)
+    log.info("%s: exact user prompt follows:\n%s", operation, user_prompt)
+
+
+def _log_vlm_response(
+    operation: str,
+    *,
+    engine: str,
+    model: str,
+    base_url: str,
+    content: str,
+) -> None:
+    """Log the exact response returned by a vision model."""
+    log.info(
+        "%s: received VLM response | engine=%s model=%s base_url=%s response_len=%d",
+        operation,
+        engine,
+        model,
+        base_url,
+        len(content),
+    )
+    log.info("%s: exact raw VLM response follows:\n%s", operation, content)
 
 # Path to the project-level LLM configuration file.  Resolved relative to the
 # current working directory so it works when Streamlit launches from the project
@@ -23,12 +86,10 @@ DEFAULT_OLLAMA_BASES = (
     "http://localhost:11434",
     "http://host.docker.internal:11434",
 )
-OLLAMA_CONNECT_TIMEOUT_SEC = 5
-OLLAMA_READ_TIMEOUT_SEC = 600
 
 # Shorter timeout used only for the quick document-type classification call.
 # 45 s is enough for a small yes/no classification; the full extraction calls
-# keep their 600 s timeout because they return much more data.
+# keep their 1200 s timeout because they return much more data.
 _DOC_CLASSIFY_READ_TIMEOUT_SEC = 45
 
 _EMPTY_FIELD_MARKERS = {"", "null", "none", "n/a", "na", "unknown", "not visible"}
@@ -114,23 +175,136 @@ def _load_llm_config() -> Dict[str, Any]:
         return {}
 
 
-def _get_configured_model() -> str:
-    """Return the Ollama model name to use, in priority order.
+# Reserved key inside the 'providers' block that holds per-feature model routing.
+# Keeping it as a constant means a single place to change if the key is ever renamed.
+_FEATURE_MODELS_KEY = "feature_models"
 
-    Priority: OLLAMA_MODEL env var → settings.json 'ollama_model' → DEFAULT_OLLAMA_MODEL.
-    This lets users change the model without touching source code — just edit
-    artifacts/config/settings.json or set the OLLAMA_MODEL environment variable.
+
+def _get_configured_model() -> str:
+    """Return the Ollama model name to use as a global fallback, in priority order.
+
+    Priority:
+      1. OLLAMA_MODEL environment variable  — highest priority (Docker / CI)
+      2. providers.ollama.model in settings.json — operator-editable
+      3. DEFAULT_OLLAMA_MODEL — hardcoded fallback
     """
-    # 1. Environment variable — highest priority, overrides config file (useful in Docker / CI)
+    # 1. Environment variable overrides everything
     env_model = os.getenv("OLLAMA_MODEL", "").strip()
     if env_model:
         return env_model
-    # 2. settings.json 'ollama_model' key — user-editable without code changes
-    configured = str(_load_llm_config().get("ollama_model", "")).strip()
+    # 2. Ollama provider's default model from the providers block
+    ollama_provider = _load_llm_config().get("providers", {}).get("ollama", {})
+    configured = str(ollama_provider.get("model", "")).strip()
     if configured:
         return configured
-    # 3. Hardcoded default — gemma4:e2b is the RAM-friendly 2B-parameter variant
+    # 3. Hardcoded fallback
     return DEFAULT_OLLAMA_MODEL
+
+
+def get_model_for_feature(feature: str) -> str:
+    """Return the Ollama model configured for a specific application feature.
+
+    Handles both the legacy string format and the new object format in settings.json:
+      Legacy:  "document_extraction": "gemma4:e4b"
+      Object:  "document_extraction": {"provider": "ollama", "model": "gemma4:e4b"}
+
+    Priority:
+      1. settings.json 'models.<feature>' key  — per-feature override
+      2. OLLAMA_MODEL env var                   — global env override
+      3. settings.json 'ollama_model'           — global settings override
+      4. DEFAULT_OLLAMA_MODEL                   — hardcoded fallback
+    """
+    models_section = _load_llm_config().get("providers", {}).get(_FEATURE_MODELS_KEY, {})
+    if isinstance(models_section, dict):
+        feature_entry = models_section.get(feature, "")
+        # Support both string ("gemma4:e4b") and object ({"provider": "ollama", "model": "..."})
+        if isinstance(feature_entry, dict):
+            feature_model = str(feature_entry.get("model", "")).strip()
+        elif isinstance(feature_entry, str):
+            feature_model = feature_entry.strip()
+        else:
+            feature_model = ""
+        if feature_model and not feature_model.startswith("_"):
+            log.debug("get_model_for_feature: feature=%s → model=%s (from settings.json)", feature, feature_model)
+            return feature_model
+    return _get_configured_model()
+
+
+def get_provider_config_for_feature(feature: str) -> Dict[str, Any]:
+    """Return the full provider + model + connection config for a specific feature.
+
+    Each BaseTruth feature can be routed to a different LLM provider. The 'models'
+    block in settings.json supports two formats:
+
+      Legacy string (Ollama only):
+        "document_extraction": "gemma4:e4b"
+
+      Object format (any provider):
+        "qna_copilot": {"provider": "github_models", "model": "gpt-4o-mini"}
+        "document_extraction": {"provider": "ollama", "model": "gemma4:e4b"}
+
+    Returns a dict with:
+      provider  — 'ollama', 'github_models', 'openai', 'anthropic'
+      model     — model name to pass to the API
+      base_url  — API base URL (empty for ollama; resolved at probe time)
+      api_key   — API key (empty for ollama)
+
+    Configure in artifacts/config/settings.json under 'models'.
+    Provider connection details (base_url, api_key) come from 'providers.<name>'.
+    """
+    cfg = _load_llm_config()
+    models_section = cfg.get("providers", {}).get(_FEATURE_MODELS_KEY, {})
+    providers_section = cfg.get("providers", {})
+
+    feature_entry = (models_section or {}).get(feature, "") if isinstance(models_section, dict) else ""
+
+    if isinstance(feature_entry, dict) and feature_entry and "provider" in feature_entry:
+        # Explicit {provider, model} object — highest priority
+        provider_name = str(feature_entry.get("provider", "ollama")).lower().strip()
+        model_name = str(feature_entry.get("model", "")).strip()
+        model_explicitly_configured = True
+    elif isinstance(feature_entry, str) and feature_entry and not feature_entry.startswith("_"):
+        # Legacy string — treat as an Ollama model name
+        provider_name = "ollama"
+        model_name = feature_entry.strip()
+        model_explicitly_configured = True
+    else:
+        # No feature-specific config — fall back to global active_provider.
+        # Leave model_name empty so Ollama callers use select_ollama_model()
+        # against the probe_ollama() list (which already honours OLLAMA_MODEL
+        # env var and providers.ollama.model in settings.json internally).
+        provider_name = get_active_provider()
+        model_name = ""
+        model_explicitly_configured = False
+
+    # Ollama: base_url and api_key are resolved later via probe_ollama()
+    if provider_name == "ollama":
+        # Use the explicitly configured model when set; otherwise return empty
+        # so that _route_vlm_chat falls back to select_ollama_model(probe_list).
+        resolved_model = model_name if model_explicitly_configured else ""
+        log.debug(
+            "get_provider_config_for_feature: feature=%s → provider=ollama model=%s "
+            "(explicit=%s)",
+            feature, resolved_model or "(probe selection)", model_explicitly_configured,
+        )
+        return {"provider": "ollama", "model": resolved_model, "base_url": "", "api_key": ""}
+
+    # Cloud provider — look up connection details from the 'providers' section
+    provider_cfg = dict(providers_section.get(provider_name, {}))
+    resolved_model = model_name or provider_cfg.get("model", "")
+    resolved_base_url = provider_cfg.get("base_url", "")
+    resolved_api_key = provider_cfg.get("api_key", "")
+
+    log.debug(
+        "get_provider_config_for_feature: feature=%s → provider=%s model=%s base_url=%s",
+        feature, provider_name, resolved_model, resolved_base_url,
+    )
+    return {
+        "provider": provider_name,
+        "model": resolved_model,
+        "base_url": resolved_base_url,
+        "api_key": resolved_api_key,
+    }
 
 
 def get_active_provider() -> str:
@@ -219,38 +393,15 @@ def _ollama_vlm_chat(
 ) -> tuple[str, str, str, str]:
     """POST a vision chat request to the local Ollama API.
 
-    Ollama embeds images as base64 strings directly inside the message object —
-    this differs from the OpenAI format that uses 'image_url' content blocks.
-    A system message is only added when system_prompt is non-empty so that
-    batch calls (which have no system prompt) match the expected Ollama format.
+    Thin wrapper around VLMClient._call_ollama that preserves the original
+    function signature for backward compatibility with call sites that already
+    have a resolved Ollama base_url and model name.
     Returns (content, 'gemma4_ollama', model_name, base_url).
     """
-    messages: List[Dict[str, Any]] = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({
-        "role": "user",
-        "content": user_prompt,
-        # Ollama expects images as base64-encoded ASCII strings in the message
-        "images": [base64.b64encode(img).decode("ascii") for img in image_bytes_list],
-    })
-    payload = {
-        "model": model,
-        "messages": messages,
-        "stream": False,
-        "options": {"temperature": 0},
-    }
-    try:
-        response = requests.post(
-            f"{base_url}/api/chat",
-            json=payload,
-            timeout=(OLLAMA_CONNECT_TIMEOUT_SEC, timeout_sec),
-        )  # nosemgrep: basetruth-ssrf
-        response.raise_for_status()
-        content = str(response.json().get("message", {}).get("content", "")).strip()
-        return content, "gemma4_ollama", model, base_url
-    except requests.RequestException:
-        return "", "gemma4_ollama", model, base_url
+    client = VLMClient("ollama", model, base_url=base_url)
+    return client.chat_vision(
+        system_prompt, user_prompt, image_bytes_list, timeout_sec=timeout_sec
+    )
 
 
 def _openai_compatible_vlm_chat(
@@ -263,67 +414,21 @@ def _openai_compatible_vlm_chat(
 ) -> tuple[str, str, str]:
     """POST a vision chat request to an OpenAI-compatible endpoint.
 
-    Works with GitHub Models (Azure inference endpoint), standard OpenAI, and any
-    other provider following the OpenAI chat/completions API.  Images are sent as
-    base64 data URIs inside 'image_url' content blocks — this is the standard
-    OpenAI multimodal format, different from Ollama's format.
-    API key is read from provider_cfg first, then from environment variables
-    (GITHUB_TOKEN for GitHub Models, OPENAI_API_KEY for others).
+    Thin wrapper around VLMClient._call_openai_compatible that accepts the
+    provider_cfg dict format used throughout the routing layer.  Preserves the
+    original 3-tuple return type (content, engine, model) for backward compat.
     Returns (content, 'openai_compatible', model_name).
     """
-    base_url = str(provider_cfg.get("base_url", "https://api.openai.com/v1")).rstrip("/")
-    model = str(provider_cfg.get("model", "gpt-4o-mini"))
-    # Read API key from config first; fall back to standard environment variables
-    api_key = str(provider_cfg.get("api_key", "")).strip()
-    if not api_key:
-        # GitHub Models uses the GitHub personal access token; standard OpenAI uses OPENAI_API_KEY
-        if "azure.com" in base_url or "github" in base_url.lower():
-            api_key = os.getenv("GITHUB_TOKEN", "")
-        else:
-            api_key = os.getenv("OPENAI_API_KEY", "")
-    if not api_key:
-        return "", "openai_compatible", model
-
-    # OpenAI format: text first, then one image_url block per image
-    content_parts: List[Dict[str, Any]] = [{"type": "text", "text": user_prompt}]
-    for img_bytes in image_bytes_list:
-        b64 = base64.b64encode(img_bytes).decode("ascii")
-        content_parts.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
-        })
-
-    messages: List[Dict[str, Any]] = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": content_parts})
-
-    payload = {
-        "model": model,
-        "messages": messages,
-        "temperature": 0,
-        "max_tokens": 4096,
-    }
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    try:
-        response = requests.post(
-            f"{base_url}/chat/completions",
-            json=payload,
-            headers=headers,
-            timeout=(OLLAMA_CONNECT_TIMEOUT_SEC, timeout_sec),
-        )  # nosemgrep: basetruth-ssrf
-        response.raise_for_status()
-        text = str(
-            response.json().get("choices", [{}])[0]
-            .get("message", {})
-            .get("content", "")
-        ).strip()
-        return text, "openai_compatible", model
-    except (requests.RequestException, KeyError, IndexError):
-        return "", "openai_compatible", model
+    client = VLMClient(
+        "openai_compatible",
+        str(provider_cfg.get("model", "gpt-4o-mini")),
+        base_url=str(provider_cfg.get("base_url", "")).rstrip("/"),
+        api_key=str(provider_cfg.get("api_key", "")).strip(),
+    )
+    content, engine, model, _base = client.chat_vision(
+        system_prompt, user_prompt, image_bytes_list, timeout_sec=timeout_sec
+    )
+    return content, engine, model
 
 
 def _anthropic_vlm_chat(
@@ -336,58 +441,20 @@ def _anthropic_vlm_chat(
 ) -> tuple[str, str, str]:
     """POST a vision chat request to the Anthropic Messages API.
 
-    Anthropic uses a different auth header ('x-api-key') and a different image
-    format where images appear as 'source' blocks inside the content array.
-    The system prompt is a top-level field, not a messages entry.
-    Images are placed before the text prompt in the content array, as Anthropic
-    requires images to appear before any text that references them.
+    Thin wrapper around VLMClient._call_anthropic that accepts the provider_cfg
+    dict format used throughout the routing layer.  Preserves the original
+    3-tuple return type (content, engine, model) for backward compat.
     Returns (content, 'anthropic', model_name).
     """
-    api_key = str(provider_cfg.get("api_key", "")).strip() or os.getenv("ANTHROPIC_API_KEY", "")
-    model = str(provider_cfg.get("model", "claude-3-5-haiku-20241022"))
-    if not api_key:
-        return "", "anthropic", model
-
-    # Anthropic format: images come before the text prompt in the content array
-    content_parts: List[Dict[str, Any]] = []
-    for img_bytes in image_bytes_list:
-        b64 = base64.b64encode(img_bytes).decode("ascii")
-        content_parts.append({
-            "type": "image",
-            "source": {"type": "base64", "media_type": "image/jpeg", "data": b64},
-        })
-    content_parts.append({"type": "text", "text": user_prompt})
-
-    payload: Dict[str, Any] = {
-        "model": model,
-        "max_tokens": 4096,
-        "messages": [{"role": "user", "content": content_parts}],
-    }
-    # Anthropic only accepts a non-empty system string
-    if system_prompt:
-        payload["system"] = system_prompt
-
-    headers = {
-        "x-api-key": api_key,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-    }
-    try:
-        response = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            json=payload,
-            headers=headers,
-            timeout=(OLLAMA_CONNECT_TIMEOUT_SEC, timeout_sec),
-        )  # nosemgrep: basetruth-ssrf
-        response.raise_for_status()
-        blocks = response.json().get("content", [])
-        # Pull the first text block out of the Anthropic response content array
-        text = str(
-            next((b.get("text", "") for b in blocks if b.get("type") == "text"), "")
-        ).strip()
-        return text, "anthropic", model
-    except (requests.RequestException, KeyError, StopIteration):
-        return "", "anthropic", model
+    client = VLMClient(
+        "anthropic",
+        str(provider_cfg.get("model", "claude-3-5-haiku-20241022")),
+        api_key=str(provider_cfg.get("api_key", "")).strip(),
+    )
+    content, engine, model, _base = client.chat_vision(
+        system_prompt, user_prompt, image_bytes_list, timeout_sec=timeout_sec
+    )
+    return content, engine, model
 
 
 def _route_vlm_chat(
@@ -401,11 +468,20 @@ def _route_vlm_chat(
     # already resolved by the caller.
     ollama_base_url: str | None = None,
     ollama_model: str | None = None,
+    # Per-feature routing: when set, reads feature_models config from settings.json
+    # so individual features (pan_extraction, aadhaar_extraction, etc.) can be
+    # routed to different providers without changing the global active_provider.
+    feature: str | None = None,
 ) -> tuple[str, str, str, str]:
     """Route a VLM vision request to the configured provider.
 
-    Reads 'active_provider' from artifacts/config/settings.json and routes the
-    request to Ollama (local), GitHub Models, OpenAI, or Anthropic accordingly.
+    Routing priority (highest to lowest):
+      1. Explicit ollama_base_url / ollama_model caller overrides.
+      2. Per-feature config from providers.feature_models.<feature> in settings.json
+         (when 'feature' is provided).
+      3. Global active_provider in settings.json.
+      4. Local Ollama (hardcoded fallback).
+
     Provider credentials are read from the providers block in settings.json with
     environment variable fallbacks (GITHUB_TOKEN, OPENAI_API_KEY, ANTHROPIC_API_KEY).
 
@@ -413,6 +489,10 @@ def _route_vlm_chat(
     """
     # If the caller already resolved an Ollama endpoint, use it directly
     if ollama_base_url:
+        log.info(
+            "_route_vlm_chat: using caller-supplied Ollama endpoint — model=%s base_url=%s",
+            ollama_model or _get_configured_model(), ollama_base_url,
+        )
         return _ollama_vlm_chat(
             system_prompt, user_prompt, image_bytes_list,
             base_url=ollama_base_url,
@@ -420,9 +500,78 @@ def _route_vlm_chat(
             timeout_sec=timeout_sec,
         )
 
+    # Per-feature routing: consult get_provider_config_for_feature when a feature
+    # name is given.  This honours the providers.feature_models.<feature> block in
+    # settings.json and is the correct path for pan_extraction / aadhaar_extraction.
+    if feature:
+        provider_cfg = get_provider_config_for_feature(feature)
+        provider_name = provider_cfg.get("provider", "ollama").lower().strip()
+        resolved_model = str(provider_cfg.get("model", "")).strip()
+        resolved_base_url = str(provider_cfg.get("base_url", "")).strip()
+        log.info(
+            "_route_vlm_chat: feature=%s → provider=%s model=%s base_url=%s",
+            feature, provider_name, resolved_model, resolved_base_url or "(ollama auto-detect)",
+        )
+        if provider_name in ("github_models", "openai", "openai_compatible"):
+            content, engine, model = _openai_compatible_vlm_chat(
+                system_prompt, user_prompt, image_bytes_list,
+                provider_cfg,
+                timeout_sec=timeout_sec,
+            )
+            return content, engine, model, resolved_base_url
+        if provider_name == "anthropic":
+            content, engine, model = _anthropic_vlm_chat(
+                system_prompt, user_prompt, image_bytes_list,
+                provider_cfg,
+                timeout_sec=timeout_sec,
+            )
+            return content, engine, model, "https://api.anthropic.com/v1"
+        if provider_name == "google":
+            # Google AI Studio: instantiate VLMClient with the resolved credentials
+            api_key = str(provider_cfg.get("api_key", "")).strip()
+            client = VLMClient(
+                "google", resolved_model or provider_cfg.get("model", "gemini-2.0-flash"),
+                base_url=resolved_base_url,
+                api_key=api_key,
+            )
+            return client.chat_vision(
+                system_prompt, user_prompt, image_bytes_list, timeout_sec=timeout_sec
+            )
+        # Ollama: auto-detect endpoint and use the feature-configured model
+        base_url_o, models, _ = probe_ollama()
+        if not base_url_o:
+            return "", "gemma4_ollama", resolved_model or _get_configured_model(), ""
+        selected_model = resolved_model or select_ollama_model(models)
+        log.info(
+            "_route_vlm_chat: Ollama endpoint resolved — base_url=%s model=%s",
+            base_url_o, selected_model,
+        )
+        return _ollama_vlm_chat(
+            system_prompt, user_prompt, image_bytes_list,
+            base_url=base_url_o,
+            model=selected_model,
+            timeout_sec=timeout_sec,
+        )
+
+    # Global routing (no per-feature override): use active_provider from settings.json.
     cfg = _load_llm_config()
     provider = str(cfg.get("active_provider", "ollama") or "ollama").strip().lower()
-    provider_cfg: Dict[str, Any] = cfg.get("providers", {}).get(provider, {})
+
+    # "feature_models" is a routing sentinel, not a real provider name.
+    # When it appears as the global active_provider and no feature was specified,
+    # fall back to Ollama so callers that do not pass a feature still work.
+    if provider == "feature_models":
+        log.debug(
+            "_route_vlm_chat: active_provider=feature_models but no feature specified — "
+            "falling back to Ollama. Pass feature= to use per-feature routing.",
+        )
+        provider = "ollama"
+
+    provider_cfg = cfg.get("providers", {}).get(provider, {})
+    log.info(
+        "_route_vlm_chat: global routing — provider=%s model=%s",
+        provider, provider_cfg.get("model", _get_configured_model()),
+    )
 
     if provider in ("github_models", "openai", "openai_compatible"):
         content, engine, model = _openai_compatible_vlm_chat(
@@ -440,11 +589,29 @@ def _route_vlm_chat(
         )
         return content, engine, model, "https://api.anthropic.com/v1"
 
+    if provider == "google":
+        # Google AI Studio: instantiate VLMClient with connection details from providers block
+        resolved_google_base = str(provider_cfg.get("base_url", "")).rstrip("/")
+        resolved_google_model = str(provider_cfg.get("model", "gemini-2.0-flash"))
+        resolved_google_key = str(provider_cfg.get("api_key", "")).strip()
+        client = VLMClient(
+            "google", resolved_google_model,
+            base_url=resolved_google_base,
+            api_key=resolved_google_key,
+        )
+        return client.chat_vision(
+            system_prompt, user_prompt, image_bytes_list, timeout_sec=timeout_sec
+        )
+
     # Default path: local Ollama
     base_url, models, _ = probe_ollama()
     if not base_url:
         return "", "gemma4_ollama", _get_configured_model(), ""
     selected_model = select_ollama_model(models)
+    log.info(
+        "_route_vlm_chat: Ollama endpoint resolved — base_url=%s model=%s",
+        base_url, selected_model,
+    )
     return _ollama_vlm_chat(
         system_prompt, user_prompt, image_bytes_list,
         base_url=base_url,
@@ -454,18 +621,48 @@ def _route_vlm_chat(
 
 
 def _extract_json_object(text: str) -> str:
-    stripped = text.strip()
-    if not stripped:
-        return ""
-    if stripped.startswith("```"):
-        stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
-        stripped = re.sub(r"\s*```$", "", stripped)
+    """Pull the first complete JSON object from a model response string.
 
-    start = stripped.find("{")
-    end = stripped.rfind("}")
-    if start == -1 or end == -1 or end < start:
+    Uses two strategies in order:
+    1. If a markdown code fence (```json or ```) appears *anywhere* in the
+       text, extract the content inside it — Google/cloud models often add
+       preamble text before the fence so a plain startswith("```") check fails.
+    2. Fall back to scanning the raw text for the first '{' and walking
+       brace-depth to find its matching '}', which is immune to postamble
+       text that contains unrelated '}' characters (the old rfind approach
+       breaks in that case and returns garbage to json.loads).
+    """
+    if not text:
         return ""
-    return stripped[start:end + 1]
+
+    # Strategy 1: find a ```json ... ``` or ``` ... ``` fence anywhere.
+    fence_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", text, re.DOTALL)
+    if fence_match:
+        candidate = fence_match.group(1).strip()
+        brace_start = candidate.find("{")
+        if brace_start != -1:
+            depth = 0
+            for i, ch in enumerate(candidate[brace_start:], brace_start):
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return candidate[brace_start : i + 1]
+
+    # Strategy 2: brace-depth scan on the raw text.
+    brace_start = text.find("{")
+    if brace_start == -1:
+        return ""
+    depth = 0
+    for i, ch in enumerate(text[brace_start:], brace_start):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[brace_start : i + 1]
+    return ""
 
 
 def _clean_field(value: Any) -> str:
@@ -582,22 +779,69 @@ def extract_aadhaar_details_with_ollama(
     model: str | None = None,
     base_url: str | None = None,
 ) -> Dict[str, Any]:
-    """Extract structured Aadhaar fields from an image using Gemma4 via Ollama."""
+    """Extract structured Aadhaar fields from an image using the configured VLM provider.
+
+    Routes via the 'aadhaar_extraction' feature key in settings.json so the
+    operator can point this feature at any supported provider (Ollama, GitHub
+    Models, OpenAI, Anthropic) without touching the code.
+    """
     if not image_bytes:
         return {}
 
+    log.info(
+        "extract_aadhaar_details: starting VLM extraction — feature=aadhaar_extraction",
+    )
+    _log_vlm_request(
+        "extract_aadhaar_details",
+        feature="aadhaar_extraction",
+        model=model,
+        base_url=base_url,
+        system_prompt=AADHAAR_EXTRACTION_SYSTEM_PROMPT,
+        user_prompt=AADHAAR_EXTRACTION_PROMPT,
+        image_bytes_list=[image_bytes],
+    )
     content, engine, resolved_model, resolved_base = _route_vlm_chat(
         AADHAAR_EXTRACTION_SYSTEM_PROMPT,
         AADHAAR_EXTRACTION_PROMPT,
         [image_bytes],
+        # Honour explicit caller overrides (e.g. from the identity page probe path);
+        # otherwise _route_vlm_chat resolves the provider from settings.json.
         ollama_base_url=base_url,
         ollama_model=model,
+        feature="aadhaar_extraction",
     )
     if not content:
+        log.warning(
+            "extract_aadhaar_details: VLM returned empty response — "
+            "engine=%s model=%s base_url=%s",
+            engine, resolved_model, resolved_base,
+        )
         return {}
+    _log_vlm_response(
+        "extract_aadhaar_details",
+        engine=engine,
+        model=resolved_model,
+        base_url=resolved_base,
+        content=content,
+    )
     parsed = parse_aadhaar_response_content(content)
     if not parsed:
+        log.warning(
+            "extract_aadhaar_details: could not parse VLM response — "
+            "engine=%s model=%s raw_len=%d",
+            engine, resolved_model, len(content),
+        )
         return {}
+    # Log what the model extracted so operators can verify accuracy at a glance
+    log.info(
+        "extract_aadhaar_details: extraction complete — engine=%s model=%s "
+        "uid=%s name=%s dob=%s gender=%s",
+        engine, resolved_model,
+        parsed.get("uid", ""),
+        parsed.get("name", ""),
+        parsed.get("dob", ""),
+        parsed.get("gender", ""),
+    )
     parsed["engine"] = engine
     parsed["model"] = resolved_model
     parsed["base_url"] = resolved_base
@@ -612,22 +856,57 @@ def extract_pan_details_with_ollama(
     model: str | None = None,
     base_url: str | None = None,
 ) -> Dict[str, Any]:
-    """Extract structured PAN fields from an image using Gemma4 via Ollama."""
+    """Extract structured PAN fields from an image using the configured VLM provider.
+
+    Routes via the 'pan_extraction' feature key in settings.json.
+    """
     if not image_bytes:
         return {}
 
+    log.info("extract_pan_details: starting VLM extraction — feature=pan_extraction")
+    _log_vlm_request(
+        "extract_pan_details",
+        feature="pan_extraction",
+        model=model,
+        base_url=base_url,
+        system_prompt=PAN_EXTRACTION_SYSTEM_PROMPT,
+        user_prompt=PAN_EXTRACTION_PROMPT,
+        image_bytes_list=[image_bytes],
+    )
     content, engine, resolved_model, resolved_base = _route_vlm_chat(
         PAN_EXTRACTION_SYSTEM_PROMPT,
         PAN_EXTRACTION_PROMPT,
         [image_bytes],
         ollama_base_url=base_url,
         ollama_model=model,
+        feature="pan_extraction",
     )
     if not content:
+        log.warning(
+            "extract_pan_details: VLM returned empty response — engine=%s model=%s",
+            engine, resolved_model,
+        )
         return {}
+    _log_vlm_response(
+        "extract_pan_details",
+        engine=engine,
+        model=resolved_model,
+        base_url=resolved_base,
+        content=content,
+    )
     parsed = parse_pan_response_content(content)
     if not parsed:
+        log.warning(
+            "extract_pan_details: could not parse VLM response — engine=%s model=%s",
+            engine, resolved_model,
+        )
         return {}
+    log.info(
+        "extract_pan_details: extraction complete — engine=%s model=%s pan=%s name=%s",
+        engine, resolved_model,
+        parsed.get("pan_number", ""),
+        parsed.get("full_name", ""),
+    )
     parsed["engine"] = engine
     parsed["model"] = resolved_model
     parsed["base_url"] = resolved_base
@@ -673,20 +952,28 @@ Rules for card text fields:
 - PAN number: 5 letters, 4 digits, 1 letter format if visible.
 - Do not guess missing values; return empty string when a field is not visible.
 
-Rules for signature_box:
-- Locate the handwritten applicant signature -- cursive/handwritten ink strokes
-  appearing below the PAN number and above or beside the printed "Signature" label.
+Rules for signature_box (CRITICAL — read carefully):
+- Locate ONLY the handwritten applicant signature — the cursive or handwritten ink
+  strokes made by a person using a pen. These appear in the lower-left area of the card.
+- The signature region contains ONLY handwritten pen strokes. It does NOT contain:
+    * The PAN number (printed text like "ABCDE1234F") — this is ABOVE the signature.
+    * The printed label "Signature" or "सत्यापन" below the signature area.
+    * The photo/hologram on the right side of the card.
+    * Any printed text, logos, or government seals.
+- IMPORTANT y1 rule: The PAN number is printed text that always appears ABOVE the
+  signature strokes. Your y1 value MUST be strictly below the bottom edge of the PAN
+  number. Never set y1 high enough to include the PAN number line.
 - Return the normalised bounding box as fractions of the FULL image dimensions (0.0-1.0):
   x1=left edge, y1=top edge, x2=right edge, y2=bottom edge.
-- x1 < x2 and y1 < y2.  All values must be between 0.0 and 1.0.
+- x1 < x2 and y1 < y2. All values must be between 0.0 and 1.0.
 - IMPORTANT: Signatures often start very close to the left margin.
   Make sure x1 captures the very beginning of the LEFTMOST ink stroke.
-  When in doubt, bias x1 slightly to the left -- it is better to include
+  When in doubt, bias x1 slightly to the left — it is better to include
   a few background pixels than to clip the start of the signature.
-- Use at most 3% padding around the strokes (tight fit).
+- Use at most 3% padding around the strokes (tight fit, ink strokes only).
 - If the signature is not visible set all four coordinates and confidence to 0.0.
 
-Output JSON only -- no extra text.
+Output JSON only — no extra text.
 """.strip()
 
 
@@ -696,30 +983,59 @@ def extract_pan_details_and_signature_with_ollama(
     model: str | None = None,
     base_url: str | None = None,
 ) -> Dict[str, Any]:
-    """Extract PAN card text fields AND the signature bounding-box in one Gemma4 call.
+    """Extract PAN card text fields AND the signature bounding-box in one VLM call.
 
-    This replaces two separate Gemma4 calls (one for field extraction via
+    This replaces two separate VLM calls (one for field extraction via
     ``extract_pan_details_with_ollama`` and one for signature detection inside
     ``_crop_pan_signature``) with a single vision call that returns both pieces
     of information in one JSON response.
 
+    Routes via the 'pan_extraction' feature key in settings.json so the operator
+    can switch providers without code changes.
+
     Returns a dict with the same PAN field keys as ``parse_pan_response_content``
     PLUS a ``sig_box`` key containing ``{x1, y1, x2, y2}`` normalised fractions
     when the signature region was confidently located.  Returns ``{}`` when
-    Ollama is unreachable or the response is unparseable.
+    the VLM provider is unreachable or the response is unparseable.
     """
     if not image_bytes:
         return {}
 
+    log.info(
+        "extract_pan_details_and_signature: starting combined VLM call — "
+        "feature=pan_extraction",
+    )
+    _log_vlm_request(
+        "extract_pan_details_and_signature",
+        feature="pan_extraction",
+        model=model,
+        base_url=base_url,
+        system_prompt=PAN_COMBINED_EXTRACTION_SYSTEM_PROMPT,
+        user_prompt=PAN_COMBINED_EXTRACTION_PROMPT,
+        image_bytes_list=[image_bytes],
+    )
     content, engine, resolved_model, resolved_base = _route_vlm_chat(
         PAN_COMBINED_EXTRACTION_SYSTEM_PROMPT,
         PAN_COMBINED_EXTRACTION_PROMPT,
         [image_bytes],
         ollama_base_url=base_url,
         ollama_model=model,
+        feature="pan_extraction",
     )
     if not content:
+        log.warning(
+            "extract_pan_details_and_signature: VLM returned empty response — "
+            "engine=%s model=%s base_url=%s",
+            engine, resolved_model, resolved_base,
+        )
         return {}
+    _log_vlm_response(
+        "extract_pan_details_and_signature",
+        engine=engine,
+        model=resolved_model,
+        base_url=resolved_base,
+        content=content,
+    )
 
     # Parse PAN card text fields using the shared parser
     parsed = parse_pan_response_content(content)
@@ -753,8 +1069,24 @@ def extract_pan_details_and_signature_with_ollama(
             pass  # sig_box is optional — fall through to Gemma4-free crop path
 
     if not parsed:
+        log.warning(
+            "extract_pan_details_and_signature: could not parse VLM response — "
+            "engine=%s model=%s raw_len=%d",
+            engine, resolved_model, len(content),
+        )
         return {}
 
+    # Log every extracted field so operators can verify accuracy and debug issues
+    log.info(
+        "extract_pan_details_and_signature: extraction complete — engine=%s model=%s "
+        "pan=%s name=%s father=%s dob=%s sig_box=%s",
+        engine, resolved_model,
+        parsed.get("pan_number", ""),
+        parsed.get("full_name", ""),
+        parsed.get("father_name", ""),
+        parsed.get("date_of_birth", ""),
+        "yes" if parsed.get("sig_box") else "not found",
+    )
     parsed["engine"] = engine
     parsed["model"] = resolved_model
     parsed["base_url"] = resolved_base
@@ -809,8 +1141,9 @@ def classify_document_type_with_ollama(
     *,
     model: str | None = None,
     base_url: str | None = None,
+    feature: str | None = None,
 ) -> Dict[str, Any]:
-    """Ask Gemma4 what type of document an image is.
+    """Ask the configured VLM what type of document an image is.
 
     This is a lightweight, fast call used as a pre-flight check before running
     the full QR decode or OCR extraction.  It catches the most common user
@@ -818,27 +1151,44 @@ def classify_document_type_with_ollama(
     Aadhaar section).
 
     Uses a shorter read timeout (_DOC_CLASSIFY_READ_TIMEOUT_SEC = 45 s) than
-    full extraction calls (600 s) because the response is tiny.
+    full extraction calls (1200 s) because the response is tiny.
 
     Parameters
     ----------
     image_bytes : raw bytes of the image to classify.
     model / base_url : override the auto-detected Ollama endpoint when needed.
+    feature : optional feature key (e.g. "aadhaar_extraction", "pan_extraction")
+              used to route this call through the per-feature provider config in
+              settings.json instead of the global active_provider.  When None,
+              the global provider is used.  Pass the feature key that matches the
+              slot being checked so the same provider is used for both the
+              classification pre-flight and the full extraction that follows.
 
     Returns
     -------
     Dict with keys:
-        ``available``     — True when Ollama was reachable; False otherwise.
+        ``available``     — True when the VLM provider was reachable; False otherwise.
         ``document_type`` — one of "aadhaar_card", "pan_card",
                             "photograph_selfie", or "other".
-        ``confidence``    — float 0.0–1.0 (how certain Gemma4 is).
+        ``confidence``    — float 0.0–1.0 (how certain the model is).
         ``reason``        — one-sentence plain-English explanation.
 
-    Returns ``{"available": False}`` when Ollama is completely unreachable so
-    callers can gracefully skip the check rather than blocking the upload.
+    Returns ``{"available": False}`` when the VLM provider is completely
+    unreachable so callers can gracefully skip the check rather than blocking
+    the upload.
     """
     if not image_bytes:
         return {}
+
+    _log_vlm_request(
+        "classify_document_type",
+        feature=feature,
+        model=model,
+        base_url=base_url,
+        system_prompt=DOC_CLASSIFY_SYSTEM_PROMPT,
+        user_prompt=DOC_CLASSIFY_PROMPT,
+        image_bytes_list=[image_bytes],
+    )
 
     content, _engine, _model, _base = _route_vlm_chat(
         DOC_CLASSIFY_SYSTEM_PROMPT,
@@ -847,10 +1197,20 @@ def classify_document_type_with_ollama(
         timeout_sec=_DOC_CLASSIFY_READ_TIMEOUT_SEC,
         ollama_base_url=base_url,
         ollama_model=model,
+        # Pass through the caller-supplied feature key so this pre-flight check
+        # uses the same provider as the full extraction that follows
+        feature=feature,
     )
     if not content:
         # VLM provider is unreachable — signal to caller that the check was skipped
         return {"available": False}
+    _log_vlm_response(
+        "classify_document_type",
+        engine=_engine,
+        model=_model,
+        base_url=_base,
+        content=content,
+    )
 
     json_text = _extract_json_object(content)
     if not json_text:

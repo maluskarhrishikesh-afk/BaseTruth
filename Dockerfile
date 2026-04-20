@@ -106,6 +106,10 @@ WORKDIR /app
 COPY src/ ./src/
 COPY pyproject.toml ./
 COPY README.md ./
+# Copy the docs/ directory so DATABASE.md is available inside the container.
+# _load_database_md() also tries the MinIO docs bucket as a fallback, but having
+# the file on the filesystem is the most reliable and zero-latency path.
+COPY docs/ ./docs/
 
 # Install the package itself (editable-style, no extra deps — already in /usr/local)
 RUN pip install --no-cache-dir --no-deps -e .

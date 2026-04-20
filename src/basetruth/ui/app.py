@@ -8,7 +8,6 @@ from typing import Any, Dict, List
 
 import streamlit as st
 
-from basetruth.datasources import DatasourceConfig, DatasourceRegistry
 from basetruth.service import BaseTruthService
 
 # DB layer — imported lazily so the app still starts even without a DB.
@@ -168,19 +167,19 @@ html, body, [class*="css"] {
     display: flex;
     flex-direction: column;
     align-items: center;
-    padding: 0.4rem 0.5rem 0.75rem;
-    gap: 3px;
+    padding: 0.1rem 0.5rem 0.35rem;
+    gap: 2px;
 }
 .bt-brand-icon {
-    width: 48px;
-    height: 48px;
+    width: 40px;
+    height: 40px;
     background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
-    border-radius: 14px;
+    border-radius: 12px;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 24px;
-    margin-bottom: 10px;
+    font-size: 20px;
+    margin-bottom: 5px;
     box-shadow: 0 4px 16px rgba(99,102,241,0.45);
 }
 .bt-brand-name {
@@ -938,14 +937,13 @@ _PAGES: Dict[str, str] = {
     "🎥  Video KYC": "video_kyc",
     "🔍  Scan Document": "scan",
     "📦  Bulk Scan": "bulk",
-    "🔬  Scans": "scans",
+    "🔬  Review Scans": "scans",
     "🧠  Document Intelligence": "document_intelligence",
+    "📋  Review Reports": "review_reports",
     "📊  Reports": "reports",
-    "🔗  Datasources": "datasources",
-    "📋  Log Analyzer": "logs",
+    "🪵  Log Analyzer": "logs",
     "🗄️  Database Viewer": "database",
-    "⚙️  Settings": "settings",
-    "💬  BaseTruth Q&A": "gemma_chat",
+    "💬  BaseTruth AI Copilot": "gemma_chat",
 }
 
 
@@ -1094,12 +1092,7 @@ def _sidebar() -> str:
             ):
                 _nav_click(key)
 
-        # DB connection status pill at the bottom
-        st.markdown('<hr style="border-color:#1e293b;margin:0.5rem 0;">', unsafe_allow_html=True)
-        if _DB_IMPORTS_OK and _db_available_cached():
-            st.caption("🟢 PostgreSQL connected")
-        else:
-            st.caption("🔴 PostgreSQL offline")
+
 
     return current_page
 
@@ -1912,244 +1905,8 @@ def _page_bulk(service: BaseTruthService) -> None:
         )
 
 
-# ---------------------------------------------------------------------------
-# Cases page
-# ---------------------------------------------------------------------------
-
-def _page_cases(service: BaseTruthService) -> None:
-    st.markdown("# 📁 Cases")
-
-    with st.expander("ℹ️ How to use this screen", expanded=False):
-        st.markdown(
-            """
-A **case** is created automatically whenever a document is scanned.
-
-- **Needs Review** — your action queue for high / medium risk documents.
-  Press **✅ Approve** or **❌ Reject** directly on the card.
-- **Resolved** — cases you have already decided on (Approved or Rejected).
-- **Auto-Approved** — low-risk documents cleared automatically; no action needed.
-
-When PostgreSQL is connected, cases are read from the database (accurate, reset-safe).
-Falling back to local files when the database is offline.
-"""
-        )
-
-    # Prefer DB-driven cases when available
-    use_db = _DB_IMPORTS_OK and db_available()
-    if use_db:
-        cases = list_cases_from_db()
-    else:
-        cases = service.list_cases()
-
-    if not cases:
-        st.info("No cases yet. Scan documents first and cases will appear here automatically.")
-        return
-
-    # ── Filter ────────────────────────────────────────────────────────────────
-    cases_filter = st.text_input(
-        "🔍 Filter cases",
-        placeholder="Entity name, BT-reference, case key, or document type…",
-        key="cases_filter",
-    ).strip().lower()
-    if cases_filter:
-        cases = [
-            c for c in cases
-            if cases_filter in (c.get("entity_name") or "").lower()
-            or cases_filter in (c.get("entity_ref") or "").lower()
-            or cases_filter in (c.get("document_type") or "").lower()
-            or cases_filter in (c.get("case_key") or "").lower()
-        ]
-        if not cases:
-            st.info("No cases match your filter.")
-            return
-
-    needs_review = [c for c in cases if c.get("needs_review")]
-    resolved     = [c for c in cases if c.get("disposition") in ("cleared", "fraud_confirmed")]
-    auto_ok      = [c for c in cases if not c.get("needs_review") and c.get("disposition") not in ("cleared", "fraud_confirmed")]
-
-    tab_labels = [
-        f"⛔ Needs Review ({len(needs_review)})",
-        f"✅ Resolved ({len(resolved)})",
-    ]
-    if auto_ok:
-        tab_labels.append(f"🔵 Auto-Approved ({len(auto_ok)})")
-
-    tabs = st.tabs(tab_labels)
-
-    def _render_grouped(case_list: list, show_actions: bool) -> None:
-        """Group a list of cases by entity and render each entity as a section."""
-        from collections import defaultdict  # noqa: PLC0415
-        by_entity: dict = defaultdict(list)
-        for c in case_list:
-            by_entity[c.get("entity_ref") or "unlinked"].append(c)
-        for ref in sorted(by_entity.keys()):
-            entity_cases = by_entity[ref]
-            name = entity_cases[0].get("entity_name", "") or ref
-            header = f"👤 **{name}** &nbsp; `{ref}` &nbsp;—&nbsp; {len(entity_cases)} case(s)"
-            with st.expander(header, expanded=show_actions):
-                for case in entity_cases:
-                    _render_case_card(service, case, show_actions=show_actions, use_db=use_db)
-
-    with tabs[0]:
-        if not needs_review:
-            st.success("🎉 No cases pending review — all documents have been assessed.")
-        else:
-            _render_grouped(needs_review, show_actions=True)
-
-    with tabs[1]:
-        if not resolved:
-            st.info("No resolved cases yet.")
-        else:
-            _render_grouped(resolved, show_actions=False)
-
-    if auto_ok:
-        with tabs[2]:
-            _render_grouped(auto_ok, show_actions=False)
 
 
-def _render_case_card(
-    service: BaseTruthService,
-    case: Dict[str, Any],
-    *,
-    show_actions: bool,
-    use_db: bool = False,
-) -> None:
-    """Render a single case as an expandable card with Approve / Reject buttons.
-
-    When *use_db* is True the Advanced panel is populated from data already
-    present in the case dict (no file-system read needed), making page render
-    very fast even with many cases.
-    """
-    case_key    = case.get("case_key", "")
-    risk        = case.get("max_risk_level", "low")
-    disposition = case.get("disposition", "open")
-    doc_type    = case.get("document_type", "").replace("_", " ").title()
-    doc_count   = case.get("document_count", 0)
-    entity_ref  = case.get("entity_ref", "")
-    entity_name = case.get("entity_name", "")
-    risk_icon   = {"high": "🚨", "medium": "⚠️", "low": "✅"}.get(risk, "🔷")
-    disp_icon   = _DISPOSITION_ICONS.get(disposition, "")
-
-    # Rich header: show person name when available
-    name_part = f"  —  {entity_name}" if entity_name else ""
-    ref_part  = f"  ({entity_ref})" if entity_ref and entity_ref != "unlinked" else ""
-    header = (
-        f"{risk_icon} {doc_type}{name_part}{ref_part}"
-        f"  |  {doc_count} doc(s)  |  {disp_icon} {disposition.replace('_', ' ').title()}"
-    )
-
-    with st.expander(header, expanded=show_actions and risk == "high"):
-        # ── Approve / Reject buttons at the very top ──────────────────────
-        if show_actions:
-            btn_c1, btn_c2, _ = st.columns([1, 1, 3])
-            if btn_c1.button("✅  Approve", key=f"approve_{case_key}", use_container_width=True, type="primary"):
-                service.update_case(case_key, status="closed", disposition="cleared",
-                                    note_text="Manually approved by analyst.", note_author="analyst")
-                st.toast("✅ Case approved.", icon="✅")
-                st.rerun()
-            if btn_c2.button("❌  Reject", key=f"reject_{case_key}", use_container_width=True):
-                service.update_case(case_key, status="closed", disposition="fraud_confirmed",
-                                    note_text="Rejected by analyst — fraud confirmed.", note_author="analyst")
-                st.toast("❌ Case rejected.", icon="❌")
-                st.rerun()
-            st.divider()
-        else:
-            verdict_color = "#16a34a" if disposition == "cleared" else "#dc2626" if disposition == "fraud_confirmed" else "#6366f1"
-            verdict_label = {"cleared": "Approved ✅", "fraud_confirmed": "Rejected ❌"}.get(disposition, disposition.replace("_", " ").title())
-            st.markdown(
-                f'<div style="font-size:1rem;font-weight:700;color:{verdict_color};margin-bottom:8px;">'
-                f'{verdict_label}</div>',
-                unsafe_allow_html=True,
-            )
-
-        # ── Case info ─────────────────────────────────────────────────────
-        st.markdown(
-            f"**Risk:** {_badge(risk)}  &nbsp;&nbsp;  "
-            f"**Priority:** {case.get('priority', 'normal').title()}  &nbsp;&nbsp;  "
-            f"**Assignee:** {case.get('assignee') or '—'}",
-            unsafe_allow_html=True,
-        )
-
-        # ── Linked documents ──────────────────────────────────────────────
-        docs = case.get("documents", [])
-        if docs:
-            st.markdown("**Documents:**")
-            for doc in docs:
-                src    = doc.get("source_name", "unknown")
-                dlvl   = str(doc.get("risk_level", "low"))
-                dscore = doc.get("truth_score", "")
-                st.markdown(
-                    f"&nbsp;&nbsp;{_badge(dlvl)} {src}  —  Score: **{dscore if isinstance(dscore, int) else '—'}**",
-                    unsafe_allow_html=True,
-                )
-
-        # ── Advanced workflow (lazy-loaded via session-state toggle) ──────
-        adv_key = f"_adv_open_{case_key}"
-        if not st.session_state.get(adv_key):
-            if st.button("⚙️ Advanced options", key=f"adv_btn_{case_key}", use_container_width=False):
-                st.session_state[adv_key] = True
-                st.rerun()
-        else:
-            if st.button("▲ Hide advanced", key=f"adv_hide_{case_key}", use_container_width=False):
-                st.session_state[adv_key] = False
-                st.rerun()
-
-            # Load workflow data — from case dict (DB mode) OR file (legacy mode)
-            if use_db:
-                workflow = {
-                    "status":      case.get("status", "new"),
-                    "disposition": case.get("disposition", "open"),
-                    "priority":    case.get("priority", "normal"),
-                    "assignee":    case.get("assignee", ""),
-                    "labels":      case.get("labels", []),
-                    "notes":       case.get("notes", []),
-                }
-            else:
-                try:
-                    case_detail = service.get_case_detail(case_key)
-                    workflow = case_detail["workflow"]
-                except KeyError:
-                    st.warning("Case detail not found.")
-                    return
-
-            statuses     = ["new", "triage", "investigating", "pending_client", "closed"]
-            dispositions = ["open", "monitor", "escalate", "cleared", "fraud_confirmed"]
-            priorities   = ["low", "normal", "high", "critical"]
-            with st.form(f"adv_form_{case_key}"):
-                wf1, wf2, wf3 = st.columns(3)
-                cur_s = str(workflow.get("status", "new"))
-                cur_d = str(workflow.get("disposition", "open"))
-                cur_p = str(workflow.get("priority", "normal"))
-                status_sel  = wf1.selectbox("Status", statuses,
-                    index=statuses.index(cur_s) if cur_s in statuses else 0, key=f"s_{case_key}")
-                disp_sel    = wf2.selectbox("Disposition", dispositions,
-                    index=dispositions.index(cur_d) if cur_d in dispositions else 0, key=f"d_{case_key}")
-                prio_sel    = wf3.selectbox("Priority", priorities,
-                    index=priorities.index(cur_p) if cur_p in priorities else 1, key=f"p_{case_key}")
-                assignee_val = st.text_input("Assignee", value=str(workflow.get("assignee", "")), key=f"a_{case_key}")
-                labels_val   = st.text_input("Labels (comma-separated)", value=", ".join(workflow.get("labels", [])), key=f"l_{case_key}")
-                note_author  = st.text_input("Note author", value="analyst", key=f"na_{case_key}")
-                note_text    = st.text_area("Add a note", placeholder="Observations, evidence, next steps…", key=f"nt_{case_key}")
-                if st.form_submit_button("Save", type="primary"):
-                    service.update_case(case_key, status=status_sel, disposition=disp_sel,
-                                        priority=prio_sel, assignee=assignee_val,
-                                        labels=[i.strip() for i in labels_val.split(",") if i.strip()],
-                                        note_text=note_text, note_author=note_author)
-                    st.success("Updated.")
-                    st.rerun()
-            notes = workflow.get("notes", [])
-            if notes:
-                st.markdown(f"**Notes ({len(notes)}):**")
-                for note in reversed(notes):
-                    ts     = str(note.get("created_at", ""))[:19].replace("T", " ")
-                    author = note.get("author", "")
-                    st.markdown(
-                        f'<div style="background:var(--bt-note-bg);border-left:3px solid var(--bt-note-accent);'
-                        f'padding:8px 12px;border-radius:0 8px 8px 0;margin-bottom:8px;">'
-                        f'<span style="font-size:11px;color:var(--bt-text-muted);">{ts} · {author}</span><br>'
-                        f'{note.get("text", "")}</div>',
-                        unsafe_allow_html=True,
-                    )
 
 
 # ---------------------------------------------------------------------------
@@ -2373,191 +2130,6 @@ scanned for them with individual download buttons.
                                    mime="application/pdf", key=f"bundle_{pdf_path.stem}", use_container_width=True)
         else:
             st.info("No reports found. Run a Bulk Scan to generate them.")
-
-
-# ---------------------------------------------------------------------------
-# Connector auth settings helpers
-# ---------------------------------------------------------------------------
-
-def _connector_settings_fields(kind: str, existing: Dict[str, Any]) -> Dict[str, Any]:
-    settings: Dict[str, Any] = {}
-    if kind == "s3":
-        col1, col2 = st.columns(2)
-        settings["bucket"] = col1.text_input("S3 bucket *", value=str(existing.get("bucket", "")))
-        settings["prefix"] = col2.text_input("Prefix", value=str(existing.get("prefix", "")))
-        col3, col4 = st.columns(2)
-        settings["region_name"] = col3.text_input("AWS region", value=str(existing.get("region_name", "")))
-        settings["profile_name"] = col4.text_input("AWS profile", value=str(existing.get("profile_name", "")))
-        st.caption("Auth: uses the named AWS profile, or the standard environment variables (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY).")
-    elif kind == "google_drive":
-        settings["folder_id"] = st.text_input("Drive folder ID *", value=str(existing.get("folder_id", "")))
-        settings["service_account_file"] = st.text_input(
-            "Service account JSON path (leave empty for ADC)",
-            value=str(existing.get("service_account_file", "")),
-        )
-        st.caption("Auth: service-account JSON for server environments, or application-default credentials for local use.")
-    elif kind == "sharepoint":
-        col1, col2 = st.columns(2)
-        settings["site_id"] = col1.text_input("SharePoint site ID *", value=str(existing.get("site_id", "")))
-        settings["drive_id"] = col2.text_input("Drive ID *", value=str(existing.get("drive_id", "")))
-        settings["folder_path"] = st.text_input("Folder path", value=str(existing.get("folder_path", "")))
-        settings["token_env_var"] = st.text_input(
-            "Environment variable holding the Microsoft Graph bearer token",
-            value=str(existing.get("token_env_var", "BASETRUTH_SHAREPOINT_TOKEN")),
-        )
-        st.caption("Auth: set the named env var to a valid Microsoft Graph bearer token before syncing.")
-    return settings
-
-
-# ---------------------------------------------------------------------------
-# Datasources page
-# ---------------------------------------------------------------------------
-
-def _page_datasources(service: BaseTruthService) -> None:
-    st.markdown("# 🔗 Datasources")
-    registry = DatasourceRegistry(service.artifact_root)
-    sources = registry.list_sources()
-
-    if sources:
-        st.subheader("Registered datasources")
-        try:
-            import pandas as pd
-
-            st.dataframe(
-                pd.DataFrame([s.to_dict() for s in sources])
-                .drop(columns=["settings"], errors="ignore"),
-                hide_index=True,
-                width="stretch",
-            )
-        except ImportError:
-            st.json([s.to_dict() for s in sources])
-
-        selected_name = st.selectbox("Select datasource", options=[s.name for s in sources])
-        selected_cfg = registry.get_source(selected_name)
-
-        with st.expander("Connector auth and config", expanded=False):
-            st.json({"path": selected_cfg.path, "settings": selected_cfg.settings or {}})
-
-        col_sync, col_scan, _ = st.columns([1, 1, 4])
-        if col_sync.button("Sync"):
-            with st.spinner("Syncing…"):
-                result = registry.sync_source(selected_name)
-            if result.get("status") == "success":
-                st.success(result.get("message", "Sync complete."))
-            else:
-                st.warning(str(result.get("message", result)))
-            st.json(result)
-
-        if col_scan.button("Sync + Scan"):
-            with st.spinner("Syncing then scanning…"):
-                result = registry.sync_source(selected_name)
-                scan_reports: List[Dict[str, Any]] = []
-                if result.get("status") == "success":
-                    for fpath in result.get("copied_files", []):
-                        scan_reports.append(service.scan_document(fpath))
-            st.success(f"Synced {result.get('copied_count', 0)} file(s), scanned {len(scan_reports)} document(s).")
-
-        st.divider()
-
-    st.subheader("Register a new datasource")
-    with st.form("datasource_form"):
-        col_name, col_kind = st.columns(2)
-        name = col_name.text_input("Datasource name *")
-        kind = col_kind.selectbox("Type", options=["folder", "manifest", "s3", "google_drive", "sharepoint"])
-        path = st.text_input("Source path (folder / manifest / leave empty to derive from fields below)")
-        col_rec, col_ext = st.columns(2)
-        recursive = col_rec.checkbox("Recursive", value=True)
-        extensions = col_ext.text_input("Extensions", value=".pdf,.json,.png,.jpg,.jpeg")
-        description = st.text_area("Description", height=60)
-
-        settings: Dict[str, Any] = {}
-        if kind in {"s3", "google_drive", "sharepoint"}:
-            st.markdown("**Connector settings**")
-            existing_cfg = registry.get_source(name) if name and name in [s.name for s in sources] else None
-            settings = _connector_settings_fields(kind, dict(existing_cfg.settings or {}) if existing_cfg else {})
-
-        if st.form_submit_button("Save datasource", type="primary"):
-            if not name.strip():
-                st.error("Datasource name is required.")
-            else:
-                resolved_path = registry.build_path_from_settings(kind, settings, path)
-                registry.upsert_source(
-                    DatasourceConfig(
-                        name=name.strip(),
-                        kind=kind,
-                        path=resolved_path,
-                        recursive=recursive,
-                        extensions=[e.strip() for e in extensions.split(",") if e.strip()],
-                        description=description.strip(),
-                        settings=settings or None,
-                    )
-                )
-                st.success(f"Datasource '{name}' saved.")
-                st.rerun()
-
-    st.markdown(
-        """
-        > **Operating model** — BaseTruth syncs documents from client sources into a read-only snapshot
-        > under its managed workspace. This preserves chain-of-custody, leaves the client system untouched,
-        > and produces deterministic evidence trails for every scanned document.
-        """
-    )
-
-
-# ---------------------------------------------------------------------------
-# Settings page
-# ---------------------------------------------------------------------------
-
-def _page_settings() -> None:
-    st.markdown("# ⚙️ Settings")
-
-    with st.expander("ℹ️ How to use this screen", expanded=False):
-        st.markdown(
-            """
-Settings control how BaseTruth stores data and how the service is run.
-
-- **Artifact root** — the local folder where all reports, structured summaries, and case records are written. Change it in the sidebar to point BaseTruth at a different workspace or network share.
-- **Product information** — version numbers, runtime info, and API endpoint details.
-- **Quick start commands** — copy-paste commands to start/stop the service, run tests, or rebuild the Docker containers.
-
-Most settings are controlled via environment variables in `.env`. See the README for a full reference.
-"""
-        )
-
-    st.subheader("Artifact root")
-    st.markdown(
-        "All reports, structured summaries, and case records are stored under this directory. "
-        "Change it in the sidebar to point BaseTruth at a different workspace."
-    )
-    artifact_root = str(st.session_state.get("artifact_root", _default_artifact_root()))
-    st.code(artifact_root, language=None)
-    if Path(artifact_root).exists():
-        items = list(Path(artifact_root).rglob("*"))
-        st.metric("Items in artifact root", len(items))
-
-    st.divider()
-    st.subheader("Product information")
-    st.markdown(
-        """
-        | Property | Value |
-        |---|---|
-        | Product | **BaseTruth** |
-        | Version | 0.1.0 |
-        | Python | `basetruth` package |
-        | UI runtime | Streamlit |
-        | REST API | `uvicorn basetruth.api:app` |
-        """
-    )
-
-    st.divider()
-    st.subheader("Quick start commands")
-    st.code(
-        "# CLI scan\npython -m basetruth.cli scan --input /path/to/doc.pdf\n\n"
-        "# Compare payslips across months\npython -m basetruth.cli compare-payslips --input-dir /path/to/payslips\n\n"
-        "# Start UI\nstreamlit run src/basetruth/ui/app.py\n\n"
-        "# Start REST API\nuvicorn basetruth.api:app --host 0.0.0.0 --port 8502",
-        language="bash",
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -4374,12 +3946,11 @@ def main() -> None:
     from basetruth.ui.pages.scan import _page_scan as _m_scan  # noqa: PLC0415
     from basetruth.ui.pages.bulk import _page_bulk as _m_bulk  # noqa: PLC0415
     from basetruth.ui.pages.scans import _page_scans as _m_scans  # noqa: PLC0415
+    from basetruth.ui.pages.review_reports import _page_review_reports as _m_review_reports  # noqa: PLC0415
     from basetruth.ui.pages.document_intelligence import _page_document_intelligence as _m_records  # noqa: PLC0415
     from basetruth.ui.pages.reports import _page_reports as _m_reports  # noqa: PLC0415
-    from basetruth.ui.pages.datasources import _page_datasources as _m_datasources  # noqa: PLC0415
     from basetruth.ui.pages.logs import _page_logs as _m_logs  # noqa: PLC0415
     from basetruth.ui.pages.database import _page_database as _m_database  # noqa: PLC0415
-    from basetruth.ui.pages.settings import _page_settings as _m_settings  # noqa: PLC0415
     from basetruth.ui.pages.identity import _page_identity_verification as _m_identity  # noqa: PLC0415
     from basetruth.ui.pages.video_kyc import _page_video_kyc as _m_video_kyc  # noqa: PLC0415
     from basetruth.ui.pages.gemma_chat import _page_gemma_chat as _m_gemma_chat  # noqa: PLC0415
@@ -4392,18 +3963,16 @@ def main() -> None:
         _m_bulk(service)
     elif page == "scans":
         _m_scans()
+    elif page == "review_reports":
+        _m_review_reports()
     elif page == "document_intelligence":
         _m_records()
     elif page == "reports":
         _m_reports(service)
-    elif page == "datasources":
-        _m_datasources(service)
     elif page == "logs":
         _m_logs()
     elif page == "database":
         _m_database()
-    elif page == "settings":
-        _m_settings()
     elif page == "identity":
         _m_identity()
     elif page == "video_kyc":
