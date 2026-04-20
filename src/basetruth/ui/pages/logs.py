@@ -313,6 +313,66 @@ def _page_logs() -> None:
                     height=0,
                     width=0
                 )
+
+            # Small floating "⬇ Jump to bottom" button pinned to the bottom-right
+            # corner of the viewport.  It is injected directly into the parent
+            # Streamlit frame (not the component iframe) so it sits over the log
+            # scroll bar — matching the position shown in the design screenshot.
+            # We remove any previously-injected button first to avoid duplicates
+            # on every re-render triggered by live-update or filter changes.
+            st.components.v1.html(
+                '''
+                <script>
+                (function() {
+                    const parentDoc = window.parent.document;
+
+                    // Remove any button injected by a previous render
+                    const old = parentDoc.getElementById("bt-log-scroll-btn");
+                    if (old) old.remove();
+
+                    // Create the small pill button
+                    const btn = parentDoc.createElement("button");
+                    btn.id = "bt-log-scroll-btn";
+                    btn.title = "Jump to bottom of logs";
+                    btn.textContent = "⬇";
+                    btn.style.cssText = [
+                        "position: fixed",
+                        "bottom: 24px",
+                        "right: 28px",
+                        "z-index: 99999",
+                        "background: #1f2937",
+                        "color: #e5e7eb",
+                        "border: 1px solid #374151",
+                        "border-radius: 20px",
+                        "padding: 4px 10px",
+                        "font-size: 0.78rem",
+                        "font-weight: 600",
+                        "cursor: pointer",
+                        "opacity: 0.85",
+                        "box-shadow: 0 2px 8px rgba(0,0,0,0.4)",
+                        "transition: opacity 0.2s, background 0.2s",
+                        "line-height: 1.6"
+                    ].join("; ");
+
+                    btn.onmouseenter = function() { btn.style.opacity = "1"; btn.style.background = "#374151"; };
+                    btn.onmouseleave = function() { btn.style.opacity = "0.85"; btn.style.background = "#1f2937"; };
+
+                    btn.onclick = function() {
+                        // Find the dark log container and scroll it to the very bottom
+                        const logBoxes = parentDoc.querySelectorAll("div[style*=\\"background-color: #0d1117\\"]");
+                        if (logBoxes && logBoxes.length > 0) {
+                            const box = logBoxes[logBoxes.length - 1];
+                            box.scrollTop = box.scrollHeight;
+                        }
+                    };
+
+                    parentDoc.body.appendChild(btn);
+                })();
+                </script>
+                ''',
+                height=0,
+                width=0,
+            )
         else:
             st.info("No log entries match your filters.")
 

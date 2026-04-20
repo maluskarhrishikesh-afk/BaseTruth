@@ -3362,9 +3362,14 @@ def extract_document_fields(
     if supplementary_text:
         if raw_pdf_text:
             text_source_label = "RAW EMBEDDED TEXT FROM THE PDF (perfectly accurate — trust these numbers over the image)"
+            # When we have a structured PDF (_is_structured_pdf=True) we send the
+            # actual PDF file to Gemini, so we tell the model 'The PDF shows the
+            # layout'.  For scanned images (is_structured_pdf=False) we send a
+            # JPEG render, so we say 'The image shows the layout'.
+            layout_reference = "The PDF shows the layout" if _is_structured_pdf else "The image shows the layout"
             trust_note = (
                 "IMPORTANT: The text above was extracted directly from the PDF without any OCR. "
-                "Trust these numbers exactly as written. The image shows the layout; "
+                f"Trust these numbers exactly as written. {layout_reference}; "
                 "the text above gives you the exact characters and values."
             )
         else:

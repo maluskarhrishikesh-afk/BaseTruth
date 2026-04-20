@@ -474,37 +474,64 @@ class VLMClient:
             "x-goog-api-key": api_key,
             "Content-Type": "application/json",
         }
-        try:
-            response = requests.post(
-                endpoint,
-                json=payload,
-                headers=headers,
-                timeout=(OLLAMA_CONNECT_TIMEOUT_SEC, timeout_sec),
-            )  # nosemgrep: basetruth-ssrf
-            response.raise_for_status()
-            candidates = response.json().get("candidates", [])
-            # Google returns text inside candidates[0].content.parts[*].text.
-            # Gemma 4 (and other thinking models) emit an internal reasoning part
-            # first, marked with "thought": true — that is the model's scratchpad
-            # and must NOT be parsed as the answer.  We skip all thought parts and
-            # use only the first non-thought text part as the actual response.
-            text = ""
-            if candidates:
-                parts = candidates[0].get("content", {}).get("parts", [])
-                # Filter out thought parts — only keep parts where thought is absent or False
-                response_parts = [p for p in parts if not p.get("thought", False)]
-                text = str(
-                    next((p.get("text", "") for p in response_parts if "text" in p), "")
-                ).strip()
-            log.info(
-                "VLMClient._call_google: response received — model=%s base_url=%s "
-                "response_chars=%d",
-                self.model, base_url, len(text),
-            )
-            return text, "google", self.model, base_url
-        except (requests.RequestException, KeyError, IndexError, StopIteration) as exc:
-            log.warning(
-                "VLMClient._call_google: request failed — model=%s base_url=%s error=%s",
-                self.model, base_url, exc,
-            )
-            return "", "google", self.model, base_url
+        # Retry up to 2 extra times on transient Google API errors (503 Service
+        # Unavailable, 429 Rate Limited).  A short back-off (5 s → 10 s) is enough
+        # for capacity spikes without blocking the UI for too long.  Other errors
+        # (400 bad request, 401 auth) are not retried — they indicate a real problem.
+        _google_transient_codes = {429, 500, 503}
+        _last_exc: Exception | None = None
+        for _attempt in range(3):  # up to 3 total attempts (0, 1, 2)
+            if _attempt > 0:
+                import time as _time  # noqa: PLC0415 — local import to avoid top-level dep
+                _backoff = 5 * _attempt  # 5 s, then 10 s
+                log.warning(
+                    "VLMClient._call_google: transient error, retrying in %ds "
+                    "(attempt %d/3) — model=%s error=%s",
+                    _backoff, _attempt + 1, self.model, _last_exc,
+                )
+                _time.sleep(_backoff)
+            try:
+                response = requests.post(
+                    endpoint,
+                    json=payload,
+                    headers=headers,
+                    timeout=(OLLAMA_CONNECT_TIMEOUT_SEC, timeout_sec),
+                )  # nosemgrep: basetruth-ssrf
+                if response.status_code in _google_transient_codes:
+                    # Treat as a transient failure — store and retry after back-off
+                    _last_exc = requests.HTTPError(
+                        f"{response.status_code} Server Error for url: {endpoint}",
+                        response=response,
+                    )
+                    continue  # retry
+                response.raise_for_status()
+                candidates = response.json().get("candidates", [])
+                # Google returns text inside candidates[0].content.parts[*].text.
+                # Gemma 4 (and other thinking models) emit an internal reasoning part
+                # first, marked with "thought": true — that is the model's scratchpad
+                # and must NOT be parsed as the answer.  We skip all thought parts and
+                # use only the first non-thought text part as the actual response.
+                text = ""
+                if candidates:
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    # Filter out thought parts — only keep parts where thought is absent or False
+                    response_parts = [p for p in parts if not p.get("thought", False)]
+                    text = str(
+                        next((p.get("text", "") for p in response_parts if "text" in p), "")
+                    ).strip()
+                log.info(
+                    "VLMClient._call_google: response received — model=%s base_url=%s "
+                    "response_chars=%d",
+                    self.model, base_url, len(text),
+                )
+                return text, "google", self.model, base_url
+            except (requests.RequestException, KeyError, IndexError, StopIteration) as exc:
+                _last_exc = exc
+                # Only retry on connection/HTTP errors; break immediately for others
+                if not isinstance(exc, requests.RequestException):
+                    break
+        log.warning(
+            "VLMClient._call_google: request failed — model=%s base_url=%s error=%s",
+            self.model, base_url, _last_exc,
+        )
+        return "", "google", self.model, base_url

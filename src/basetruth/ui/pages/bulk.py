@@ -55,10 +55,16 @@ _FILENAME_DOC_TYPES: List[tuple[str, str]] = [
     ("aadhar", "aadhaar"),
     ("aadhaar", "aadhaar"),
     ("passport", "passport"),
+    # Match all common Form 16 filename variants: Form-16, form_16, form16, Form16
+    ("form-16", "form16"),
     ("form16", "form16"),
     ("form_16", "form16"),
     ("offer", "offer_letter"),
     ("appointment", "offer_letter"),
+    # Experience and relieving letters: filenames like 'Mastercard-Experience.pdf',
+    # 'Relieving_Letter.pdf' should not fall through to the generic 'document' bucket.
+    ("experience", "experience_letter"),
+    ("relieving", "relieving_letter"),
     ("employment", "employment_letter"),
     ("increment", "increment_letter"),
     ("gift", "gift_letter"),
