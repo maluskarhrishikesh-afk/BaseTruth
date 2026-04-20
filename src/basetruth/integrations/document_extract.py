@@ -2872,7 +2872,7 @@ def _resolve_ollama() -> tuple:
     return base_url, model
 
 
-def _ollama_chat(messages: List[Dict[str, Any]], base_url: str, model: str) -> str:
+def _ollama_chat(messages: List[Dict[str, Any]], base_url: str, model: str, *, pdf_bytes: Optional[bytes] = None) -> str:
     """Send a chat request to the configured VLM provider and return the text reply.
 
     Supports Ollama (local), OpenAI-compatible (GitHub Models, OpenAI), Anthropic,
@@ -2882,6 +2882,13 @@ def _ollama_chat(messages: List[Dict[str, Any]], base_url: str, model: str) -> s
     The Ollama-format messages list is decomposed into system_prompt, user_prompt,
     and image bytes before sending to cloud providers, since they use different
     request formats than Ollama's native API.
+
+    pdf_bytes : Optional raw PDF file bytes.  When provided and the provider is
+                Google (Gemini), the PDF is sent directly to the model as an
+                inline_data part with mime_type application/pdf.  Gemini can then
+                read all pages natively with full vector text fidelity — no JPEG
+                render artefacts.  For Ollama and other providers, pdf_bytes is
+                ignored and the JPEG image in the messages list is used instead.
 
     Returns the text response from the model, or "" on any error.
     """
@@ -2945,8 +2952,12 @@ def _ollama_chat(messages: List[Dict[str, Any]], base_url: str, model: str) -> s
                 base_url=str(effective_provider_cfg.get("base_url", "")).rstrip("/"),
                 api_key=str(effective_provider_cfg.get("api_key", "")).strip(),
             )
+            # Pass pdf_bytes so Gemini receives the actual PDF file rather than a
+            # JPEG render. For scanned images or marksheets, pdf_bytes is None and
+            # the JPEG path runs as normal.
             content, _engine, _model, _base = client.chat_vision(
                 system_prompt, user_prompt, image_bytes_list,
+                pdf_bytes=pdf_bytes,
                 timeout_sec=OLLAMA_READ_TIMEOUT_SEC,
             )
             return content
@@ -3423,7 +3434,31 @@ def extract_document_fields(
         _input_summary.append(f"OCR text ({len(ocr_text)} chars)")
     if ocr_coords_text:
         _input_summary.append(f"bounding box coords ({ocr_coords_text.count(chr(10)) + 1} rows)")
-    _input_summary.append("page image (JPEG)")
+
+    # For structured PDFs (text-layer PDFs like payslips, Form 16, offer letters),
+    # get the raw PDF bytes so Gemini / cloud providers can receive the actual PDF
+    # file rather than a JPEG render of page 1.  Gemini reads all pages natively
+    # with the exact embedded vector text and no JPEG compression artefacts.
+    # For Ollama (local), pdf_bytes is None and the JPEG image path runs as before.
+    llm_pdf_bytes: Optional[bytes] = None
+    if _is_structured_pdf:
+        try:
+            if isinstance(source, (str, Path)):
+                llm_pdf_bytes = Path(source).read_bytes()
+            elif isinstance(source, bytes):
+                llm_pdf_bytes = source
+        except Exception as _pdf_read_err:
+            log.warning(
+                "document_extract: could not read raw PDF bytes for cloud provider; "
+                "falling back to JPEG image — error=%s",
+                _pdf_read_err,
+            )
+
+    if llm_pdf_bytes:
+        _input_summary.append(f"actual PDF file ({len(llm_pdf_bytes)} bytes, all pages, native Gemini PDF input)")
+    else:
+        _input_summary.append("page image (JPEG)")
+
     log.info(
         "document_extract: sending to LLM — inputs: %s | doc_type=%s | model=%s",
         " + ".join(_input_summary),
@@ -3432,8 +3467,9 @@ def extract_document_fields(
         extra={"source_filename": filename},
     )
     log.info(
-        "document_extract: exact LLM user prompt follows | image_attached=%s\n%s",
+        "document_extract: exact LLM user prompt follows | image_attached=%s pdf_attached=%s\n%s",
         bool(user_msg.get("images")),
+        bool(llm_pdf_bytes),
         prompt,
     )
 
@@ -3445,7 +3481,10 @@ def extract_document_fields(
     for attempt in range(MAX_RETRIES + 1):
         log.debug("document_extract: attempt %d/%d", attempt + 1, MAX_RETRIES + 1)
         try:
-            raw_text = _ollama_chat(messages, _base_url, _model)
+            # Pass llm_pdf_bytes for structured PDFs so Google Gemini receives the
+            # full PDF file directly; for Ollama and other providers, this is
+            # ignored and the JPEG image in the messages list is used.
+            raw_text = _ollama_chat(messages, _base_url, _model, pdf_bytes=llm_pdf_bytes)
 
             # Log the raw LLM response so operators can debug extraction issues
             # without needing to replay the full pipeline.

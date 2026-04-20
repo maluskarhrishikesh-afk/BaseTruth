@@ -96,6 +96,7 @@ class VLMClient:
         user_prompt: str,
         image_bytes_list: List[bytes],
         *,
+        pdf_bytes: bytes | None = None,
         timeout_sec: int = OLLAMA_READ_TIMEOUT_SEC,
     ) -> tuple[str, str, str, str]:
         """Route a single-turn vision request to the configured provider.
@@ -106,6 +107,15 @@ class VLMClient:
                             empty — the call still works without it.
         user_prompt       : The main user message (question / extraction prompt).
         image_bytes_list  : Raw image bytes (JPEG / PNG) for each image to include.
+        pdf_bytes         : Optional raw PDF file bytes. When provided and the
+                            provider is Google (Gemini), the PDF is sent directly
+                            as an inline_data part with mime_type application/pdf,
+                            which is better than a JPEG render because Gemini reads
+                            all pages with full vector text fidelity and no JPEG
+                            compression artifacts. image_bytes_list is ignored when
+                            pdf_bytes is given to the Google provider. For all other
+                            providers (Ollama, OpenAI-compatible, Anthropic), this
+                            parameter is ignored and image_bytes_list is used.
         timeout_sec       : Maximum seconds to wait for the full response.
 
         Returns (content, engine_label, model_name, base_url_or_empty).
@@ -122,9 +132,12 @@ class VLMClient:
             )
         if self.provider == "google":
             return self._call_google(
-                system_prompt, user_prompt, image_bytes_list, timeout_sec=timeout_sec
+                system_prompt, user_prompt, image_bytes_list,
+                pdf_bytes=pdf_bytes,
+                timeout_sec=timeout_sec,
             )
-        # Default: Ollama (covers "ollama" and any unrecognised provider name)
+        # Default: Ollama (covers "ollama" and any unrecognised provider name).
+        # Ollama does not support native PDF input, so pdf_bytes is ignored here.
         return self._call_ollama(
             system_prompt, user_prompt, image_bytes_list, timeout_sec=timeout_sec
         )
@@ -372,6 +385,7 @@ class VLMClient:
         user_prompt: str,
         image_bytes_list: List[bytes],
         *,
+        pdf_bytes: bytes | None = None,
         timeout_sec: int = OLLAMA_READ_TIMEOUT_SEC,
     ) -> tuple[str, str, str, str]:
         """POST a vision chat request to the Google AI Studio REST API.
@@ -382,6 +396,15 @@ class VLMClient:
           - The system prompt uses a special 'system_instruction' top-level field
           - Authentication is via the 'x-goog-api-key' header (or '?key=' query param)
           - The endpoint is: {base_url}/models/{model}:generateContent
+
+        When pdf_bytes is supplied, the actual PDF file is sent to Gemini as an
+        inline_data part with mime_type 'application/pdf'.  Gemini reads the PDF
+        natively — it can see all pages and the exact embedded vector text, which
+        is far better than a JPEG render of only page 1.  In this case
+        image_bytes_list is NOT sent (the PDF already contains the full document).
+
+        When pdf_bytes is None, the call falls back to sending image_bytes_list as
+        JPEG inline_data parts — the original behaviour for image inputs.
 
         API key resolution (in priority order):
           1. api_key stored on this instance (from settings.json)
@@ -402,18 +425,36 @@ class VLMClient:
             )
             return "", "google", self.model, base_url
 
-        log.info(
-            "VLMClient._call_google: sending request — model=%s base_url=%s images=%d",
-            self.model, base_url, len(image_bytes_list),
-        )
+        if pdf_bytes:
+            # Sending the actual PDF is better than a JPEG render: Gemini reads all
+            # pages, gets the exact vector text, and avoids JPEG compression artifacts.
+            log.info(
+                "VLMClient._call_google: sending PDF directly — model=%s base_url=%s "
+                "pdf_size_bytes=%d (native PDF input; image render skipped)",
+                self.model, base_url, len(pdf_bytes),
+            )
+        else:
+            log.info(
+                "VLMClient._call_google: sending JPEG image(s) — model=%s base_url=%s "
+                "images=%d",
+                self.model, base_url, len(image_bytes_list),
+            )
 
-        # Google's format: user parts contain text first, then inline_data image blocks
+        # Build user parts: text prompt first, then the document (PDF preferred over JPEG)
         user_parts: List[Dict[str, Any]] = [{"text": user_prompt}]
-        for img_bytes in image_bytes_list:
-            b64 = base64.b64encode(img_bytes).decode("ascii")
+        if pdf_bytes:
+            # Send the full PDF — Gemini reads all pages natively from this single part
+            b64_pdf = base64.b64encode(pdf_bytes).decode("ascii")
             user_parts.append({
-                "inline_data": {"mime_type": "image/jpeg", "data": b64},
+                "inline_data": {"mime_type": "application/pdf", "data": b64_pdf},
             })
+        else:
+            # Fallback: send each image as a separate JPEG inline_data block
+            for img_bytes in image_bytes_list:
+                b64 = base64.b64encode(img_bytes).decode("ascii")
+                user_parts.append({
+                    "inline_data": {"mime_type": "image/jpeg", "data": b64},
+                })
 
         payload: Dict[str, Any] = {
             "contents": [
