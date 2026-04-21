@@ -806,15 +806,30 @@ def _font_consistency_analysis(image_path: str) -> Dict[str, Any]:
             stroke_out[stroke_finite_mask] = _iqr_outliers(strokes_finite)
         sharp_out = _iqr_outliers(sharpness, factor=2.0)
 
+        # Baseline alignment check
+        baselines = np.array([cy + cbh for cx, cy, cbw, cbh, sw, sh in char_data], dtype=np.float32)
+        baseline_jitter = np.zeros(len(char_data), dtype=np.float32)
+        for i, (cx, cy, cbw, cbh, sw, sh) in enumerate(char_data):
+            neighbors = []
+            for j, (ox, oy, obw, obh, osw, osh) in enumerate(char_data):
+                if i != j and abs(cy - oy) < cbh * 0.5 and abs(cx - ox) < cbh * 5:
+                    neighbors.append(baselines[j])
+            if len(neighbors) >= 1: # Compare with at least one neighbor
+                neighbors.append(baselines[i])
+                baseline_jitter[i] = float(np.std(neighbors))
+                
+        jitter_out = baseline_jitter > 1.5 # >1.5 px variance inside a line is highly suspicious
+
         height_cv = _safe_cv(heights)
         stroke_cv = _safe_cv(strokes_finite if len(strokes_finite) >= 2 else strokes)
         sharp_cv = _safe_cv(sharpness)
         height_outlier_ratio = round(float(np.sum(height_out)) / len(heights), 4)
         stroke_outlier_ratio = round(float(np.sum(stroke_out)) / len(strokes), 4)
         sharp_outlier_ratio = round(float(np.sum(sharp_out)) / len(sharpness), 4)
+        jitter_outlier_ratio = round(float(np.sum(jitter_out)) / len(baseline_jitter), 4)
 
         combined_suspicious = (
-            height_out.astype(int) + stroke_out.astype(int) + sharp_out.astype(int)
+            height_out.astype(int) + stroke_out.astype(int) + sharp_out.astype(int) + (jitter_out.astype(int) * 2)
         ) >= 2
 
         CELL = 64
@@ -849,10 +864,11 @@ def _font_consistency_analysis(image_path: str) -> Dict[str, Any]:
             "name": "Font Consistency Analysis",
             "status": status,
             "plain_english": (
-                "This checks all the letters in the document for consistent thickness, height, and "
-                "sharpness. If some letters look different it suggests someone typed over the original "
+                "This checks all the letters in the document for consistent thickness, height, "
+                "sharpness, and horizontal alignment (baseline jitter). If some letters look different "
+                "or are vertically misaligned, it suggests someone typed over the original "
                 "or inserted text from a different source. "
-                + (f"{n_regions} spatially-coherent anomaly region(s) found (stroke_cv={stroke_cv:.3f})."
+                + (f"{n_regions} spatially-coherent anomaly region(s) found (stroke_cv={stroke_cv:.3f}, jitter_outliers={jitter_outlier_ratio:.2f})."
                    if is_suspicious
                    else f"{len(char_data)} characters analysed — font metrics uniform, no anomalous regions.")
             ),
@@ -864,10 +880,11 @@ def _font_consistency_analysis(image_path: str) -> Dict[str, Any]:
                 "stroke_outlier_ratio": stroke_outlier_ratio,
                 "sharpness_cv": sharp_cv,
                 "sharpness_outlier_ratio": sharp_outlier_ratio,
+                "jitter_outlier_ratio": jitter_outlier_ratio,
                 "n_suspicious_regions": n_regions,
                 "suspicious_regions": suspicious_regions[:5],
                 "interpretation": (
-                    f"SUSPICIOUS — {n_regions} font anomaly region(s)"
+                    f"SUSPICIOUS — {n_regions} font anomaly region(s) detected (check for misaligned baselines or stroke mismatch)"
                     if is_suspicious
                     else "CONSISTENT — font metrics uniform across document"
                 ),

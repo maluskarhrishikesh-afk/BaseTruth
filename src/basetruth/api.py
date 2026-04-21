@@ -399,6 +399,68 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
             except OSError:
                 pass
 
+    @app.post("/api/v1/document-extract", tags=["Scan"])
+    async def extract_document_endpoint(file: UploadFile = File(...)) -> Dict[str, Any]:
+        """Upload a document, classify it, and extract its structured fields.
+
+        This endpoint calls the same extraction pipeline as the Scan Document UI
+        screen — classify with Gemma AI, then extract with PaddleOCR (scanned) or
+        PyMuPDF (structured PDF).  No data is persisted to the database.
+
+        Returns
+        -------
+        JSON object with keys: filename, document_type, is_image_based,
+        confidence, extracted_fields (all non-private fields).
+        """
+        from basetruth.ui.pages.scan import extract_document  # noqa: PLC0415
+
+        file_bytes = await file.read()
+        filename = file.filename or "document"
+        result = extract_document(file_bytes, filename)
+        if result.get("error"):
+            raise HTTPException(status_code=500, detail=result["error"])
+        # Strip private meta-keys (prefixed with _) before returning to the caller
+        display_fields = {
+            k: v for k, v in result.get("extracted_fields", {}).items()
+            if not k.startswith("_")
+        }
+        return {
+            "filename": result["filename"],
+            "document_type": result["document_type"],
+            "is_image_based": result["is_image_based"],
+            "confidence": result["confidence"],
+            "extracted_fields": display_fields,
+        }
+
+    @app.post("/api/v1/forensic-scan", tags=["Scan"])
+    async def forensic_scan_endpoint(file: UploadFile = File(...)) -> Dict[str, Any]:
+        """Upload one document and return forensic tamper analysis.
+
+        This endpoint runs the same forensic-routing logic as the Forensic Scan
+        UI page. It does not persist any data.
+        """
+        from basetruth.ui.pages.forensics_utils import ForensicAnalyzer  # noqa: PLC0415
+
+        file_bytes = await file.read()
+        filename = file.filename or "document"
+        result = ForensicAnalyzer.analyze_document(file_bytes, filename)
+        if result.get("error"):
+            raise HTTPException(status_code=500, detail=result["error"])
+
+        return {
+            "filename": result["filename"],
+            "document_type": result["document_type"],
+            "is_image_based": result["is_image_based"],
+            "forensic_verdict": result["forensic_verdict"],
+            "forgery_score_0_100": result["forgery_score_0_100"],
+            "overall_explanation": result["overall_explanation"],
+            # Plain-English LLM verdict written for non-technical reviewers.
+            # Mirrors the 'Honest Review' card shown on the Forensic Scan UI page.
+            "honest_review": result.get("honest_review", ""),
+            "evidence": result["evidence"],
+            "layers": result["layers"],
+        }
+
     @app.get("/api/v1/reports", tags=["Reports"])
     def list_reports(
         kind: Optional[str] = Query(None, description="Filter by kind: verification | comparison"),

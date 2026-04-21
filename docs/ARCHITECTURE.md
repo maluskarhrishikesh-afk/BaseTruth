@@ -53,6 +53,8 @@ flowchart TD
 ### 1A. Operator UI Layer
 
 - supports single-file upload and immediate scan
+- supports a dedicated single-file Forensic Scan page for instant tamper verdicts without persistence
+- supports a dedicated Swagger page that links operators to live OpenAPI docs (`/docs`, `/openapi.json`, `/redoc`)
 - supports bulk upload and folder-driven scan workflows
 - keeps scan and bulk-scan persistence explicit: operators review results first, then click Save to Database to persist them
 - supports datasource registration, sync, and scan operations
@@ -246,7 +248,7 @@ A 11-layer forensic engine that runs automatically on every image or PDF scan at
 | 7. Color | Channel correlation and histogram — synthetic palettes differ from authentic photos | NumPy |
 | 8. Edge | Edge density and continuity — cut-paste edges show unnatural boundaries | OpenCV |
 | 9. Saturation | Oversaturation detection — AI-generated images have unnatural saturation | OpenCV |
-| 10. Font | Font uniformity — mixed fonts in the same field flag text replacement | Pillow |
+| 10. Font | Font uniformity and baseline alignment — flags cut-and-paste text replacement / vertical jitter | Pillow |
 | 11. AI-Artefact | Blob/colour-blob detection — AI generators leave distinctive colour artefacts | OpenCV |
 
 **Return structure (stored as `scans.layered_analysis_json`):**
@@ -288,7 +290,7 @@ A 11-layer forensic engine specifically designed for digitally-created structure
 | 1. Incremental Updates | %%EOF marker count — each additional EOF means the file was saved after creation | Strongest PDF tampering signal: 30 pts per update (max 45) |
 | 2. Metadata | Creator/Producer field fingerprinting — detects known PDF editing tools; date-gap analysis | 20 pts for editing tool; 10 pts per other flag |
 | 3. Font Consistency | Font embedding status; fonts that appear only on later pages (post-creation insertion) | 15 pts for post-creation fonts; 10 pts per other flag |
-| 4. Invisible Text | White or zero-size text spans — can hide original values under forged overlays | 25 pts |
+| 4. Invisible Text | White, zero-size text, or Shadow Attack overlays (overlapping bounding boxes) | 25 pts |
 | 5. Suspicious Objects | JavaScript, embedded files, OpenAction, XFA forms, Launch actions | 40 pts for JS; 20 for embedded files; 15 for OpenAction; 12 for XFA |
 | 6. Content Consistency | Page count, sizes, blank pages, text-density variance | 12 pts per flag |
 | 7. Digital Signature | Signature field presence; coverage gaps (modified after signing) | 35 pts per coverage-gap flag |
@@ -375,6 +377,8 @@ Key endpoints for auditor workflows:
 | `GET /api/v1/scans/{id}/report.pdf` | Download the PDF audit report for a specific scan |
 | `GET /api/v1/scans/recent` | Most-recent scans across all entities |
 | `GET /api/v1/db/stats` | Entity / scan / high-risk counts for dashboards |
+| `POST /api/v1/extract` | Upload and extract structured fields (non-persistent) |
+| `POST /api/v1/forensic-scan` | Upload and run forensic tamper analysis (non-persistent) |
 | `POST /kyc/sessions` | Create a Video KYC session (returns a shareable URL) |
 | `GET /kyc/{session_id}` | Customer-facing Video KYC page (served in browser) |
 | `GET /kyc/sessions/{session_id}` | Poll session status from the operator dashboard |

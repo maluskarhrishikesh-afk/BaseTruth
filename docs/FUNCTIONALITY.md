@@ -14,6 +14,7 @@
 | Identity Verification | 🧑‍💻 | `identity` | Identity Verification |
 | Video KYC | 🎥 | `video_kyc` | Video KYC |
 | Scan Document | 🔍 | `scan` | Scan Document |
+| Forensic Scan | 🧪 | `forensic_scan` | Forensic Scan |
 | Bulk Scan | 📦 | `bulk` | Bulk Scan |
 | Scans | 🔬 | `scans` | Scans |
 | Cases | 📁 | `cases` | Cases |
@@ -22,6 +23,7 @@
 | Datasources | 🔗 | `datasources` | Datasources |
 | Log Analyzer | 📋 | `logs` | Log Analyzer |
 | Database Viewer | 🗄️ | `database` | Database Viewer |
+| Swagger | 📘 | `swagger` | Swagger |
 | Settings | ⚙️ | `settings` | Settings |
 | BaseTruth Q&A | 💬 | `gemma_chat` | BaseTruth Q&A |
 
@@ -153,16 +155,40 @@
 
 ## 🔍 Scan Document
 
-**Purpose:** Scan a single document for fraud signals.
+**Purpose:** Instantly classify and extract structured fields from a single document. This screen does not run forensics and does not save to the database.
 
 | Element | Action | Expected Result |
 |---|---|---|
-| File uploader | Upload PDF or image | Document stored temporarily; scan starts |
-| Document type selector | Select | Activates the relevant validation pack |
-| "Start Scan" button | Click | Runs all fraud detectors; shows Truth Score, risk level, and detailed signal report |
-| Entity link widget | Search/select | Links scan result to a person record |
-| Unsaved-changes navigation guard | Click another page before saving | Shows a modal asking the operator to continue editing or discard; discard clears uploaded file and scan result |
-| "💾 Save to Database" button | Click after scan completes | Saves the scan to `scans`; uploads the original source document to MinIO; shows success or visible failure |
+| File uploader | Upload PDF or image | Document is processed immediately for extraction |
+| AI extraction pipeline | Auto-runs | Gemma classifies + extracts in one pass (`doc_type="generic"`) |
+| Classification banner | Auto-renders | Shows document type, scan mode (Scanned/Image-based or Digital/Structured), and file name |
+| JSON result panel | Auto-renders | Shows response JSON including `document_type`, `is_image_based`, and `extracted_fields` |
+| "⬇ Download extracted data as JSON" | Click | Downloads the same response payload shown in the panel |
+| "🔄 Reset" | Click | Clears current result and upload state |
+
+**Important rules:**
+- Confidence is not shown in the screen banner.
+- The user-visible JSON output must include `document_type`.
+- No write calls are allowed from this screen (no save to PostgreSQL/MinIO).
+
+---
+
+## 🧪 Forensic Scan
+
+**Purpose:** Run forensic tamper analysis on one uploaded document and show verdict + evidence as JSON.
+
+| Element | Action | Expected Result |
+|---|---|---|
+| File uploader | Upload PDF or image | Forensic pipeline starts immediately |
+| Forensic routing | Auto-runs | Image/scanned files use image forensics; structured PDFs use PDF forensics |
+| Verdict banner | Auto-renders | Shows forensic verdict (ORIGINAL/UNCERTAIN/LIKELY TAMPERED/TAMPERED), score, type, scan mode, file name |
+| Forensic Result (JSON) | Auto-renders | Shows `filename`, `document_type`, `is_image_based`, verdict, score, explanation, and evidence |
+| Layer expanders | Expand | Shows layer-level forensic outputs and full layered-analysis JSON |
+| "⬇ Download forensic result as JSON" | Click | Downloads user-facing forensic response JSON |
+
+**Important rules:**
+- This screen is non-persistent (no DB/MinIO writes).
+- It reuses shared forensic utility logic used by API/UI flows.
 
 ---
 
@@ -182,8 +208,8 @@
 > - **Target accuracy:** ≥ 95% document type classification accuracy by letting Gemma4 use its own knowledge rather than constraining it to a fixed list.
 
 > **Forensic Pipeline (per file type):**
-> - **Image files (.jpg, .png, .tiff, …) and scanned PDFs:** 11-layer *image* forensic engine (`image_forensics_detect.py`) — ELA, metadata, noise, DCT, clone detection, colour anomaly, edge analysis, saturation, font consistency, AI-artefact detection, file entropy.
-> - **Digitally-created PDFs (payslip, offer letter, bank statement, form16, etc.):** 11-layer *PDF* forensic engine (`pdf_forensics_detect.py`) — incremental-update detection, metadata fingerprinting, font consistency, hidden-text detection, suspicious-object detection (JavaScript/XFA/OpenAction), content-structure analysis, digital-signature integrity, page-render ELA, embedded-image noise, file entropy, and object/xref integrity. Each forensic layer shows a plain-English explanation of what was found and why it matters.
+> - **Image files (.jpg, .png, .tiff, …) and scanned PDFs:** 11-layer *image* forensic engine (`image_forensics_detect.py`) — ELA, metadata, noise, DCT, clone detection, colour anomaly, edge analysis, saturation, font consistency (including baseline alignment jitter), AI-artefact detection, file entropy.
+> - **Digitally-created PDFs (payslip, offer letter, bank statement, form16, etc.):** 11-layer *PDF* forensic engine (`pdf_forensics_detect.py`) — incremental-update detection, metadata fingerprinting, font consistency, hidden-text & shadow-attack detection, suspicious-object detection (JavaScript/XFA/OpenAction), content-structure analysis, digital-signature integrity, page-render ELA, embedded-image noise, file entropy, and object/xref integrity. Each forensic layer shows a plain-English explanation of what was found and why it matters.
 > - **Routing logic:** Gemma4 classification determines which pipeline runs. If Gemma4 is unavailable or the confidence < 0.5 for structured-PDF classification, the image pipeline is used as a safe fallback.
 
 | Element | Action | Expected Result |
@@ -214,7 +240,7 @@
 
 **Purpose:** Human-in-the-loop 1st-level approval screen. Analysts review the 11-layer forensic results for each saved scan and either Approve or Reject it. Only approved scans flow into Document Intelligence.
 
-**Workflow position:** After **Bulk Scan → Save to Database** (or **Scan Document → Save**), every saved scan lands here as **Pending**. The analyst reviews the forensic evidence and decides.
+**Workflow position:** After **Bulk Scan → Save to Database**, every saved scan lands here as **Pending**. The analyst reviews the forensic evidence and decides.
 
 | Element | Action | Expected Result |
 |---|---|---|
@@ -355,6 +381,23 @@
 | "Add Datasource" form | Fill + Submit | Registers new connector; saved to `config/datasources.json` |
 | "Sync" button per source | Click | Pulls documents from the source into the BaseTruth workspace |
 | Source health indicator | Auto-renders | Shows "Connected" or "Error" for each registered source |
+
+---
+
+## 📘 Swagger
+
+**Purpose:** Provide operators and integrators a direct entry point to the live OpenAPI documentation.
+
+| Element | Action | Expected Result |
+|---|---|---|
+| Swagger UI link | Click | Opens `http://localhost:8000/docs` |
+| OpenAPI JSON link | Click | Opens `http://localhost:8000/openapi.json` |
+| ReDoc link | Click | Opens `http://localhost:8000/redoc` |
+| Available endpoints panel | Expand | Shows key scan endpoints including `POST /api/v1/extract` and `POST /api/v1/forensic-scan` |
+
+**Important rules:**
+- Page title must remain `_page_title("📘", "Swagger")`.
+- The page is informational only; it does not execute scans itself.
 
 ---
 

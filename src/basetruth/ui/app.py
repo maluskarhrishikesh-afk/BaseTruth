@@ -936,6 +936,7 @@ _PAGES: Dict[str, str] = {
     "🧑‍💻  Identity Verification": "identity",
     "🎥  Video KYC": "video_kyc",
     "🔍  Scan Document": "scan",
+    "🧪  Forensic Scan": "forensic_scan",
     "📦  Bulk Scan": "bulk",
     "🔬  Review Scans": "scans",
     "🧠  Document Intelligence": "document_intelligence",
@@ -943,6 +944,7 @@ _PAGES: Dict[str, str] = {
     "📊  Reports": "reports",
     "🪵  Log Analyzer": "logs",
     "🗄️  Database Viewer": "database",
+    "📘  Swagger": "swagger",
     "💬  BaseTruth AI Copilot": "gemma_chat",
 }
 
@@ -3944,6 +3946,7 @@ def main() -> None:
     # Route to modular page implementations (pages/ sub-package)
     from basetruth.ui.pages.dashboard import _page_dashboard as _m_dashboard  # noqa: PLC0415
     from basetruth.ui.pages.scan import _page_scan as _m_scan  # noqa: PLC0415
+    from basetruth.ui.pages.forensic_scan import _page_forensic_scan as _m_forensic_scan  # noqa: PLC0415
     from basetruth.ui.pages.bulk import _page_bulk as _m_bulk  # noqa: PLC0415
     from basetruth.ui.pages.scans import _page_scans as _m_scans  # noqa: PLC0415
     from basetruth.ui.pages.review_reports import _page_review_reports as _m_review_reports  # noqa: PLC0415
@@ -3954,11 +3957,14 @@ def main() -> None:
     from basetruth.ui.pages.identity import _page_identity_verification as _m_identity  # noqa: PLC0415
     from basetruth.ui.pages.video_kyc import _page_video_kyc as _m_video_kyc  # noqa: PLC0415
     from basetruth.ui.pages.gemma_chat import _page_gemma_chat as _m_gemma_chat  # noqa: PLC0415
+    from basetruth.ui.pages.swagger import _page_swagger as _m_swagger  # noqa: PLC0415
 
     if page == "dashboard":
         _m_dashboard(service)
     elif page == "scan":
         _m_scan(service)
+    elif page == "forensic_scan":
+        _m_forensic_scan(service)
     elif page == "bulk":
         _m_bulk(service)
     elif page == "scans":
@@ -3979,6 +3985,8 @@ def main() -> None:
         _m_video_kyc()
     elif page == "gemma_chat":
         _m_gemma_chat()
+    elif page == "swagger":
+        _m_swagger()
     else:
         st.warning(f"Unknown page: {page}")
 

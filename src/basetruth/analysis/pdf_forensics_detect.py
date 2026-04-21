@@ -417,12 +417,14 @@ def invisible_text_analysis(pdf_path: str) -> dict:
     total_spans      = 0
     white_spans      = 0
     tiny_size_spans  = 0
+    shadow_spans     = 0
     examples: list[dict] = []
 
     for page_num in range(doc.page_count):
         page = doc.load_page(page_num)
         # "dict" format gives per-span colour and size information
         blocks = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE).get("blocks", [])
+        page_spans_list = []
 
         for block in blocks:
             if block.get("type") != 0:  # type 0 = text block
@@ -433,6 +435,10 @@ def invisible_text_analysis(pdf_path: str) -> dict:
                     text  = span.get("text", "").strip()
                     color = span.get("color", 0)   # 24-bit RGB packed int
                     size  = span.get("size", 1.0)
+                    bbox  = span.get("bbox")
+
+                    if text and bbox:
+                        page_spans_list.append({"text": text, "bbox": bbox, "color": color, "size": size})
 
                     # White text on white background — colour == 0xFFFFFF (16777215)
                     # Near-white: R,G,B all > 240 → a packed int > 0xF0F0F0 (15790320)
@@ -464,9 +470,42 @@ def invisible_text_analysis(pdf_path: str) -> dict:
                                 "size":   round(size, 3),
                             })
 
+        # Check for shadow attacks: overlapping text with different content
+        for i in range(len(page_spans_list)):
+            for j in range(i + 1, len(page_spans_list)):
+                s1, s2 = page_spans_list[i], page_spans_list[j]
+                t1, t2 = s1["text"], s2["text"]
+                
+                if t1 == t2 or t1 in t2 or t2 in t1:
+                    continue
+                    
+                b1, b2 = s1["bbox"], s2["bbox"]
+                
+                x_left = max(b1[0], b2[0])
+                y_top = max(b1[1], b2[1])
+                x_right = min(b1[2], b2[2])
+                y_bottom = min(b1[3], b2[3])
+                
+                if x_right > x_left and y_bottom > y_top:
+                    inter_area = (x_right - x_left) * (y_bottom - y_top)
+                    area1 = max(0, b1[2] - b1[0]) * max(0, b1[3] - b1[1])
+                    area2 = max(0, b2[2] - b2[0]) * max(0, b2[3] - b2[1])
+                    min_area = min(area1, area2)
+                    
+                    if min_area > 0 and (inter_area / min_area) > 0.8:
+                        shadow_spans += 1
+                        if len(examples) < 10:
+                            examples.append({
+                                "page": page_num + 1,
+                                "text": f"'{t1[:20]}' overlapping with '{t2[:20]}'",
+                                "reason": "overlapping text bounds (shadow attack padding/edit)",
+                                "color": f"#{max(s1['color'], s2['color']):06X}",
+                                "size": round((s1['size'] + s2['size']) / 2, 2)
+                            })
+
     doc.close()
 
-    total_hidden = white_spans + tiny_size_spans
+    total_hidden = white_spans + tiny_size_spans + shadow_spans
     suspicious_flags: list[str] = []
     if white_spans > 0:
         suspicious_flags.append(
@@ -475,6 +514,10 @@ def invisible_text_analysis(pdf_path: str) -> dict:
     if tiny_size_spans > 0:
         suspicious_flags.append(
             f"{tiny_size_spans} span(s) with near-zero font size — invisible text fragments"
+        )
+    if shadow_spans > 0:
+        suspicious_flags.append(
+            f"{shadow_spans} span(s) overlapping with different text — potential shadow edit mask"
         )
 
     return {
@@ -1140,7 +1183,7 @@ def compute_score(result: dict, peer_result: dict | None = None) -> tuple[float,
         score += 25
         evidence.append(
             f"Invisible text: {hidden} hidden span(s) found "
-            f"(white text or zero-size text — 25 pts)"
+            f"(white, zero-size, or shadow text — 25 pts)"
         )
 
     # ── Layer 5: Suspicious objects ───────────────────────────────────────────

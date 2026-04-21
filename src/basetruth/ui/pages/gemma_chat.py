@@ -122,6 +122,56 @@ _THINK_BLOCK_RE = re.compile(
 _THINK_OPEN_RE = re.compile(r"<(?:think|thought)>", re.IGNORECASE)
 _THINK_CLOSE_RE = re.compile(r"</(?:think|thought)>", re.IGNORECASE)
 
+# ---------------------------------------------------------------------------
+# Bullet / section-header normalisation
+# ---------------------------------------------------------------------------
+# Small models sometimes emit all bullet points on one line, separated by the
+# bullet character but without any newline between them:
+#   "• Finding A • Finding B • Finding C"
+# Markdown renders that as a single paragraph — bullet characters show inline.
+# We post-process every stored response so each "• " that is NOT at the start
+# of a line gets promoted onto its own line.  We also ensure the common emoji
+# section markers (📊 📋 ✅ ⚠️ ❌ 🔍 💡) are always on their own lines.
+# This is a display-normalisation step and never changes the factual content.
+
+# Matches a bullet/disc character that is preceded by non-newline content so
+# we can insert a line-break before it.
+_INLINE_BULLET_RE = re.compile(
+    r"(?<=[^\n])\s+(•|·|⁃|◦|▸|‣)\s+",
+)
+# Matches an emoji section marker that is preceded by non-newline content.
+_INLINE_SECTION_RE = re.compile(
+    r"(?<=[^\n])\s+(📊|📋|✅|⚠️|❌|🔍|💡|🔴|🟡|🟢|⚪)\s+",
+)
+
+
+def _normalise_chat_response(text: str) -> str:
+    """Ensure bullet points and section headers each appear on their own line.
+
+    Some LLMs return responses with all bullets on one line
+    (e.g. '• A • B • C').  Markdown renders that as a single paragraph
+    where the bullet characters appear inline — making the response hard to
+    read.  This function normalises the text so every bullet and every
+    emoji-prefixed section marker starts on a fresh line.
+
+    Applies only to stored responses (not to streaming chunks) so the
+    live-typing indicator is not affected.
+    """
+    if not text:
+        return text
+
+    # Split on inline bullets — insert a newline before each "• " that follows
+    # non-whitespace content on the same line.
+    normalised = _INLINE_BULLET_RE.sub(lambda m: f"\n{m.group(1)} ", text)
+
+    # Do the same for emoji section markers so headers always start a new paragraph.
+    normalised = _INLINE_SECTION_RE.sub(lambda m: f"\n\n{m.group(1)} ", normalised)
+
+    # Collapse any triple+ blank lines that the above substitutions may introduce.
+    normalised = re.sub(r"\n{4,}", "\n\n\n", normalised)
+
+    return normalised
+
 
 def _has_open_thinking_block(text: str) -> bool:
     """Return True when the streamed text is inside an unfinished reasoning block.
@@ -300,6 +350,41 @@ button[kind="secondary"]:hover {
     line-height: 1.65 !important;
     margin-bottom: 0.4rem !important;
 }
+
+/* ── Headings inside chat messages ───────────────────────────────────────── */
+/* Default Streamlit heading sizes (h2 ~1.5 rem, h3 ~1.25 rem) are too large
+   for a compact chat bubble.  We scale all heading levels down so they sit
+   comfortably next to body text while still being clearly distinct through
+   weight and spacing.  Emoji section markers (📊 📋 ✅) inherit the same
+   font size so they never appear oversized. */
+[data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] h1,
+[data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] h2,
+[data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] h3,
+[data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] h4,
+[data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] h5,
+[data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] h6 {
+    font-size: 0.88rem !important;
+    font-weight: 700 !important;
+    margin: 0.65rem 0 0.2rem !important;
+    line-height: 1.35 !important;
+    letter-spacing: 0.02em;
+    border: none !important;
+    padding: 0 !important;
+    color: inherit !important;
+}
+
+/* ── Bullet list inside chat messages ────────────────────────────────────── */
+[data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] ul,
+[data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] ol {
+    font-size: 0.91rem !important;
+    line-height: 1.6 !important;
+    padding-left: 1.25rem !important;
+    margin: 0.25rem 0 0.5rem !important;
+}
+[data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] li {
+    margin-bottom: 0.2rem !important;
+}
+
 [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] code {
     background: rgba(99, 102, 241, 0.08) !important;
     border-radius: 6px !important;
@@ -1124,6 +1209,9 @@ def _do_reply(
         api_messages2 = [{"role": "system", "content": system_prompt}] + windowed2
         with st.chat_message("assistant", avatar="💬"):
             final_response = _call_llm(api_messages2, provider_cfg, silent=False)
+        # Normalise bullet/section formatting so every bullet starts on its own line.
+        # The LLM sometimes returns all bullets on a single line separated by • chars.
+        final_response = _normalise_chat_response(final_response)
         log.info(
             "BaseTruth AI Copilot: Phase 2 response delivered | response_length=%d",
             len(final_response),
@@ -1141,6 +1229,8 @@ def _do_reply(
         # <think>...</think> reasoning should not show that to the user.
         _, clean_first_response = _strip_thinking(first_response)
         display_response = clean_first_response if clean_first_response else first_response
+        # Normalise bullet/section formatting so every bullet starts on its own line.
+        display_response = _normalise_chat_response(display_response)
         log.info(
             "BaseTruth AI Copilot: Knowledge-only response (no SQL/MinIO) | response_length=%d",
             len(display_response),

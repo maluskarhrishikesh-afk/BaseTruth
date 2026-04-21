@@ -287,7 +287,7 @@ def _page_logs() -> None:
             
             st.markdown(
                 f"""
-                <div style="background-color: #0d1117; color: #c9d1d9; padding: 12px; border-radius: 6px; 
+                <div id="bt-log-box" style="background-color: #0d1117; color: #c9d1d9; padding: 12px; border-radius: 6px; 
                             font-family: 'Consolas', 'Courier New', monospace; height: 80vh; 
                             overflow-y: auto; white-space: pre-wrap; font-size: 0.85rem; line-height: 1.4;
                             border: 1px solid #30363d;">
@@ -297,17 +297,16 @@ def _page_logs() -> None:
                 unsafe_allow_html=True
             )
             
-            # Auto-scroll JavaScript to always keep bottom in view when live
+            # Auto-scroll JavaScript to always keep bottom in view when live.
+            # We target the log box by its stable id="bt-log-box" so the selector
+            # never breaks if Streamlit reformats the inline style attribute.
             if live_update:
                 st.components.v1.html(
                     '''
                     <script>
                     const parentDoc = window.parent.document;
-                    const logBoxes = parentDoc.querySelectorAll('div[style*="background-color: #0d1117"]');
-                    if (logBoxes && logBoxes.length > 0) {
-                        const box = logBoxes[logBoxes.length - 1];
-                        box.scrollTop = box.scrollHeight;
-                    }
+                    const box = parentDoc.getElementById("bt-log-box");
+                    if (box) { box.scrollTop = box.scrollHeight; }
                     </script>
                     ''',
                     height=0,
@@ -358,12 +357,11 @@ def _page_logs() -> None:
                     btn.onmouseleave = function() { btn.style.opacity = "0.85"; btn.style.background = "#1f2937"; };
 
                     btn.onclick = function() {
-                        // Find the dark log container and scroll it to the very bottom
-                        const logBoxes = parentDoc.querySelectorAll("div[style*=\\"background-color: #0d1117\\"]");
-                        if (logBoxes && logBoxes.length > 0) {
-                            const box = logBoxes[logBoxes.length - 1];
-                            box.scrollTop = box.scrollHeight;
-                        }
+                        // Target the log box by its stable id instead of a fragile
+                        // CSS attribute selector that can break if Streamlit rewrites
+                        // the inline style string format.
+                        const box = parentDoc.getElementById("bt-log-box");
+                        if (box) { box.scrollTop = box.scrollHeight; }
                     };
 
                     parentDoc.body.appendChild(btn);

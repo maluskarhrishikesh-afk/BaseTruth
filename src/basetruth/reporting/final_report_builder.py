@@ -630,10 +630,13 @@ def write_gemma_narrative(focused_brief: str) -> Tuple[str, str]:
         user_prompt = _GEMMA_USER_PROMPT_TEMPLATE.format(focused_brief=focused_brief)
 
         # Text-only prompt — evidence is already in text form; no images needed.
+        # Pass feature="final_report" so the router reads the per-feature config
+        # from settings.json instead of falling through to global Ollama routing.
         content, engine, model, _ = _route_vlm_chat(
             system_prompt=_GEMMA_SYSTEM_PROMPT,
             user_prompt=user_prompt,
             image_bytes_list=[],
+            feature="final_report",
         )
 
         if content and content.strip():
