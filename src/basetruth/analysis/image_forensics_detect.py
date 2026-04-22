@@ -959,11 +959,17 @@ def _ai_artifact_analysis(image_path: str) -> Dict[str, Any]:
 
 # ── Scoring ────────────────────────────────────────────────────────────────────
 
-def _compute_score(layers: Dict[str, Any], file_size_bytes: int) -> Tuple[float, str, List[str]]:
-    """Aggregate all 11 layer results into a single 0–100 forgery score.
+def _heuristic_score(layers: Dict[str, Any]) -> Tuple[float, str, List[str]]:
+    """Compute the fixed-weight heuristic forgery score from raw layer outputs.
 
-    Each triggered check adds a fixed number of points. Points are calibrated to
-    reflect how reliably each signal indicates actual tampering:
+    This is the original rule-based scorer, extracted into its own function so
+    it can be called independently when:
+      (a) generating evidence strings for the UI (always needed, regardless of
+          whether the ML model is active), and
+      (b) the ML model is absent or fails — the heuristic becomes the final score.
+
+    Each triggered check adds a fixed number of points calibrated to reflect how
+    reliably each signal indicates actual tampering:
     - High-confidence signals (colour anomaly, DCT comb) add up to 35 pts.
     - Medium-confidence signals (ELA, font, AI artefact) add up to 20–25 pts.
     - Supporting signals (noise, clone, edge, saturation) add up to 8–15 pts.
@@ -1061,6 +1067,71 @@ def _compute_score(layers: Dict[str, Any], file_size_bytes: int) -> Tuple[float,
     return round(score, 1), verdict, evidence
 
 
+def _compute_score(layers: Dict[str, Any], file_size_bytes: int) -> Tuple[float, str, List[str], str]:
+    """Aggregate all 11 layer results into a single 0–100 forgery score.
+
+    This function always computes the heuristic score first (so evidence strings
+    are always populated for the UI).  It then tries to replace the numeric score
+    with a prediction from the trained XGBoost ML model
+    (data/ml_scorer_image.pkl).
+
+    If the model file does not exist yet — the normal cold-start state before
+    train_ml_scorer.py has been run — or if the model fails for any reason, the
+    function silently falls back to the heuristic score unchanged.
+
+    Returns a 4-tuple: (score, verdict, evidence, scoring_method)
+      scoring_method is "ML" when the XGBoost model produced the score,
+      or "heuristic" when the rule-based fallback was used.
+    """
+    # Step 1: always run the heuristic to collect evidence strings.
+    # These descriptive messages are shown in the UI regardless of which
+    # scorer provided the numeric score.
+    heuristic_score, _heuristic_verdict, evidence = _heuristic_score(layers)
+
+    # Step 2: attempt ML scoring.  Any failure falls through to heuristic.
+    final_score = heuristic_score
+    scoring_method = "heuristic"
+    try:
+        from basetruth.analysis import ml_scorer  # noqa: PLC0415
+        feature_vector = ml_scorer.extract_feature_vector(layers)
+        ml_result = ml_scorer.predict(feature_vector)
+        if ml_result is not None:
+            # ML model is available and returned a valid prediction — use it.
+            final_score = ml_result["score"]
+            scoring_method = "ML"
+            log.info(
+                "image_forensics_detect: scoring_method=ML (XGBoost)",
+                extra={
+                    "ml_score": final_score,
+                    "heuristic_score": heuristic_score,
+                    "confidence": ml_result.get("confidence"),
+                },
+            )
+        else:
+            # predict() returned None — model file absent or load failed.
+            # ml_scorer already logged a warning with the reason.
+            log.info(
+                "image_forensics_detect: scoring_method=heuristic (ML model not available)",
+                extra={"heuristic_score": heuristic_score},
+            )
+    except Exception as exc:  # noqa: BLE001
+        # Any import error, missing dependency, or prediction failure here must
+        # never surface to the caller — the heuristic is always the safe fallback.
+        log.warning(
+            "image_forensics_detect: ML scoring raised exception, using heuristic",
+            extra={"error": str(exc)},
+        )
+
+    # Step 3: derive the verdict from whichever score was selected.
+    verdict = (
+        "TAMPERED" if final_score >= 55
+        else "LIKELY TAMPERED" if final_score >= 30
+        else "UNCERTAIN" if final_score >= 15
+        else "ORIGINAL"
+    )
+    return round(final_score, 1), verdict, evidence, scoring_method
+
+
 # ── Public entry point ─────────────────────────────────────────────────────────
 
 def run_forensics(path: str) -> Dict[str, Any]:
@@ -1128,7 +1199,7 @@ def run_forensics(path: str) -> Dict[str, Any]:
         "layer_11_ai":        _ai_artifact_analysis(path),   # AI-generation artefacts (FFT)
     }
 
-    score, verdict, evidence = _compute_score(layers, file_size)
+    score, verdict, evidence, scoring_method = _compute_score(layers, file_size)
 
     suspicious_count = sum(
         1 for v in layers.values() if isinstance(v, dict) and v.get("status") == "SUSPICIOUS"
@@ -1168,6 +1239,7 @@ def run_forensics(path: str) -> Dict[str, Any]:
             "forgery_score_0_100": score,
             "overall_explanation": explanation,
             "evidence": evidence,
+            "scoring_method": scoring_method,
         },
         "layers": layers,
     }

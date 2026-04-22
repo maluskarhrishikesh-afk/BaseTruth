@@ -433,11 +433,19 @@ class VLMClient:
                 "pdf_size_bytes=%d (native PDF input; image render skipped)",
                 self.model, base_url, len(pdf_bytes),
             )
-        else:
+        elif image_bytes_list:
+            # Standard multimodal call: one or more JPEG images are attached.
             log.info(
                 "VLMClient._call_google: sending JPEG image(s) — model=%s base_url=%s "
                 "images=%d",
                 self.model, base_url, len(image_bytes_list),
+            )
+        else:
+            # Text-only call (e.g. honest-review summary generation — no document image needed).
+            log.info(
+                "VLMClient._call_google: text-only request (no image, no PDF) — "
+                "model=%s base_url=%s",
+                self.model, base_url,
             )
 
         # Build user parts: text prompt first, then the document (PDF preferred over JPEG)

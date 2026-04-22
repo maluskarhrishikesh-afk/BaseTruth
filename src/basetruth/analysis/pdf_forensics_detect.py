@@ -1101,13 +1101,22 @@ def object_integrity_analysis(pdf_path: str) -> dict:
                 f"objects are packed inside streams and cannot be read by basic text scanners"
             )
 
+        # Compute xref_mismatch_score as a 0–100 continuous score for the ML model.
+        # A 10% object-count difference yields ≈10 points; a 100%+ mismatch saturates at 100.
+        # This is more informative than a binary suspicious flag for the ML classifier.
+        xref_mismatch_score = 0.0
+        if declared_size is not None and declared_size > 0:
+            mismatch_abs = abs(total_objects - declared_size)
+            xref_mismatch_score = min(100.0, (mismatch_abs / declared_size) * 100.0)
+
         return {
-            "total_objects":    total_objects,
-            "declared_size":    declared_size,
-            "stream_count":     stream_count,
-            "obj_stm_count":    obj_stm_count,
-            "type_counts":      type_counts,
-            "suspicious_flags": suspicious_flags,
+            "total_objects":      total_objects,
+            "declared_size":      declared_size,
+            "stream_count":       stream_count,
+            "obj_stm_count":      obj_stm_count,
+            "type_counts":        type_counts,
+            "xref_mismatch_score": round(xref_mismatch_score, 2),  # new — used by ML model
+            "suspicious_flags":   suspicious_flags,
             "interpretation": (
                 f"SUSPICIOUS — {'; '.join(suspicious_flags)}"
                 if suspicious_flags else
@@ -1561,6 +1570,26 @@ def run_pdf_forensics(pdf_path: str) -> Dict[str, Any]:
         r_ent  = _safe(file_entropy_analysis, path)
         r_obj  = _safe(object_integrity_analysis, path)
 
+        # ── Detect whether this is a scanned (image-only) PDF ─────────────────
+        # A scanned PDF has no machine-readable embedded text layer — it is just
+        # a sequence of images.  We check by extracting text from up to 3 pages:
+        # if fewer than 200 characters are found, the PDF is treated as scanned.
+        # This flag is passed to the ML model as the `is_scanned_pdf` feature.
+        _is_scanned_pdf = False
+        try:
+            _scan_doc = fitz.open(path)
+            _scan_text = ""
+            for _pn in range(min(len(_scan_doc), 3)):
+                _scan_text += _scan_doc.load_page(_pn).get_text("text")
+            _scan_doc.close()
+            _is_scanned_pdf = len(_scan_text.strip()) < 200
+            log.debug(
+                "run_pdf_forensics: is_scanned_pdf=%s (embedded_text_chars=%d)",
+                _is_scanned_pdf, len(_scan_text.strip()),
+            )
+        except Exception as _scan_exc:
+            log.debug("run_pdf_forensics: is_scanned_pdf detection skipped — %s", _scan_exc)
+
         # Assemble the raw dict that compute_score() expects (same keys as
         # the dict returned by analyse_pdf()).
         raw_result: Dict[str, Any] = {
@@ -1880,11 +1909,67 @@ def run_pdf_forensics(pdf_path: str) -> Dict[str, Any]:
                     )
                 ),
                 "metrics": {} if r_obj.get("skipped") else {
-                    "total_objects": r_obj.get("total_objects"),
-                    "obj_stm_count": r_obj.get("obj_stm_count"),
+                    "total_objects":      r_obj.get("total_objects"),
+                    "obj_stm_count":      r_obj.get("obj_stm_count"),
+                    # xref_mismatch_score: 0–100 continuous score for the ML model.
+                    # Derived from declared_size vs actual object count mismatch percentage.
+                    "xref_mismatch_score": r_obj.get("xref_mismatch_score", 0.0),
                 },
             },
         }
+
+        # ── Attach scanned-PDF flag as metadata on the layers dict ───────────
+        # The ML model needs is_scanned_pdf as a feature.  Rather than adding a
+        # 12th "layer", we expose it under a private _meta key that extract_feature_vector_pdf
+        # reads.  It does not appear in the UI layer list.
+        layers["_meta"] = {
+            "is_scanned_pdf": float(_is_scanned_pdf),
+        }
+
+        # ── Attempt ML scoring; fall back to heuristic if model not available ─
+        # This mirrors the same pattern used in image_forensics_detect._compute_score().
+        scoring_method = "heuristic"
+        try:
+            from basetruth.analysis.ml_scorer_pdf import (  # noqa: PLC0415
+                extract_feature_vector_pdf,
+                predict_pdf,
+            )
+            feature_vec = extract_feature_vector_pdf(layers)
+            ml_result   = predict_pdf(feature_vec)
+            if ml_result:
+                score  = ml_result["score"]
+                scoring_method = "ML (XGBoost)"
+                # Re-derive the verdict from the ML score using the same thresholds.
+                verdict = (
+                    "TAMPERED"        if score >= 55 else
+                    "LIKELY TAMPERED" if score >= 30 else
+                    "UNCERTAIN"       if score >= 15 else
+                    "ORIGINAL"
+                )
+                # Rebuild the explanation to reflect the ML-driven verdict.
+                if verdict == "ORIGINAL":
+                    explanation = (
+                        f"All {clean_count} applicable PDF forensic layers came back clean. "
+                        "No significant tampering signals detected in this digitally-created PDF."
+                    )
+                elif verdict in ("LIKELY TAMPERED", "TAMPERED"):
+                    explanation = (
+                        f"{suspicious_count} of 11 PDF forensic layers flagged suspicious signals "
+                        f"(ML score {score:.0f}/100). Key evidence: {'; '.join(evidence[:3])}."
+                    )
+                else:
+                    explanation = (
+                        f"Mixed results — {suspicious_count} suspicious, {clean_count} clean layers "
+                        f"(ML score {score:.0f}/100). Manual review recommended."
+                    )
+                log.info(
+                    "run_pdf_forensics: scoring_method=ML (XGBoost)",
+                    extra={"ml_score": score, "verdict": verdict},
+                )
+        except Exception as _ml_exc:
+            log.warning(
+                "run_pdf_forensics: ML scoring failed — falling back to heuristic: %s", _ml_exc,
+            )
 
         log.info(
             "run_pdf_forensics: complete",
@@ -1900,6 +1985,8 @@ def run_pdf_forensics(pdf_path: str) -> Dict[str, Any]:
                 "forgery_score_0_100": round(score, 1),
                 "overall_explanation": explanation,
                 "evidence":            evidence,
+                # scoring_method is read by forensics_utils.py to show the ML/heuristic badge
+                "scoring_method":      scoring_method,
             },
             "layers": layers,
         }

@@ -47,6 +47,7 @@ services:
     volumes:
       - ./artifacts:/app/artifacts
       - ./your_data:/app/your_data
+      - ./data:/app/data
       # DEV: mount the local src directory so code changes are reflected without
       # rebuilding the image. PYTHONPATH below ensures Python prefers this over
       # the installed package in site-packages.
@@ -106,6 +107,7 @@ services:
     volumes:
       - ./artifacts:/app/artifacts
       - ./your_data:/app/your_data
+      - ./data:/app/data
       - ./src:/app/src
       - ./logs:/app/logs
     environment:

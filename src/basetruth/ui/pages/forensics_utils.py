@@ -292,6 +292,7 @@ class ForensicAnalyzer:
             summary = layered.get("scan_summary", {}) if isinstance(layered, dict) else {}
             verdict = str(summary.get("forensic_verdict", "UNAVAILABLE") or "UNAVAILABLE")
             score = float(summary.get("forgery_score_0_100", 0.0) or 0.0)
+            scoring_method = str(summary.get("scoring_method", "heuristic") or "heuristic")
 
             log.info(
                 "forensics_utils: analyze_document complete",
@@ -324,6 +325,7 @@ class ForensicAnalyzer:
                 "is_image_based": is_image_based,
                 "forensic_verdict": verdict,
                 "forgery_score_0_100": score,
+                "scoring_method": scoring_method,
                 "overall_explanation": summary.get("overall_explanation", ""),
                 "evidence": evidence_list,
                 "honest_review": honest_review,

@@ -45,6 +45,7 @@ pycparser==3.0
 numpy==2.4.3
 scipy==1.17.1
 scikit-learn==1.8.0
+xgboost>=2.0,<3.0
 joblib==1.5.3
 threadpoolctl==3.6.0
 faiss-cpu==1.13.2

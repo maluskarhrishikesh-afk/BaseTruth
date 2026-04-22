@@ -114,6 +114,9 @@ You get tamper verdict + score + evidence in JSON format.</div>
     is_image_based = bool(result.get("is_image_based", False))
     scan_method = "Scanned / Image-based" if is_image_based else "Digital / Structured"
     scan_method_icon = "🖼" if is_image_based else "📑"
+    # Show which scorer produced the fraud score so reviewers know the source
+    scoring_method = str(result.get("scoring_method", "heuristic") or "heuristic")
+    scoring_badge = "🤖 ML Model (XGBoost)" if scoring_method == "ML" else "📐 Heuristic (rule-based)"
     verdict_label = _VERDICT_BADGE.get(verdict, verdict)
     v_color = _verdict_color(verdict)
     v_border = _VERDICT_BORDER.get(verdict, "rgba(148,163,184,0.18)")
@@ -129,6 +132,7 @@ You get tamper verdict + score + evidence in JSON format.</div>
             <div class="bt-classify-meta">
                 {document_type.replace("_", " ").title()} &nbsp;·&nbsp; {scan_method}
                 &nbsp;·&nbsp; Score: <strong>{score:.1f}/100</strong>
+                &nbsp;·&nbsp; {scoring_badge}
                 &nbsp;·&nbsp; File: <strong>{filename}</strong>
             </div>
           </div>
