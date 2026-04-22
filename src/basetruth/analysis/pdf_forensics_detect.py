@@ -1938,7 +1938,7 @@ def run_pdf_forensics(pdf_path: str) -> Dict[str, Any]:
             ml_result   = predict_pdf(feature_vec)
             if ml_result:
                 score  = ml_result["score"]
-                scoring_method = "ML (XGBoost)"
+                scoring_method = "ML"   # same value emitted by image_forensics_detect
                 # Re-derive the verdict from the ML score using the same thresholds.
                 verdict = (
                     "TAMPERED"        if score >= 55 else
