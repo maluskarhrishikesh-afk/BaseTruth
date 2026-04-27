@@ -382,13 +382,15 @@ Run it on any image that contains a detected face (from the InsightFace/MediaPip
 
 ---
 
-### 4. Localized ELA with Heatmap Overlay (Medium Impact)
+### 4. Localized ELA with Heatmap Overlay — **DONE**
 
-**Current situation:** ELA reports a single suspicious_block_ratio number per document.
+**Status:** Implemented and live in the Forensic Scan screen.
 
-**The problem:** The reviewer cannot see where in the document the suspicious region is located. A reviewer looking at the JSON output has no way to quickly confirm whether the flag is in the salary row or in an innocent background area.
+Two views are available when a scan completes on an image document:
+- **ELA Map** (default): the raw ELA signal amplified ×10 with INFERNO colour scale applied. No original image mixed in. Black/purple = clean; orange/yellow = tampered.
+- **Overlay**: the original document with heatmap colour only on the top 25% most suspicious pixels. Clean regions stay 100% original. Useful for locating the tampered area within the document layout.
 
-**Improvement:** Generate an ELA heatmap image (amplified ELA difference image overlaid on the original) and save it alongside the JSON result. Show it inline on the Forensic Scan screen when a layer fires. This is already partially implemented for the PDF Page Render ELA (which saves `ela_page1_*.png`) but is not wired into the image engine UI display.
+See the new section *"The Forensic Heatmap — How to Read It"* below for a full reading guide.
 
 ---
 
@@ -458,3 +460,140 @@ Run it on any image that contains a detected face (from the InsightFace/MediaPip
 | PDF assembled from multiple files | Content Consistency | Content Consistency |
 | JavaScript / XFA dynamic form | — | Suspicious Objects |
 | Embedded image swapped (logo/stamp) | Color Anomaly + Noise | Embedded Image Noise |
+
+---
+
+## The Forensic Heatmap — How to Read It
+
+> This section explains both views shown under the **🗺️ Forensic Heatmap** card on the Forensic Scan screen.
+
+The heatmap only appears for image-based documents (JPG, PNG, scanned PDFs). It is not shown for digitally-created PDFs (those use the PDF engine and a different set of signals).
+
+---
+
+### What is ELA and why does it glow?
+
+Every time a JPEG image is saved, it loses a tiny amount of quality. This is called JPEG compression loss. If you take an old image and paste new content onto it, the pasted area has been through fewer compression cycles than the rest of the image. When you re-save the whole thing at a controlled quality level, the pasted area responds differently — it glows brighter in the difference image.
+
+This difference image is called the **Error Level Analysis (ELA)** map. Bright areas mean "this region did not age the way the rest of the image aged." That is the signature of a paste, a copy-move, or typed-over text.
+
+---
+
+### View 1: ELA Map (default)
+
+This is the **primary forensic evidence view**. No original image is mixed in — you are seeing pure signal.
+
+**The INFERNO colour scale reads like a thermometer:**
+
+| Colour you see | What it means |
+|---|---|
+| Black / very dark purple | ELA near zero — completely clean, no re-compression anomaly |
+| Purple | Low ELA — normal JPEG edge variation at high-contrast text boundaries |
+| Blue-purple | Moderate ELA — worth watching but usually natural |
+| Orange | High ELA — region shows clear re-compression history difference |
+| Bright orange / yellow | Maximum ELA — very strong tampering signal |
+
+**How to read it in practice:**
+
+1. Look at the overall brightness of the map. A clean document is almost entirely black/dark purple with no bright patches.
+2. Look for a solid bright region that does not follow the text or print pattern. Natural JPEG variation appears as speckled noise at text edges. Pasted content appears as a solid rectangle or uniform block of brightness — because the entire pasted region was compressed once together, creating a uniform ELA level.
+3. Ignore faint purple at the edges of letters and ruled lines — this is normal JPEG DCT block ringing.
+
+**Real example tested:**
+A marksheet where the marks row was digitally edited ("04/2026" pasted over the original marks): the ELA Map shows the rest of the document as near-black (ELA ~ 1.3 average), and the pasted row glows as a bright pink-magenta horizontal band (ELA ~ 24, maximum 41). Nothing else in the document reaches that brightness. The tampered row stands out unambiguously.
+
+---
+
+### View 2: Overlay
+
+This view shows the **original document with colour only on the top 25% most suspicious pixels**. Clean areas appear exactly as the uploaded document. Suspicious areas receive an INFERNO colour tint (same scale as the ELA Map).
+
+The Overlay is useful when you want to know *where in the document* the suspicious area sits — which row, which field, which corner. It provides spatial context that the pure ELA Map (which has no document labels visible) cannot give on its own.
+
+**How to read it:**
+- Clean background, printed text, official stamps → appear normal, no colour
+- Tampered area → receives an orange/yellow colour tint visible against the document background
+- Very faint colouring on a white page is expected — it means that area had moderately elevated ELA (above the 75th percentile but not extreme)
+- A strongly coloured region means the ELA in that area is far above everything else in the document
+
+---
+
+### When the heatmap is NOT conclusive on its own
+
+The heatmap catches paste and copy-move edits reliably. It is less conclusive in these cases:
+- The edit was a text replacement where the forger carefully matched the font and JPEG quality of the original — the ELA may not be elevated enough to show a hotspot
+- The image is a low-quality photo (e.g. WhatsApp-compressed) — natural JPEG variation is higher, so the tampered area may not stand out as sharply
+- The document is a PNG (lossless) — ELA is still computed but the initial JPEG conversion adds baseline noise
+
+In these cases, use the ELA Map as supporting evidence alongside the other forensic layers (font consistency, noise residual, DCT double-compression) rather than as the sole signal.
+
+---
+
+## SHAP Feature Contributions — What the Model is Telling You
+
+> This section explains the **🔬 Feature Contributions** card shown on the Forensic Scan screen when the ML model ran (badge shows 🤖 ML Model).
+
+---
+
+### What is SHAP?
+
+SHAP stands for **SH**apley **A**dditive ex**P**lanations. The name comes from game theory (Shapley values). In simple terms: after the XGBoost model makes its prediction, SHAP takes apart that prediction and says exactly how much each input feature contributed to the final score.
+
+Think of it like splitting a restaurant bill fairly. Seven people ordered dinner. SHAP figures out how much each person's order added to the total bill — so you know who drove the cost up and who barely ate.
+
+---
+
+### What the bar chart shows
+
+Each bar represents one of the 11 forensic features fed to the XGBoost model. The bars are sorted from most influential to least influential for this specific document.
+
+| Bar colour | What it means |
+|---|---|
+| 🔴 Red bar (positive value) | This feature pushed the model toward **TAMPERED** |
+| 🟢 Green bar (negative value) | This feature pushed the model toward **GENUINE** |
+| Longer bar | Stronger influence on the score |
+| Shorter bar | Weaker influence, near-neutral |
+
+The numbers shown are **log-odds units** (the internal language of XGBoost). You do not need to understand the math — just look at which bars are longest and what colour they are.
+
+---
+
+### The 11 features explained in plain English
+
+| Feature name | What it measures |
+|---|---|
+| `ela_score` | How bright the ELA map glows (high = re-compression anomaly) |
+| `dct_score` | How strongly the DCT frequency pattern suggests double-compression (JPEG only) |
+| `metadata_flag_count` | How many suspicious things were found in the EXIF/metadata tags |
+| `clone_ratio` | What fraction of visual keypoints have suspicious copy-move matches within the same image |
+| `text_alignment_score` | Whether text baselines are vertically consistent (currently always 0 — placeholder for a future text alignment detector) |
+| `font_inconsistency` | How different font strokes look across the document (high = typed-over text) |
+| `signature_mismatch` | Whether a signature comparison was done (-1 = not applicable for this document type) |
+| `noise_hotspots` | How many tiles have noise patterns inconsistent with the rest of the image |
+| `color_patch_score` | How large and vibrant the colour anomaly regions are |
+| `ai_artifact_score` | Whether the FFT frequency spectrum shows AI/GAN generation artifacts |
+| `compression_mismatch` | Combined signal of ELA standard deviation and DCT double-compression |
+
+---
+
+### Example reading
+
+Suppose the screen shows:
+- `ela_score` → long red bar (+0.82)
+- `font_inconsistency` → medium red bar (+0.41)
+- `metadata_flag_count` → short green bar (−0.12)
+- everything else → small bars near zero
+
+This means: the model decided this document is probably tampered primarily because the ELA signal is very high and the font looks inconsistent. The metadata actually pushed slightly in the opposite direction (metadata looked clean). The overall score is driven by the first two features.
+
+This gives you the ability to immediately cross-check: go to the forensic layers section and look at the ELA and Font Consistency results. If both layers also report SUSPICIOUS there, that is strong convergent evidence.
+
+---
+
+### When SHAP is not shown
+
+The SHAP card only appears when:
+1. The ML model file (`data/ml_scorer_image.pkl`) is present and loaded
+2. The ML model ran (badge shows 🤖 ML Model, not 📐 Heuristic)
+
+If the heuristic ran instead (model file absent or prediction failed), no SHAP breakdown is available because there is no model to explain.

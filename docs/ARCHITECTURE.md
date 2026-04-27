@@ -31,7 +31,7 @@ flowchart TD
   J --> K[Operator UI]
   J --> DB[(PostgreSQL — Scans + PDF Reports)]
   DB --> FORENSICS[11-Layer Forensics Engine\nimage_forensics_detect.py]
-  FORENSICS --> SCANS_REVIEW[Scans Screen\n1st-Level HITL Approval]
+  FORENSICS --> SCANS_REVIEW[Review Scans Screen\n2-Level HITL Approval]
   SCANS_REVIEW -->|approved| DI[Document Intelligence Screen]
   SCANS_REVIEW -->|rejected| REJECTED[Rejected — Excluded]
   DI --> REPORTS[Reports Screen]
@@ -61,6 +61,7 @@ flowchart TD
 - supports report review without requiring analysts to browse the filesystem manually
 - supports case-centric review by grouping related verification reports
 - separates clean operator workflows from auditor-facing explainability by using a dedicated Layered Analysis screen
+- supports a dedicated ML Training Pipeline page for building training CSVs, training image/PDF XGBoost models, stopping long extraction runs, and reading a plain-language signal guide
 - Identity Verification screen runs Aadhaar QR decode, PAN OCR/Gemma4 extraction, and selfie document-type check concurrently via `concurrent.futures.ThreadPoolExecutor` — all three pipelines fire in parallel when multiple documents are uploaded at the same time; total wait equals the slowest pipeline, not the sequential sum
 - Bulk Scan runs one Gemma4 batch-classification call first, then dispatches each document's forensic scan plus field extraction to a separate worker process via `concurrent.futures.ProcessPoolExecutor`; total runtime is bounded by the slowest few documents instead of the full sequential batch
 - pre-flight document-type validation uses a lightweight Gemma4 classifier call (120 s timeout) before the expensive extraction pipelines; mismatched documents (e.g. Aadhaar card uploaded to PAN slot) are blocked with a red error banner when classifier confidence ≥ 0.65; Ollama unavailability or low confidence always allows the upload through to avoid blocking legitimate documents
@@ -79,7 +80,7 @@ flowchart TD
 - for raw image files: uses PaddleOCR directly (no Poppler or Tesseract dependency) then feeds the same normalisation pipeline
 - for marksheets: always runs PaddleOCR for the OCR pass, writes a raw markdown artifact that preserves top-to-bottom row order plus approximate horizontal spacing, and validates printed totals generically against the visible subject rows without relying on SSC/HSC-specific prompt branches
 - Gemma4 document-extraction prompts and rule text are stored in `src/basetruth/integrations/document_extract_prompts.md` and loaded on demand by `document_extract.py` so prompt tuning stays separate from parser logic
-- BaseTruth Q&A chatbot prompts and DB query rules are stored in `src/basetruth/integrations/qna_prompts.md` and loaded on demand by `db_query.py`; sections: `system_prompt`, `db_query_rules`, `minio_instructions`
+- BaseTruth AI Copilot prompts and DB query rules are stored in `src/basetruth/integrations/qna_prompts.md` and loaded on demand by `db_query.py`; sections: `system_prompt`, `db_query_rules`, `minio_instructions`
 - is intentionally separate from fraud scoring so parsing can be reused elsewhere
 
 ### 2A. Document Field Extraction Pipeline (`document_extract.py`)
@@ -255,7 +256,7 @@ A 11-layer forensic engine that runs automatically on every image or PDF scan at
 ```json
 {
   "scan_summary": {
-    "forensic_verdict": "ORIGINAL | UNCERTAIN | LIKELY TAMPERED | TAMPERED",
+    "forensic_verdict": "ORIGINAL | ORIGINAL-DERIVED | TAMPERED | TAMPERED-DERIVED | UNCERTAIN | LIKELY TAMPERED",
     "forgery_score_0_100": 42.0,
     "overall_explanation": "Plain-English summary of findings",
     "evidence": ["list of evidence strings"]
@@ -266,11 +267,24 @@ A 11-layer forensic engine that runs automatically on every image or PDF scan at
 }
 ```
 
-**Scoring thresholds:**
+**Verdict taxonomy:**
+
+| Verdict | Source | Meaning |
+|---|---|---|
+| ORIGINAL | ML (4-class) | Phone-fresh genuine document — no re-save |
+| ORIGINAL-DERIVED | ML (4-class) | Save-as copy of a genuine document — still authentic, carries extra JPEG re-compression |
+| TAMPERED | ML (4-class) or heuristic | Directly manipulated/forged document — strong ELA/clone signals |
+| TAMPERED-DERIVED | ML (4-class) | Save-as copy of a tampered doc — "laundered" forgery; edit signals softer but fraud confirmed by model |
+| UNCERTAIN | heuristic only | Inconclusive — some signals present; model not trained yet or file format yields weak signals |
+| LIKELY TAMPERED | heuristic only | Multiple heuristic signals align — suspicious but model not available |
+
+**Scoring thresholds (heuristic fallback only — used when ML model file absent):**
 - ≥ 55 → TAMPERED
 - 30–54 → LIKELY TAMPERED
 - 15–29 → UNCERTAIN
 - < 15 → ORIGINAL
+
+**When ML model is available:** the verdict is the argmax of the 4-class probability vector — no threshold mapping. The fraud score (0–100) is `(p[TAMPERED] + p[TAMPERED-DERIVED]) × 100` for backward-compatible display.
 
 **Graceful degradation:** `_FORENSICS_AVAILABLE` flag prevents import errors when numpy/cv2/Pillow are absent.
 
@@ -379,6 +393,8 @@ Key endpoints for auditor workflows:
 | `GET /api/v1/db/stats` | Entity / scan / high-risk counts for dashboards |
 | `POST /api/v1/extract` | Upload and extract structured fields (non-persistent) |
 | `POST /api/v1/forensic-scan` | Upload and run forensic tamper analysis (non-persistent) |
+| `WS /api/v1/ml/extract/ws` | Stream ML feature-extraction progress while training CSVs are being built |
+| `WS /api/v1/ml/train/ws` | Stream ML training progress and final metrics |
 | `POST /kyc/sessions` | Create a Video KYC session (returns a shareable URL) |
 | `GET /kyc/{session_id}` | Customer-facing Video KYC page (served in browser) |
 | `GET /kyc/sessions/{session_id}` | Poll session status from the operator dashboard |
@@ -408,10 +424,19 @@ The deprecated `client.hideSidebarNav` config option has been removed from `.str
 
 Each sidebar entry maps a display label → session-state page key.  The label emoji and title text must always match the corresponding `_page_title(emoji, "Title Text")` call in the page file.  See [FUNCTIONALITY.md](FUNCTIONALITY.md) for the full mapping and rules.
 
+### ML Training Pipeline
+
+The ML Training page (`pages/ml_training.py`) is a developer-facing screen for refreshing the fraud models from inside the UI.
+
+- **Data Extraction tab** — scans the sample folders with the forensics engine and writes labelled training CSVs. Progress is streamed over `WS /api/v1/ml/extract/ws`. The user can stop a run early, and the rows already written are kept.
+- **Model Training tab** — trains the image and/or PDF XGBoost models from those CSVs. Progress and final metrics stream over `WS /api/v1/ml/train/ws`.
+- **Signal Reference tab** — explains the image and PDF forensic signals separately in simple language. The PDF guide follows the real `PDF_FEATURE_NAMES` list used by the model, not the raw CSV columns.
+- **Decision-tree visualisation** — the page renders Tree #0 directly with matplotlib from the XGBoost JSON dump, so `graphviz` is not required.
+
 ### Explainability split
 
 - Primary workflow pages such as Identity Verification are intentionally kept concise for operators.
-- Explainability evidence (extracted fields, forensic check outcomes, metrics) is embedded in the `scans.layered_analysis_json` JSONB column and surfaced through the Scans and Document Intelligence screens.
+- Explainability evidence (extracted fields, forensic check outcomes, metrics) is embedded in the `scans.layered_analysis_json` JSONB column and surfaced through the Review Scans and Document Intelligence screens.
 
 ### Performance: cached availability checks
 
@@ -528,8 +553,9 @@ By default, 2 challenges are chosen at random per session. The agent can overrid
 |------|---------|
 | `src/basetruth/kyc/session.py` | `KYCSession` dataclass + thread-safe `SessionStore` |
 | `src/basetruth/kyc/liveness.py` | `extract_features()`, `analyze_challenge()`, `run_face_match()` |
-| `src/basetruth/api.py` | FastAPI routes + WebSocket handler |
+| `src/basetruth/api.py` | FastAPI routes + KYC/ML WebSocket handlers |
 | `src/basetruth/ui/pages/video_kyc.py` | Agent dashboard (3 tabs) |
+| `src/basetruth/ui/pages/ml_training.py` | Developer UI for training-data extraction, model training, and signal reference |
 | `src/basetruth/vision/face.py` | InsightFace + MediaPipe initialisation |
 
 ### API Endpoints

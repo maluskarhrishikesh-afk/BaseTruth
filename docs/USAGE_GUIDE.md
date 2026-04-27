@@ -25,7 +25,7 @@ The final output is a signed PDF report that can be stored or shared.
 
 ### STEP 1 — Register the Applicant (Entity)
 
-**Where:** Records → New Entity  (or it is created automatically in Step 2)
+**Where:** The entity is usually created automatically during Scan, Bulk Scan, or Identity Verification. Use Database Viewer only if you need a manual entry.
 
 **Capture once:**
 | Field | Why it matters |
@@ -165,48 +165,45 @@ All documents are automatically linked to the entity from Step 1.
 
 **Output stored in database:**
 - One Scan record per document
-- Extracted fields in DocumentInformation table
+- Extracted fields in `document_extractions`
 - All linked to the entity
-- Case automatically created or updated
+- Ready for reviewer approval and later reporting
 
 ---
 
-### STEP 6 — Review the Case
+### STEP 6 — Review the Documents
 
-**Where:** Cases screen
+**Where:** Review Scans screen
 
 **What you see:**
-- Combined risk score across all documents
-- All forensic signals (passed / failed)
-- Cross-document mismatches highlighted
-- Identity verification status (face match + video KYC)
-- Timeline of all events
+- Each saved document with its forensic verdict and score
+- Full 11-layer forensic details per document
+- 1st-level and 2nd-level approval actions
+- Reviewer comments and approval trail
 
 **Analyst actions:**
 
 | Action | When to use |
 |--------|------------|
-| Approve | Everything checks out — low risk |
-| Reject | Clear fraud or forgery detected |
-| Request re-submission | Document quality too low to assess |
-| Escalate | Needs a senior analyst or legal review |
-| Add note | Record reasoning for audit trail |
-
-**Priority levels:** Normal → High → Critical (auto-set based on risk score)
+| 1st Approve | First reviewer is satisfied with the document |
+| 1st Reject | First reviewer finds a clear problem |
+| 2nd Approve | Senior reviewer gives final approval |
+| 2nd Reject | Senior reviewer rejects the document |
+| Add comment | Record the reason for the decision |
 
 ---
 
 ### STEP 7 — Generate and Download Report
 
-**Where:** Reports screen (or directly from Cases screen)
+**Where:** Document Intelligence, Review Reports, and Reports screens
 
 **Report contains:**
 - Executive summary (one-line verdict)
 - Identity verification results (PAN, Aadhaar, face match, video KYC)
 - Each document with: type, extracted fields, truth score, forensic signals
 - Cross-document reconciliation findings
-- Analyst notes and disposition history
-- Timestamp and case reference
+- Reviewer approvals and comments
+- Timestamp and report reference
 
 **Format:** PDF (signed, tamper-evident)
 
@@ -246,10 +243,10 @@ Entity (created in Step 1 or auto-created in Step 2)
   │   ├── status (pass | fail)
   │   └── match score
   │
-  └── Cases[]                        ← one per verification workflow (auto-created)
-      ├── status, disposition, priority
-      ├── risk_level (auto-computed)
-      └── CaseNotes[] (analyst notes)
+  └── EntityReports[]                ← final cross-document reports generated later
+       ├── report_ref, verdict, approvals
+       ├── PDF / JSON report output
+       └── reviewer comments
 ```
 
 ---

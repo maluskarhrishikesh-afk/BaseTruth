@@ -154,7 +154,7 @@ The same save also writes structured document fields to `document_extractions`:
 
 Both rows use `source_screen = 'identity_verification'` and `scan_id = NULL` because Identity Verification does not create a scan row.
 
-Results are viewable in the **Records** page under each entity's detail panel, alongside document scan history.
+Results are viewable in **Document Intelligence** under the selected entity, alongside document scan history.
 The same verification event also updates `layered_analysis_entries`, which is the dedicated source used by the **Layered Analysis** screen to show extracted fields, deterministic checks, model metrics, and raw evidence for audit review.
 Layered Analysis now also carries upload-authenticity evidence for Aadhaar, selfie, Video KYC captures, and saved scan entries so auditors can see the strongest available authenticity check per uploaded asset.
 

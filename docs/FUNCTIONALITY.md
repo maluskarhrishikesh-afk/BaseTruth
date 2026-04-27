@@ -6,7 +6,7 @@
 
 ---
 
-## Navigation (Top Bar)
+## Navigation (Sidebar)
 
 | Label | Icon | Page Key | Page Title |
 |---|---|---|---|
@@ -16,22 +16,21 @@
 | Scan Document | 🔍 | `scan` | Scan Document |
 | Forensic Scan | 🧪 | `forensic_scan` | Forensic Scan |
 | Bulk Scan | 📦 | `bulk` | Bulk Scan |
-| Scans | 🔬 | `scans` | Scans |
-| Cases | 📁 | `cases` | Cases |
+| Review Scans | 🔬 | `scans` | Review Scans |
 | Document Intelligence | 🧠 | `document_intelligence` | Document Intelligence |
+| Review Reports | 📋 | `review_reports` | Review Reports |
 | Reports | 📊 | `reports` | Reports |
-| Datasources | 🔗 | `datasources` | Datasources |
-| Log Analyzer | 📋 | `logs` | Log Analyzer |
+| Log Analyzer | 🪵 | `logs` | Log Analyzer |
 | Database Viewer | 🗄️ | `database` | Database Viewer |
+| ML Training Pipeline | 🧠 | `ml_training` | ML Training Pipeline |
 | Swagger | 📘 | `swagger` | Swagger |
-| Settings | ⚙️ | `settings` | Settings |
-| BaseTruth Q&A | 💬 | `gemma_chat` | BaseTruth Q&A |
+| BaseTruth AI Copilot | 💬 | `gemma_chat` | BaseTruth AI Copilot |
 
 **Rules:**
 - The nav label, icon, and page title must always match.
 - Icons are set in the `_PAGES` dict in `app.py` and in `_page_title(icon, name)` calls in each page file.
 - Navigation is session-state-driven (`st.session_state["page"]`), not Streamlit's built-in routing.
-- All 14 destinations are shown in two horizontal rows of 7 buttons each (top of page, no sidebar).
+- The app uses a left sidebar with one button per page.
 
 ---
 
@@ -41,9 +40,9 @@
 
 | Element | Action | Expected Result |
 |---|---|---|
-| Metrics row | Auto-renders on page load | Shows total entities, scans, high-risk count, and open cases from PostgreSQL |
+| Metrics row | Auto-renders on page load | Shows entities, scanned documents, pending review count, high-risk count, auto-approved count, and average score from PostgreSQL |
 | "Recent Scans" table | Auto-renders | Lists the 20 most recent scans with entity name, document type, risk level, verdict, and date |
-| Shortcut buttons (View Records, View Reports, etc.) | Click | Navigates to the corresponding screen |
+| Shortcut buttons (Document Intelligence, Reports, Review Scans, etc.) | Click | Navigates to the corresponding screen |
 | If DB is offline | Page load | Shows "Database is offline" warning; no metrics or tables shown |
 
 ---
@@ -103,7 +102,7 @@
 - `_draw_face()` in `vision/face.py` must always be defined before it is called from `compare_faces()`.
 - `save_identity_check()` must always show an error (not silent failure) when it returns `None`.
 - `init_db()` must be retried on each app load until it succeeds (not just first attempt).
-- The Identity Verification page must stay clean; heavy explainability content is accessible via the Scans screen, not inline here.
+- The Identity Verification page must stay clean; heavy explainability content is accessible via the Review Scans screen, not inline here.
 
 ---
 
@@ -175,20 +174,32 @@
 
 ## 🧪 Forensic Scan
 
-**Purpose:** Run forensic tamper analysis on one uploaded document and show verdict + evidence as JSON.
+**Purpose:** Run forensic tamper analysis on one uploaded document and show verdict + evidence + visual intelligence from Gemma4.
 
 | Element | Action | Expected Result |
 |---|---|---|
 | File uploader | Upload PDF or image | Forensic pipeline starts immediately |
 | Forensic routing | Auto-runs | Image/scanned files use image forensics; structured PDFs use PDF forensics |
-| Verdict banner | Auto-renders | Shows forensic verdict (ORIGINAL/UNCERTAIN/LIKELY TAMPERED/TAMPERED), score, type, scan mode, file name |
+| Verdict banner | Auto-renders | Shows forensic verdict (ORIGINAL / ORIGINAL-DERIVED / TAMPERED / TAMPERED-DERIVED / UNCERTAIN / LIKELY TAMPERED), score, type, scan mode, scoring source badge (ML or heuristic), and file name |
+| Honest Review card | Auto-renders | Plain-English LLM explanation of the forensic findings written for a non-technical reviewer |
+| Feature Contributions chart | Auto-renders (ML only) | Top-10 SHAP features showing which signals drove the score |
+| Visual Intelligence card | Auto-renders | Gemma4 "Logical Detective" report: one card per visual fraud clue, each with area, observation, suspicion level (HIGH/MEDIUM/LOW), and plain-English reason; if Ollama is offline an info banner is shown instead |
 | Forensic Result (JSON) | Auto-renders | Shows `filename`, `document_type`, `is_image_based`, verdict, score, explanation, and evidence |
 | Layer expanders | Expand | Shows layer-level forensic outputs and full layered-analysis JSON |
 | "⬇ Download forensic result as JSON" | Click | Downloads user-facing forensic response JSON |
 
+**Visual Intelligence — Gemma4 Logical Detective:**
+- A single combined Gemma4 call identifies the document type AND scans the document image for visual fraud clues — font inconsistencies, cut-and-paste halos, colour patches, mis-aligned fields, stamp/seal anomalies, signature irregularities, date/number formatting breaks, and background texture changes.
+- Combining both tasks into one call avoids a second image-upload round-trip.
+- The detective report is displayed as colour-coded finding cards (🔴 HIGH, 🟠 MEDIUM, 🟡 LOW) above the JSON panel, making it easy for non-technical reviewers to know exactly what to inspect.
+- If Gemma4 finds nothing suspicious it shows "✅ No visual fraud clues detected."
+- If Ollama is offline the card shows a soft info message; the forensic verdict and score are unaffected.
+
 **Important rules:**
 - This screen is non-persistent (no DB/MinIO writes).
 - It reuses shared forensic utility logic used by API/UI flows.
+- The verdict banner must show whether the final score came from the ML model or the heuristic path.
+- ELA heat maps, Composite views, Annotated overlays, Region Details tables, and Zoom panels are intentionally removed — they produced misleading results on lossless formats (PNG/BMP/TIFF) and required forensic training to interpret. Gemma4 visual clues replace them with plain-language findings any reviewer can act on.
 
 ---
 
@@ -230,60 +241,50 @@
 - If Ollama is unavailable during classification or extraction, both fall back gracefully — no hard failure. When Ollama is offline, `document_extractions` still receives a forensics-summary stub row (document type, source name, forensic verdict, forgery score, `_extraction_unavailable: true`) so bulk saves always produce a record per document. The UI card for that document shows an info message: "Field extraction skipped — Gemma4 (Ollama) is not running."
 - The `_has_gemma4_data` logic in `save_scan_to_db` uses `bool(_bulk_ext)` (non-empty AND no error/unavailable) — never a key-count heuristic — so that even Gemma4 results with mostly-null fields are correctly identified as real extractions and saved as-is.
 - `_extraction_unavailable` in the `document_extractions` fallback row is **always `true`** — it is never `false` in the fallback path. A `false` value would be a bug indicator (empty dict arrived from bulk.py's silent exception handler).
-- All saved scans start with `approved = NULL` (pending). They only appear in Document Intelligence after being approved on the **🔬 Scans** screen.
+- All saved scans start with `approved = NULL` (pending). They only appear in Document Intelligence after being approved on the **🔬 Review Scans** screen.
 
 **Fraud signals in Document Intelligence**: Only tamper signals that **failed** the check (`passed == False`) are shown as fraud signals. Passed checks (no issue found) are suppressed. Signal fields map from `models.Signal`: `name` → type, `summary` → description.
 
 ---
 
-## 🔬 Scans
+## 🔬 Review Scans
 
-**Purpose:** Human-in-the-loop 1st-level approval screen. Analysts review the 11-layer forensic results for each saved scan and either Approve or Reject it. Only approved scans flow into Document Intelligence.
+**Purpose:** Review saved scans in two approval levels before they are treated as fully approved.
 
-**Workflow position:** After **Bulk Scan → Save to Database**, every saved scan lands here as **Pending**. The analyst reviews the forensic evidence and decides.
+**Workflow position:** After **Bulk Scan → Save to Database**, scans land here first. A first reviewer decides, then a second reviewer signs off if needed.
 
 | Element | Action | Expected Result |
 |---|---|---|
 | "⏳ Pending" tab | Auto-renders | Lists all scans where `approved IS NULL`, ordered newest-first |
-| "✅ Approved" tab | Auto-renders | Lists all approved scans |
+| "🔄 Awaiting 2nd Review" tab | Auto-renders | Lists scans that passed 1st-level review and are waiting for 2nd-level review |
+| "✅ Fully Approved" tab | Auto-renders | Lists scans approved at both levels |
 | "❌ Rejected" tab | Auto-renders | Lists all rejected scans |
 | "📋 All" tab | Auto-renders | Lists all scans in all states |
 | Scan card | Auto-renders per scan | Shows: source file name, document type, entity ref, entity name, risk level badge, forensic verdict badge, forgery score, and scan timestamp |
 | "🔬 Forensic Details" expander (per card) | Click | Shows: forensic verdict, forgery score metric, plain-English summary, evidence list, and all 11 layers with status icon + plain-English explanation each |
 | "📋 Raw JSON" sub-expander | Click | Shows full `layered_analysis_json` as formatted JSON |
-| Comment field (Pending only) | Type | Optional reviewer comment stored with the approval decision |
-| "✅ Approve" button (Pending only) | Click | Calls `approve_scan()`; sets `approved='approved'`, `approved_by='reviewer'`, `approved_at=NOW()`; shows success toast; reruns page |
-| "❌ Reject" button (Pending only) | Click | Calls `reject_scan()`; sets `approved='rejected'`; shows warning toast; reruns page |
+| 1st-level comment field | Type | Optional comment saved with the 1st-level decision |
+| "✅ 1st Approve" button | Click | Marks the scan as passed at 1st level; shows success; reruns page |
+| "❌ 1st Reject" button | Click | Marks the scan as rejected at 1st level; shows warning; reruns page |
+| 2nd-level comment field | Type | Optional comment saved with the 2nd-level decision |
+| "✅ 2nd Approve" button | Click | Fully approves the scan; shows success; reruns page |
+| "❌ 2nd Reject" button | Click | Rejects the scan at 2nd level; shows warning; reruns page |
 | If DB is offline | Page load | Shows warning; no scan list rendered |
 
 **Forensic verdict colour mapping:**
-- ORIGINAL → 🟢
-- UNCERTAIN → 🟡
-- LIKELY TAMPERED → 🟠
-- TAMPERED → 🔴
+- ORIGINAL → 🟢 (green — confirmed genuine, no re-save)
+- ORIGINAL-DERIVED → 🔵 (blue — save-as copy of genuine; still authentic)
+- UNCERTAIN → 🟡 (yellow — heuristic fallback, inconclusive)
+- LIKELY TAMPERED → 🟠 (orange — heuristic fallback, suspicious)
+- TAMPERED → 🔴 (red — confirmed direct forgery)
+- TAMPERED-DERIVED → 🟣 (purple — laundered forgery; save-as of tampered doc)
 
 **Important rules:**
 - Every approve/reject action must show a visible outcome (success or error). Silent failures are not allowed.
-- The page title must be `_page_title("🔬", "Scans")` matching the `_PAGES` entry `"🔬  Scans": "scans"`.
-- Approve/Reject buttons only appear for Pending scans.
+- The page title must be `_page_title("🔬", "Review Scans")` matching the `_PAGES` entry `"🔬  Review Scans": "scans"`.
+- 2nd-level approval buttons only appear after a scan has passed 1st-level review.
 - Approved and Rejected scan cards show the reviewer name, timestamp, and comment (read-only).
 - After approval, the scan immediately appears in Document Intelligence on the next page load.
-
----
-
----
-
-## 📁 Cases
-
-**Purpose:** Case management — group related documents/scans under a single investigation case.
-
-| Element | Action | Expected Result |
-|---|---|---|
-| "New Case" button | Click | Opens form to create a case with title, description, and linked entity |
-| Case list | Auto-renders | Shows all open/closed cases with status badge |
-| Case row | Click | Opens case detail with linked scans, notes, and timeline |
-| "Add Note" button | Click | Adds timestamped analyst note to the case |
-| Status dropdown | Select | Updates case status (New → Triage → Investigating → Closed) |
 
 ---
 
@@ -299,7 +300,7 @@
 | "📋 All Scans" tab | Auto-renders | Lists all scans regardless of approval state |
 | Scan card | Auto-renders per scan | Shows source filename, document type, approval label, forensic verdict, forgery score, and scanned date |
 | "🔬 Forensic Details" expander | Click | Shows the full 11-layer forensic breakdown for that document |
-| Pending/rejected scan warning | Auto-renders | Warning banner tells analyst how many scans need approval on the Scans screen |
+| Pending/rejected scan warning | Auto-renders | Warning banner tells analyst how many scans need approval on the Review Scans screen |
 | "🎯 Generate Final Report" button | Click | Runs cross-document analysis across all documents for this applicant; saves result to `entity_reports` as `BTR-XXXXXX`; shows success message with report reference |
 | Re-generate before approval | Click again | Refreshes the pending report in-place (same BTR-XXXXXX reference, updated payload) |
 | Saved Reports section | Auto-renders after generation | Shows each saved BTR-XXXXXX report with a pass/fail row per check, approval trail, collapsible full JSON, and approval status badge |
@@ -310,47 +311,41 @@
 - **PAN** — checks if the same PAN number appears on all documents
 - **Aadhaar** — checks if the same Aadhaar number appears across all documents
 - **Salary** — compares payslip net salary vs offer/increment letter CTC (30% tolerance for deductions and increments)
-- **Forensics** — flags any document with a TAMPERED verdict
+- **Forensics** — flags any document with a TAMPERED or TAMPERED-DERIVED verdict
 
 **Important rules:**
 - **Only fully approved scans appear in the "✅ Approved" tab.** A scan is fully approved when both `first_level_approval = 'Y'` AND `second_level_approval = 'Y'`. All scans are always visible in the "📋 All Scans" tab.
-- A warning banner appears when pending or rejected scans exist for the selected entity, directing the analyst to the **🔬 Scans** screen.
+- A warning banner appears when pending or rejected scans exist for the selected entity, directing the analyst to the **🔬 Review Scans** screen.
 - Generate Final Report reads ALL scans for the entity (not just approved ones) so the cross-document check reflects the full picture.
 - A pending report (not yet approved by anyone) is refreshed in-place when re-generated. Approved or rejected reports are never overwritten — a new BTR-XXXXXX is created instead so the audit trail stays intact.
 - The page title must remain `_page_title("🧠", "Document Intelligence")`.
 
 ---
 
-## 📁 Cases
+## 📋 Review Reports
 
-**Purpose:** Case management — review and manage investigation cases for flagged documents, and also approve or reject entity-level Final Verification Reports (BTR-XXXXXX).
+**Purpose:** Review Final Verification Reports (`BTR-XXXXXX`) in two approval levels.
 
 | Element | Action | Expected Result |
 |---|---|---|
-| Filter bar | Type | Live-filters all case tabs by entity name, BT-reference, case key, or document type |
-| "⛔ Needs Review" tab | Auto-renders | Lists cases that need manual action; cases grouped by applicant |
-| "✅ Resolved" tab | Auto-renders | Lists cases already approved or rejected |
-| "🔵 Auto-Approved" tab | Auto-renders (if any) | Lists low-risk cases cleared automatically |
-| "📑 Entity Reports" tab | Auto-renders | Lists all BTR-XXXXXX Final Verification Reports across all entities |
-| Case card "✅ Approve" button | Click | Marks the case as cleared; note added automatically |
-| Case card "❌ Reject" button | Click | Marks the case as fraud_confirmed |
-| Entity Reports — "✅ Approve (1st)" button | Click | Sets `first_level_approval = 'Y'` on that report |
-| Entity Reports — "❌ Reject (1st)" button | Click | Sets `first_level_approval = 'N'` on that report |
-| Entity Reports — "✅ Approve (2nd)" button | Click (only after 1st approval) | Sets `second_level_approval = 'Y'`; report is now fully approved |
-| Entity Reports — "❌ Reject (2nd)" button | Click | Sets `second_level_approval = 'N'` |
-
-**Entity Reports approval workflow (BTR-XXXXXX):**
-1. Analyst clicks "🎯 Generate Final Report" on Document Intelligence → report created as ⏳ Pending Review
-2. First reviewer opens **Cases → 📑 Entity Reports** → approves or rejects (1st level)
-3. If 1st-level approved → senior reviewer approves or rejects (2nd level) → report status becomes 🟢 Fully Approved
-4. Either-level rejection → status becomes 🔴 Rejected
+| "⏳ Pending" tab | Auto-renders | Lists reports waiting for 1st-level review |
+| "🔄 Awaiting 2nd Review" tab | Auto-renders | Lists reports approved at 1st level and waiting for senior review |
+| "✅ Fully Approved" tab | Auto-renders | Lists reports approved at both levels |
+| "❌ Rejected" tab | Auto-renders | Lists rejected reports |
+| "📋 All" tab | Auto-renders | Lists every report |
+| Report card | Auto-renders | Shows report ref, entity details, current approval state, and report summary |
+| "✅ 1st Approve" / "❌ 1st Reject" | Click | Saves the 1st-level decision and reruns the page |
+| "✅ 2nd Approve" / "❌ 2nd Reject" | Click | Saves the 2nd-level decision and reruns the page |
+| If DB is offline | Page load | Shows warning; no report list rendered |
 
 **Important rules:**
 - Every approve/reject action must show a visible success or error toast. Silent failures are not allowed.
 - Second-level approval is blocked until first-level approval is `'Y'`.
-- The "📑 Entity Reports" tab is always the last tab and is always shown even if no reports exist yet.
+- The page title must be `_page_title("📋", "Review Reports")`.
 
 ---
+
+## 📊 Reports
 
 **Purpose:** One consolidated report per applicant, plus source-document ZIP export and entity-level Final Verification Report downloads.
 
@@ -372,18 +367,6 @@
 
 ---
 
-## 🔗 Datasources
-
-**Purpose:** Register and sync external document sources (local folders, S3, SharePoint, Google Drive).
-
-| Element | Action | Expected Result |
-|---|---|---|
-| "Add Datasource" form | Fill + Submit | Registers new connector; saved to `config/datasources.json` |
-| "Sync" button per source | Click | Pulls documents from the source into the BaseTruth workspace |
-| Source health indicator | Auto-renders | Shows "Connected" or "Error" for each registered source |
-
----
-
 ## 📘 Swagger
 
 **Purpose:** Provide operators and integrators a direct entry point to the live OpenAPI documentation.
@@ -401,7 +384,7 @@
 
 ---
 
-## 💬 BaseTruth Q&A
+## 💬 BaseTruth AI Copilot
 
 **Purpose:** Immersive, data-aware chat with a locally hosted LLM (Gemma4 via Ollama). The chatbot acts as an intelligent assistant that can answer general questions *and* seamlessly query the application's PostgreSQL database and MinIO storage—without exposing the underlying SQL or commands to the user.
 
@@ -425,11 +408,11 @@ Section headers are **never** placed inline with their content. Each bullet poin
 
 **Important rules:**
 - The page must **not** display "Database Connected" indicators or status bars. The experience should feel magical; if the DB is offline, the LLM simply states it doesn't have the information right now.
-- The page title must remain `_page_title("💬", "BaseTruth Q&A")`.
+- The page title must remain `_page_title("💬", "BaseTruth AI Copilot")`.
 
 ---
 
-## 📋 Log Analyzer
+## 🪵 Log Analyzer
 
 **Purpose:** View and filter application log output for debugging.
 
@@ -452,7 +435,7 @@ Section headers are **never** placed inline with their content. Each bullet poin
 
 ## 🗄️ Database Viewer
 
-**Purpose:** Inspect raw database tables and perform destructive resets during testing.
+**Purpose:** Inspect raw database tables, edit rows in development mode, inspect storage buckets, and run destructive resets during testing.
 
 **Important rule:** DB and MinIO availability checks MUST use `_db_available_cached()` / `_minio_available_cached()` (30-second TTL) — **never** call `db_available()` or `minio_available()` directly in any UI render path, as they make live network calls and will cause the UI to freeze on every tab click or widget interaction.
 
@@ -463,15 +446,20 @@ Section headers are **never** placed inline with their content. Each bullet poin
 | Metrics row | Auto-renders (cached) | Shows row counts for Entities, Scans, Document Extractions, Identity Checks, and Entity Reports |
 | "🔄 Refresh" button | Click | Clears the page's cached DB/MinIO data queries and reloads the latest counts / object list |
 | Table selector | Select | Loads up to 500 rows from the chosen table, including `identity_checks`, `document_extractions`, and `entity_reports` |
-| Data table | Auto-renders | Shows table columns in a wide dataframe. Large JSON fields are rendered into readable summaries, and large binary fields like `identity_checks.pdf_report` are excluded from the cached table query so the page stays serializable and fast |
-| Row inspector | Select a row | Shows the full selected row payload below the dataframe so JSON-heavy tables such as `document_extractions` remain readable |
+| Data table | Auto-renders | Shows table columns in a wide dataframe. Large JSON fields are shortened for readability, and large binary fields like `identity_checks.pdf_report` are excluded from the cached table query so the page stays fast |
+| Row selection | Click a row in the dataframe | Selects that row immediately and reruns the page |
+| Row inspector | After a row is selected | Shows the full selected row payload below the dataframe so JSON-heavy tables stay readable |
+| Row Operations panel | Shown only when `BASETRUTH_ENABLE_DB_VIEWER_CRUD=true` | Lets developers create, edit, duplicate, or delete the selected row |
+| Delete confirmation | Type `DELETE` + click confirm | Deletes the selected row only after exact confirmation |
 
 ### MinIO Storage Tab
 
 | Element | Action | Expected Result |
 |---|---|---|
-| Stats row | Auto-renders (cached) | Shows bucket name, object count, total size |
-| Object list | Auto-renders | Lists PDF/image objects with key, size, and date |
+| Main bucket stats row | Auto-renders (cached) | Shows bucket name, object count, and total size |
+| Main bucket object list | Auto-renders | Lists PDF/image objects with key, size, and date |
+| Docs bucket stats row | Auto-renders (cached) | Shows the separate docs bucket name, object count, and total size |
+| Docs bucket object list | Auto-renders | Lists docs bucket objects with key, size, and date |
 
 ### Danger Zone Tab
 
@@ -482,15 +470,28 @@ Section headers are **never** placed inline with their content. Each bullet poin
 
 ---
 
-## ⚙️ Settings
+## 🧠 ML Training Pipeline
 
-**Purpose:** Configure BaseTruth runtime settings.
+**Purpose:** Build training data, train the image and PDF fraud models, and explain the forensic signals in plain language.
 
 | Element | Action | Expected Result |
 |---|---|---|
-| Artifact root path | Edit + Save | Changes the local folder where reports are stored |
-| Product info section | Auto-renders | Shows version, Python version, and API endpoint |
-| Quick-start commands | Auto-renders | Copy-paste terminal commands for starting/stopping services |
+| Status cards | Auto-renders | Shows whether the Image and PDF models exist, how many samples they use, and when they were last updated |
+| "📦 Data Extraction" tab | Open | Shows sample-folder browser, extraction controls, and extraction results |
+| Start extraction button | Click | Opens the extraction WebSocket and starts building the training CSVs from the sample folders |
+| "⏹ Stop" button | Click during extraction | Stops the current extraction run early and keeps the rows already written |
+| Extraction charts | Auto-renders after extraction | Shows folder sizes, verdict distribution, score distribution, and per-folder verdict breakdown |
+| "🤖 Model Training" tab | Open | Shows model-training controls and live training output |
+| Start training button | Click | Opens the training WebSocket and trains the selected model(s) |
+| Training metrics/cards | Auto-renders after training | Shows accuracy, F1, ROC AUC, and sample counts |
+| Training charts | Auto-renders after training | Shows feature importance, confusion view, PCA scatter, and a decision-tree view |
+| "🔍 Signal Reference" tab | Open | Shows separate Image and PDF signal guides in simple language |
+| Signal cards | Auto-renders | Grey out signals that are not present in the currently saved model |
+
+**Important rules:**
+- Image and PDF signals are documented separately. They are different feature sets.
+- The PDF signal guide must match the actual `PDF_FEATURE_NAMES` used by the model.
+- The signal guide must grey out cards by feature name, not by list position.
 
 ---
 

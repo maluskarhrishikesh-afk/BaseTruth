@@ -25,7 +25,7 @@ def _page_dashboard(service: BaseTruthService) -> None:
             """
 The Dashboard gives you an **at-a-glance health check** of all document processing.
 
-- **Pending Review** — cases with high or medium risk that need your decision. Go to **Cases** to approve or reject them.
+- **Pending Review** — documents that still need reviewer action. Go to **Review Scans** to approve or reject them.
 - **Documents Scanned** — total document verifications stored in the database.
 - **High Risk** — documents where the Truth Score is critically low.
 - **Avg Truth Score** — average score across all scans (100 = perfect integrity).
@@ -46,7 +46,7 @@ Use **Scan** (single file) or **Bulk Scan** (entire loan folder) to add new docu
             st.metric("Entities", stats.get("entities", 0),
                       help="Unique applicants stored in the database.")
             if st.button("View →", key="dash_goto_records", use_container_width=True):
-                st.session_state["page"] = "records"
+                st.session_state["page"] = "document_intelligence"
                 st.rerun()
         with m2:
             st.metric("Docs Scanned", stats.get("total_scans", 0),
@@ -56,14 +56,14 @@ Use **Scan** (single file) or **Bulk Scan** (entire loan folder) to add new docu
                 st.rerun()
         with m3:
             st.metric("Pending Review", stats.get("pending_review", 0),
-                      help="Open cases requiring Approve / Reject.")
+                      help="Documents that still need reviewer approval or rejection.")
             if st.button(
                 "Review →",
                 key="dash_goto_cases_pending",
                 use_container_width=True,
                 type="primary" if stats.get("pending_review", 0) > 0 else "secondary",
             ):
-                st.session_state["page"] = "cases"
+                st.session_state["page"] = "scans"
                 st.rerun()
         with m4:
             st.metric("High Risk", stats.get("high_risk", 0),
@@ -74,13 +74,13 @@ Use **Scan** (single file) or **Bulk Scan** (entire loan folder) to add new docu
                 use_container_width=True,
                 type="primary" if stats.get("high_risk", 0) > 0 else "secondary",
             ):
-                st.session_state["page"] = "cases"
+                st.session_state["page"] = "scans"
                 st.rerun()
         with m5:
             st.metric("Auto Approved", stats.get("auto_approved", 0),
                       help="Low-risk documents automatically cleared.")
             if st.button("View →", key="dash_goto_cases_auto", use_container_width=True):
-                st.session_state["page"] = "cases"
+                st.session_state["page"] = "scans"
                 st.rerun()
         with m6:
             st.metric(
@@ -89,7 +89,7 @@ Use **Scan** (single file) or **Bulk Scan** (entire loan folder) to add new docu
                 help="Average Truth Score across all scans (100 = perfect).",
             )
             if st.button("View →", key="dash_goto_records_score", use_container_width=True):
-                st.session_state["page"] = "records"
+                st.session_state["page"] = "document_intelligence"
                 st.rerun()
 
         st.divider()
@@ -141,9 +141,9 @@ Use **Scan** (single file) or **Bulk Scan** (entire loan folder) to add new docu
         if stats.get("pending_review", 0) > 0:
             st.divider()
             st.subheader(
-                f"⛔ Cases Requiring Your Review ({stats['pending_review']})"
+                f"⛔ Reviews Requiring Your Attention ({stats['pending_review']})"
             )
-            st.caption("Go to **Cases** to Approve or Reject.")
+            st.caption("Go to **Review Scans** to approve or reject documents.")
             cases = service.list_cases()
             needs_review_cases = [c for c in cases if c.get("needs_review")]
             if needs_review_cases:
@@ -171,7 +171,7 @@ Use **Scan** (single file) or **Bulk Scan** (entire loan folder) to add new docu
                         st.write(c.get("case_key", ""))
         else:
             st.divider()
-            st.success("✅ All cases resolved — nothing pending review.")
+            st.success("✅ No pending document reviews right now.")
 
     else:
         st.info(

@@ -6,6 +6,7 @@ the application continues to work in file-only mode.
 """
 from __future__ import annotations
 
+import json as _json
 import os as _os
 import re
 from datetime import datetime, timezone
@@ -1414,7 +1415,7 @@ def db_stats() -> Dict[str, int]:
                     session.query(func.count(Scan.id))
                     .filter(
                         Scan.layered_analysis_json["scan_summary"]["forensic_verdict"].astext.in_(
-                            ["TAMPERED", "LIKELY TAMPERED"]
+                            ["TAMPERED", "LIKELY TAMPERED", "TAMPERED-DERIVED"]
                         )
                     )
                     .scalar()
@@ -2011,6 +2012,452 @@ def truncate_table(table_name: str) -> bool:
     except Exception as exc:
         log.error("truncate_table failed for %s: %s", table_name, exc)
         return False
+
+
+# ---------------------------------------------------------------------------
+# Database Viewer CRUD helpers (development / admin tool)
+# ---------------------------------------------------------------------------
+# These helpers are ONLY used by the Database Viewer screen when the env-var
+# BASETRUTH_ENABLE_DB_VIEWER_CRUD=true is set.  They must never be called
+# from normal application flows (scan, identity, bulk scan, etc.).
+#
+# Design rules enforced here:
+#   1. Allowlist – only tables in _DB_VIEWER_CRUD_TABLES are accepted.
+#   2. Only columns declared in _DB_VIEWER_TABLE_META["editable"] can be
+#      written.  System columns (id, created_at, …) are always stripped.
+#   3. JSON columns are validated before insert/update.
+#   4. FK columns are validated to point at existing parent rows.
+#   5. Every function returns a (success, message, data) tuple so the UI
+#      can always show a visible success or error outcome (never silent).
+# ---------------------------------------------------------------------------
+
+# Allowlist of tables that CRUD operations may touch via the viewer.
+_DB_VIEWER_CRUD_TABLES: frozenset = frozenset({
+    "entities",
+    "scans",
+    "document_extractions",
+    "identity_checks",
+    "entity_reports",
+})
+
+# Per-table metadata that drives form generation in database.py.
+# Each entry has:
+#   pk         – primary key column name
+#   readonly   – columns that are never editable
+#   editable   – ordered list of column defs; each dict has:
+#                  name, label, ui (text|textarea|int|float|bool|json|select|fk)
+#                  choices (for select), fk_table (for fk), nullable (bool)
+#   json_cols  – set of JSONB column names (used for validation)
+_DB_VIEWER_TABLE_META: dict = {
+    "entities": {
+        "pk": "id",
+        "readonly": {"id", "created_at", "updated_at"},
+        "editable": [
+            # entity_ref is normally system-generated; expose here so dev
+            # can set a recognisable test reference like BT-TEST-001.
+            {"name": "entity_ref",    "label": "Entity Ref (e.g. BT-TEST-001)", "ui": "text"},
+            {"name": "first_name",    "label": "First Name",    "ui": "text"},
+            {"name": "last_name",     "label": "Last Name",     "ui": "text"},
+            {"name": "email",         "label": "Email",         "ui": "text"},
+            {"name": "phone",         "label": "Phone",         "ui": "text"},
+            {"name": "pan_number",    "label": "PAN Number",    "ui": "text"},
+            {"name": "aadhar_number", "label": "Aadhaar Number","ui": "text"},
+        ],
+        "fk": {},
+        "json_cols": set(),
+    },
+    "scans": {
+        "pk": "id",
+        "readonly": {"id", "generated_at", "updated_at"},
+        "editable": [
+            {"name": "entity_id",                    "label": "Entity",                   "ui": "fk",      "fk_table": "entities",  "nullable": True},
+            {"name": "source_name",                   "label": "Source Name",              "ui": "text"},
+            {"name": "source_sha256",                 "label": "SHA-256",                  "ui": "text"},
+            {"name": "document_type",                 "label": "Document Type",            "ui": "select",  "choices": ["generic", "payslip", "bank_statement", "form16", "offer_letter", "experience_letter", "relieving_letter", "increment_letter", "pan_card", "aadhaar", "marksheet", "degree_certificate", "hospital_bill", "invoice", "insurance", "utility_bill", "gift_letter", "cancelled_cheque"]},
+            {"name": "layered_analysis_json",         "label": "Layered Analysis JSON",    "ui": "json",    "nullable": True},
+            {"name": "first_level_approval",          "label": "1st Level Approval",       "ui": "select",  "choices": ["", "Y", "N"], "nullable": True},
+            {"name": "first_level_approved_by",       "label": "1st Level Approved By",    "ui": "text"},
+            {"name": "first_level_approval_comment",  "label": "1st Level Comment",        "ui": "textarea"},
+            {"name": "second_level_approval",         "label": "2nd Level Approval",       "ui": "select",  "choices": ["", "Y", "N"], "nullable": True},
+            {"name": "second_level_approved_by",      "label": "2nd Level Approved By",    "ui": "text"},
+            {"name": "second_level_approval_comment", "label": "2nd Level Comment",        "ui": "textarea"},
+        ],
+        "fk": {"entity_id": "entities"},
+        "json_cols": {"layered_analysis_json"},
+    },
+    "document_extractions": {
+        "pk": "id",
+        "readonly": {"id", "created_at"},
+        "editable": [
+            {"name": "entity_id",     "label": "Entity",          "ui": "fk",     "fk_table": "entities", "nullable": False},
+            {"name": "scan_id",       "label": "Scan (optional)", "ui": "fk",     "fk_table": "scans",    "nullable": True},
+            {"name": "file_name",     "label": "File Name",       "ui": "text"},
+            {"name": "document_type", "label": "Document Type",   "ui": "select", "choices": ["generic", "payslip", "bank_statement", "form16", "offer_letter", "experience_letter", "relieving_letter", "increment_letter", "pan_card", "aadhaar", "marksheet", "degree_certificate", "hospital_bill", "invoice", "insurance", "utility_bill", "gift_letter", "cancelled_cheque"]},
+            {"name": "source_screen", "label": "Source Screen",   "ui": "select", "choices": ["bulk_scan", "scan_document", "identity_verification", ""]},
+            {"name": "extracted_data","label": "Extracted Data",  "ui": "json"},
+        ],
+        "fk": {"entity_id": "entities", "scan_id": "scans"},
+        "json_cols": {"extracted_data"},
+    },
+    "identity_checks": {
+        "pk": "id",
+        "readonly": {"id", "created_at"},
+        "editable": [
+            {"name": "entity_id",         "label": "Entity",               "ui": "fk",    "fk_table": "entities", "nullable": True},
+            {"name": "check_type",        "label": "Check Type",           "ui": "select","choices": ["face_match", "video_kyc"]},
+            {"name": "status",            "label": "Status",               "ui": "select","choices": ["pass", "fail", "inconclusive"]},
+            {"name": "cosine_similarity", "label": "Cosine Similarity",    "ui": "float", "nullable": True},
+            {"name": "display_score",     "label": "Display Score (0–100)","ui": "float", "nullable": True},
+            {"name": "threshold",         "label": "Threshold",            "ui": "float", "nullable": True},
+            {"name": "is_match",          "label": "Is Match",             "ui": "bool",  "nullable": True},
+            {"name": "liveness_state",    "label": "Liveness State",       "ui": "text"},
+            {"name": "liveness_passed",   "label": "Liveness Passed",      "ui": "bool",  "nullable": True},
+            {"name": "verdict",           "label": "Verdict",              "ui": "select","choices": ["PASS", "FAIL", ""]},
+            {"name": "doc_filename",      "label": "Doc Filename",         "ui": "text"},
+            {"name": "selfie_filename",   "label": "Selfie Filename",      "ui": "text"},
+            {"name": "report_json",       "label": "Report JSON",          "ui": "json"},
+        ],
+        "fk": {"entity_id": "entities"},
+        "json_cols": {"report_json"},
+    },
+    "entity_reports": {
+        "pk": "id",
+        "readonly": {"id", "report_ref", "generated_at", "updated_at"},
+        "editable": [
+            # report_ref is normally system-generated; exposed here for dev test data setup.
+            {"name": "report_ref",                   "label": "Report Ref (e.g. BTR-TEST-001)",  "ui": "text"},
+            {"name": "entity_id",                    "label": "Entity",                          "ui": "fk",     "fk_table": "entities", "nullable": False},
+            {"name": "report_json",                  "label": "Report JSON",                     "ui": "json"},
+            {"name": "report_minio_key",             "label": "MinIO Key",                       "ui": "text"},
+            {"name": "first_level_approval",         "label": "1st Level Approval",              "ui": "select", "choices": ["", "Y", "N"], "nullable": True},
+            {"name": "first_level_approved_by",      "label": "1st Level Approved By",           "ui": "text"},
+            {"name": "first_level_approval_comment", "label": "1st Level Comment",               "ui": "textarea"},
+            {"name": "second_level_approval",        "label": "2nd Level Approval",              "ui": "select", "choices": ["", "Y", "N"], "nullable": True},
+            {"name": "second_level_approved_by",     "label": "2nd Level Approved By",           "ui": "text"},
+            {"name": "second_level_approval_comment","label": "2nd Level Comment",               "ui": "textarea"},
+        ],
+        "fk": {"entity_id": "entities"},
+        "json_cols": {"report_json"},
+    },
+}
+
+
+def db_viewer_get_row(table: str, row_id: int) -> "dict | None":
+    """Fetch a single row by primary key for the CRUD editor.
+
+    Returns the row as a plain dict, or None if the row does not exist
+    or the table is not in the CRUD allowlist.
+    """
+    if table not in _DB_VIEWER_CRUD_TABLES:
+        log.error("db_viewer_get_row: table %s not in allowlist", table)
+        return None
+    try:
+        with db_session() as session:
+            row = session.execute(
+                text(f"SELECT * FROM {table} WHERE id = :id"),  # noqa: S608
+                {"id": row_id},
+            ).mappings().first()
+            return dict(row) if row else None
+    except Exception as exc:
+        log.warning("db_viewer_get_row failed for %s id=%s: %s", table, row_id, exc)
+        return None
+
+
+def db_viewer_fk_options(fk_table: str) -> "list[dict]":
+    """Return id + display-label pairs for a foreign-key dropdown.
+
+    The UI renders a selectbox with human-readable labels instead of raw IDs.
+    Returns a list of dicts like {"id": 7, "label": "BT-000007 — Jane Doe"}.
+    """
+    try:
+        with db_session() as session:
+            if fk_table == "entities":
+                rows = session.execute(
+                    text(
+                        "SELECT id, entity_ref, first_name, last_name "
+                        "FROM entities ORDER BY id DESC LIMIT 500"
+                    )
+                ).mappings().all()
+                return [
+                    {
+                        "id": r["id"],
+                        "label": f"{r['entity_ref']} — {r['first_name']} {r['last_name']}".strip(" —"),
+                    }
+                    for r in rows
+                ]
+            elif fk_table == "scans":
+                rows = session.execute(
+                    text(
+                        "SELECT id, source_name, document_type "
+                        "FROM scans ORDER BY id DESC LIMIT 500"
+                    )
+                ).mappings().all()
+                return [
+                    {
+                        "id": r["id"],
+                        "label": f"#{r['id']} — {r['source_name']} ({r['document_type']})",
+                    }
+                    for r in rows
+                ]
+            else:
+                # Generic fallback: show raw ids
+                rows = session.execute(
+                    text(f"SELECT id FROM {fk_table} ORDER BY id DESC LIMIT 500")  # noqa: S608
+                ).mappings().all()
+                return [{"id": r["id"], "label": str(r["id"])} for r in rows]
+    except Exception as exc:
+        log.warning("db_viewer_fk_options failed for %s: %s", fk_table, exc)
+        return []
+
+
+def _db_viewer_validate_payload(table: str, payload: dict) -> "tuple[bool, str]":
+    """Check JSON columns and FK references before a CRUD write.
+
+    Returns (is_valid, error_message).  An empty error_message means valid.
+    Called by both create and update helpers to keep validation in one place.
+    """
+    meta = _DB_VIEWER_TABLE_META.get(table)
+    if meta is None:
+        return False, f"Unknown table: {table}"
+
+    # Validate each JSON column — must parse as valid JSON before we save it.
+    for col_name in meta["json_cols"]:
+        val = payload.get(col_name)
+        if val is not None and isinstance(val, str) and val.strip():
+            try:
+                _json.loads(val)
+            except Exception:  # noqa: BLE001
+                return False, f"Column '{col_name}' is not valid JSON. Fix the syntax and try again."
+
+    # Validate FK columns — the referenced parent row must actually exist.
+    try:
+        with db_session() as session:
+            for col_def in meta["editable"]:
+                if col_def["ui"] != "fk":
+                    continue
+                col_name = col_def["name"]
+                fk_table = col_def["fk_table"]
+                nullable = col_def.get("nullable", True)
+                val = payload.get(col_name)
+                if val is None or val == "":
+                    if not nullable:
+                        return False, f"Column '{col_name}' is required (not nullable)."
+                    # Nullable FK — allowed to leave empty
+                else:
+                    try:
+                        int_val = int(val)
+                    except (TypeError, ValueError):
+                        return False, f"Column '{col_name}' must be an integer FK id."
+                    exists = session.execute(
+                        text(f"SELECT 1 FROM {fk_table} WHERE id = :id"),  # noqa: S608
+                        {"id": int_val},
+                    ).first()
+                    if not exists:
+                        return False, f"Column '{col_name}': row id={val} not found in '{fk_table}'."
+    except Exception as exc:
+        # If the FK check query itself fails (e.g. DB hiccup), log and allow
+        # the save to proceed — the DB constraint will catch it properly.
+        log.warning("_db_viewer_validate_payload FK check failed: %s", exc)
+
+    return True, ""
+
+
+def _db_viewer_coerce_payload(meta: dict, payload: dict) -> dict:
+    """Convert string form-field values to the right Python types for each column.
+
+    The Streamlit form returns everything as strings.  This function converts:
+      - JSON columns: JSON string → parsed dict/list
+      - Float columns: string → float (or None for nullable)
+      - FK columns: string → int (or None for nullable)
+      - Bool columns: any truthy representation → bool
+      - Select columns with nullable=True: "" → None
+      - Text columns: kept as-is
+    """
+    col_type_map: dict = {col["name"]: col["ui"] for col in meta["editable"]}
+    nullable_cols: set = {col["name"] for col in meta["editable"] if col.get("nullable", False)}
+
+    clean: dict = {}
+    for col_name, value in payload.items():
+        ui_type = col_type_map.get(col_name, "text")
+
+        # Empty string on nullable column → store as NULL
+        if value == "" and col_name in nullable_cols:
+            clean[col_name] = None
+            continue
+
+        if ui_type == "json":
+            # Parse the JSON string back into a dict/list so SQLAlchemy stores it as JSONB
+            if isinstance(value, (dict, list)):
+                clean[col_name] = value
+            elif isinstance(value, str) and value.strip():
+                try:
+                    clean[col_name] = _json.loads(value)
+                except Exception:  # noqa: BLE001
+                    # Already validated above; keep raw string so DB raises the error
+                    clean[col_name] = value
+            else:
+                clean[col_name] = {}
+
+        elif ui_type == "float":
+            try:
+                clean[col_name] = float(value) if value not in (None, "") else None
+            except (ValueError, TypeError):
+                clean[col_name] = None
+
+        elif ui_type == "fk":
+            # FK values are integer IDs; None for nullable FKs
+            try:
+                clean[col_name] = int(value) if value not in (None, "") else None
+            except (ValueError, TypeError):
+                clean[col_name] = None
+
+        elif ui_type == "bool":
+            if isinstance(value, bool):
+                clean[col_name] = value
+            elif isinstance(value, str):
+                clean[col_name] = value.lower() in ("true", "1", "yes")
+            else:
+                clean[col_name] = None if col_name in nullable_cols else False
+
+        elif ui_type == "select" and col_name in nullable_cols:
+            # Empty string choice → NULL for nullable approval/status columns
+            clean[col_name] = None if value == "" else value
+
+        else:
+            clean[col_name] = value
+
+    return clean
+
+
+def db_viewer_create_row(
+    table: str, payload: dict
+) -> "tuple[bool, str, dict | None]":
+    """Insert a new row into an allowlisted table via the Database Viewer.
+
+    Validates JSON columns and FK references first, then does the INSERT.
+    Returns (success, message, new_row_as_dict).
+    """
+    if table not in _DB_VIEWER_CRUD_TABLES:
+        log.error("db_viewer_create_row: table %s not in allowlist", table)
+        return False, f"Table '{table}' is not in the CRUD allowlist.", None
+
+    meta = _DB_VIEWER_TABLE_META[table]
+
+    # Validate JSON and FK references before touching the DB
+    valid, err = _db_viewer_validate_payload(table, payload)
+    if not valid:
+        return False, err, None
+
+    # Strip down to only editable columns — system columns (id, timestamps) are
+    # never written; the DB handles them via defaults and sequences.
+    editable_names = {col["name"] for col in meta["editable"]}
+    clean_payload = _db_viewer_coerce_payload(
+        meta, {k: v for k, v in payload.items() if k in editable_names}
+    )
+
+    if not clean_payload:
+        return False, "No editable fields were provided.", None
+
+    col_names = ", ".join(clean_payload.keys())
+    col_placeholders = ", ".join(f":{k}" for k in clean_payload.keys())
+
+    try:
+        with db_session() as session:
+            result = session.execute(
+                text(  # noqa: S608
+                    f"INSERT INTO {table} ({col_names}) VALUES ({col_placeholders}) RETURNING *"
+                ),
+                clean_payload,
+            ).mappings().first()
+            new_row = dict(result) if result else None
+        new_id = new_row.get("id") if new_row else "?"
+        log.info("db_viewer_create_row: inserted row into %s, id=%s", table, new_id)
+        return True, f"Row created in {table} with id={new_id}.", new_row
+    except Exception as exc:
+        log.error("db_viewer_create_row failed for %s: %s", table, exc)
+        return False, f"Insert failed: {exc}", None
+
+
+def db_viewer_update_row(
+    table: str, row_id: int, payload: dict
+) -> "tuple[bool, str, dict | None]":
+    """Update one row by primary key in an allowlisted table via the Database Viewer.
+
+    Only columns declared as editable in _DB_VIEWER_TABLE_META are updated.
+    System-managed columns (id, timestamps) are stripped even if included.
+    Returns (success, message, updated_row_as_dict).
+    """
+    if table not in _DB_VIEWER_CRUD_TABLES:
+        log.error("db_viewer_update_row: table %s not in allowlist", table)
+        return False, f"Table '{table}' is not in the CRUD allowlist.", None
+
+    meta = _DB_VIEWER_TABLE_META[table]
+
+    valid, err = _db_viewer_validate_payload(table, payload)
+    if not valid:
+        return False, err, None
+
+    # Only update editable, non-readonly columns
+    editable_names = {col["name"] for col in meta["editable"]}
+    readonly_names = meta["readonly"]
+    clean_payload = _db_viewer_coerce_payload(
+        meta,
+        {
+            k: v
+            for k, v in payload.items()
+            if k in editable_names and k not in readonly_names
+        },
+    )
+
+    if not clean_payload:
+        return False, "No editable fields to update.", None
+
+    # Build SET clause using named bind parameters to avoid SQL injection
+    set_clause = ", ".join(f"{k} = :{k}" for k in clean_payload.keys())
+    clean_payload["_row_id"] = row_id
+
+    try:
+        with db_session() as session:
+            result = session.execute(
+                text(  # noqa: S608
+                    f"UPDATE {table} SET {set_clause} WHERE id = :_row_id RETURNING *"
+                ),
+                clean_payload,
+            ).mappings().first()
+            updated_row = dict(result) if result else None
+
+        if updated_row is None:
+            return False, f"Row id={row_id} not found in {table}.", None
+
+        log.info("db_viewer_update_row: updated %s id=%s", table, row_id)
+        return True, f"Row {row_id} updated successfully.", updated_row
+    except Exception as exc:
+        log.error("db_viewer_update_row failed for %s id=%s: %s", table, row_id, exc)
+        return False, f"Update failed: {exc}", None
+
+
+def db_viewer_delete_row(table: str, row_id: int) -> "tuple[bool, str]":
+    """Delete one row by primary key from an allowlisted table via the Database Viewer.
+
+    Returns (success, message).  The RETURNING clause confirms the row existed;
+    if it does not exist the function returns a friendly error instead of raising.
+    """
+    if table not in _DB_VIEWER_CRUD_TABLES:
+        log.error("db_viewer_delete_row: table %s not in allowlist", table)
+        return False, f"Table '{table}' is not in the CRUD allowlist."
+    try:
+        with db_session() as session:
+            result = session.execute(
+                text(f"DELETE FROM {table} WHERE id = :id RETURNING id"),  # noqa: S608
+                {"id": row_id},
+            ).first()
+        if result is None:
+            return False, f"Row id={row_id} not found in {table}."
+        log.info("db_viewer_delete_row: deleted %s id=%s", table, row_id)
+        return True, f"Row {row_id} deleted from {table}."
+    except Exception as exc:
+        log.error("db_viewer_delete_row failed for %s id=%s: %s", table, row_id, exc)
+        return False, f"Delete failed: {exc}"
 
 
 _s3_client: Optional[Any] = None

@@ -3,16 +3,16 @@
 Usage
 -----
     # Label a folder of ORIGINAL (clean) PDFs  →  label=0
-    python scripts/collect_training_samples_pdf.py \
-        --folder tests/sample/original_pdfs \
+    python fraud_model/scripts/collect_training_samples_pdf.py \
+        --folder fraud_model/sample/original_pdfs \
         --label 0 \
-        --output data/training_data_pdf.csv
+        --output fraud_model/data/training_data_pdf.csv
 
     # Label a folder of TAMPERED PDFs  →  label=1  (append to same CSV)
-    python scripts/collect_training_samples_pdf.py \
-        --folder tests/sample/tampered_pdfs \
+    python fraud_model/scripts/collect_training_samples_pdf.py \
+        --folder fraud_model/sample/tampered_pdfs \
         --label 1 \
-        --output data/training_data_pdf.csv \
+        --output fraud_model/data/training_data_pdf.csv \
         --append
 
 How it works
@@ -45,9 +45,16 @@ import os
 import sys
 from pathlib import Path
 
+# Force UTF-8 output so Unicode progress characters don't crash on Windows cp1252 terminals.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 # ── Put the src/ folder on sys.path so basetruth imports work
 # when this script is run from the repo root without installing the package.
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+# fraud_model/scripts/ → fraud_model/ → repo root (3 levels)
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "src"))
 
 # ── Column definitions — each raw metric from the 11 PDF forensic layers ──────

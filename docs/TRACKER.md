@@ -1,5 +1,7 @@
 # Tracker
 
+> Historical delivery log. Some older entries mention retired screens such as Cases, Records, Datasources, or Settings. For the current screen list and labels, use `docs/FUNCTIONALITY.md`.
+
 ## Completed
 
 ### Phase 1 — MVP

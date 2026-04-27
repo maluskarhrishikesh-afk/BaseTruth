@@ -1,5 +1,7 @@
 # Roadmap
 
+> Historical planning note. Some older entries use retired page names such as Cases, Records, or BaseTruth Q&A. For the current UI and workflow, use `docs/FUNCTIONALITY.md` and `docs/ARCHITECTURE.md`.
+
 ## Phase 1: MVP In This Repository
 
 - standalone repo and product identity

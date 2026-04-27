@@ -35,7 +35,7 @@ log = get_logger(__name__)
 # ── Model file path ────────────────────────────────────────────────────────────
 # Resolved from here: src/basetruth/analysis/ → repo root is 4 levels up.
 _REPO_ROOT  = Path(__file__).resolve().parent.parent.parent.parent
-_MODEL_PATH = _REPO_ROOT / "data" / "ml_scorer_pdf.pkl"
+_MODEL_PATH = _REPO_ROOT / "fraud_model" / "models" / "ml_scorer_pdf.pkl"
 
 # Module-level model cache — load once per process.
 _MODEL_CACHE:          Any  = None
@@ -290,6 +290,65 @@ def predict_pdf(feature_vector: "np.ndarray") -> Optional[Dict[str, Any]]:  # ty
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Step 2b — Per-sample SHAP contributions (tree SHAP, built into XGBoost)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def explain_pdf(feature_vector: "np.ndarray") -> Optional[Dict[str, float]]:  # type: ignore[name-defined]
+    """Compute per-feature SHAP contribution values for a single PDF scan.
+
+    XGBoost has tree SHAP built in — no separate 'shap' package is needed.
+    Each value answers: "how much did this feature push the prediction toward
+    TAMPERED (positive) or GENUINE (negative)?" in log-odds units.
+
+    The feature vector must first pass through the pipeline's imputer before
+    the booster can compute SHAP values, so we apply the two pipeline steps
+    (impute → predict_contribs) separately here.
+
+    Returns a dict {feature_name: shap_value} with 17 entries, or None if
+    the model is unavailable or XGBoost's pred_contribs raises any error.
+    """
+    model = _load_model()
+    if model is None:
+        return None
+
+    try:
+        import numpy as np  # noqa: PLC0415
+        import xgboost as xgb  # noqa: PLC0415
+
+        # Step A: run the sklearn imputer on the raw feature vector so any NaN /
+        # missing values are filled before we hand the data to the XGBoost booster.
+        imputer = model.named_steps["imputer"]
+        imputed = imputer.transform(feature_vector.reshape(1, -1))
+
+        # Step B: wrap in a DMatrix with named features so XGBoost can report
+        # contributions in a consistent column order.
+        dmat = xgb.DMatrix(imputed, feature_names=PDF_FEATURE_NAMES)
+
+        # pred_contribs=True invokes XGBoost's built-in tree SHAP algorithm.
+        # Output shape is (n_samples, n_features + 1) — the last column is the
+        # global bias term (expected log-odds baseline), which we discard.
+        booster = model.named_steps["model"].get_booster()
+        shap_matrix = booster.predict(dmat, pred_contribs=True)
+        shap_values = shap_matrix[0, :-1]  # drop bias; keep 17 feature contributions
+
+        contributions = {
+            name: round(float(v), 4)
+            for name, v in zip(PDF_FEATURE_NAMES, shap_values)
+        }
+        log.debug(
+            "ml_scorer_pdf: SHAP contributions computed",
+            extra={"n_features": len(contributions)},
+        )
+        return contributions
+    except Exception as exc:
+        log.warning(
+            "ml_scorer_pdf: explain_pdf failed — contributions unavailable",
+            extra={"error": str(exc)},
+        )
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Step 3 — Train  (called by scripts/train_ml_scorer_pdf.py)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -346,7 +405,7 @@ def _remap_raw_pdf_csv(df: "pd.DataFrame") -> "pd.DataFrame":  # type: ignore[na
     return df
 
 
-def train_pdf(csv_paths: List[str], output_pkl: str) -> Dict[str, Any]:
+def train_pdf(csv_paths: List[str], output_pkl: str, progress_cb: Optional[Any] = None) -> Dict[str, Any]:
     """Train a PDF XGBoost classifier and save to *output_pkl*.
 
     Accepts a list of CSV paths so the expert 10k dataset and our own 66-row
@@ -355,14 +414,26 @@ def train_pdf(csv_paths: List[str], output_pkl: str) -> Dict[str, Any]:
     CSVs that use our raw engine column schema are detected by the presence of
     'total_hidden_spans' and are remapped automatically before concatenation.
 
+    progress_cb is an optional callable(step: str, pct: int) for streaming
+    live training progress to the UI via WebSocket.
+
     Returns a metrics dict.  Raises ValueError if ROC AUC < 0.80.
     """
+    def _emit(step: str, pct: int) -> None:
+        """Fire the optional progress callback without letting it crash training."""
+        if progress_cb:
+            try:
+                progress_cb(step, pct)
+            except Exception:  # noqa: BLE001
+                pass
+
     import numpy as np  # noqa: PLC0415
     import pandas as pd  # noqa: PLC0415
-    from sklearn.model_selection import StratifiedKFold, cross_validate  # noqa: PLC0415
+    from sklearn.model_selection import StratifiedKFold  # noqa: PLC0415
     from sklearn.metrics import roc_auc_score, f1_score, accuracy_score  # noqa: PLC0415
     from sklearn.pipeline import Pipeline  # noqa: PLC0415
     from sklearn.impute import SimpleImputer  # noqa: PLC0415
+    from sklearn.base import clone as _clone_pipe  # noqa: PLC0415
     import joblib  # noqa: PLC0415
 
     try:
@@ -371,6 +442,7 @@ def train_pdf(csv_paths: List[str], output_pkl: str) -> Dict[str, Any]:
         from sklearn.ensemble import RandomForestClassifier as XGBClassifier  # noqa: PLC0415
         log.warning("ml_scorer_pdf: xgboost not found, using RandomForestClassifier")
 
+    _emit("Loading PDF training data files...", 3)
     frames = []
     for csv_path in csv_paths:
         df = pd.read_csv(csv_path)
@@ -380,6 +452,7 @@ def train_pdf(csv_paths: List[str], output_pkl: str) -> Dict[str, Any]:
         frames.append(df)
 
     combined = pd.concat(frames, ignore_index=True)
+    _emit(f"Loaded {len(combined)} PDF samples", 8)
     log.info(
         "ml_scorer_pdf: training on combined dataset",
         extra={"rows": len(combined), "sources": len(frames)},
@@ -422,17 +495,38 @@ def train_pdf(csv_paths: List[str], output_pkl: str) -> Dict[str, Any]:
         ("model",   model_step),
     ])
 
-    # 5-fold stratified cross-validation — honest out-of-fold evaluation.
+    # 5-fold stratified cross-validation — manual fold loop for per-fold progress.
+    _emit("Starting 5-fold cross-validation...", 18)
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    cv_results = cross_validate(
-        pipe, X, y, cv=cv,
-        scoring=["accuracy", "f1", "roc_auc"],
-        return_train_score=False,
-    )
+    fold_accuracies: List[float] = []
+    fold_f1s:        List[float] = []
+    fold_aucs:       List[float] = []
 
-    mean_accuracy = float(np.mean(cv_results["test_accuracy"]))
-    mean_f1       = float(np.mean(cv_results["test_f1"]))
-    mean_roc_auc  = float(np.mean(cv_results["test_roc_auc"]))
+    for fold_idx, (train_idx, val_idx) in enumerate(cv.split(X.values, y.values)):
+        _emit(f"Cross-validation  —  fold {fold_idx + 1} / 5  (training...)", 20 + fold_idx * 10)
+
+        pipe_fold = _clone_pipe(pipe)
+        pipe_fold.fit(X.iloc[train_idx], y.iloc[train_idx])
+
+        fold_pred  = pipe_fold.predict(X.iloc[val_idx])
+        fold_proba = pipe_fold.predict_proba(X.iloc[val_idx])
+        fold_y     = y.iloc[val_idx]
+
+        fold_acc = float(accuracy_score(fold_y, fold_pred))
+        fold_f1  = float(f1_score(fold_y, fold_pred, zero_division=0))
+        fold_auc = float(roc_auc_score(fold_y, fold_proba[:, 1]))
+
+        fold_accuracies.append(fold_acc)
+        fold_f1s.append(fold_f1)
+        fold_aucs.append(fold_auc)
+        _emit(
+            f"Fold {fold_idx + 1} / 5 done  —  accuracy {fold_acc:.1%}  |  F1 {fold_f1:.1%}  |  AUC {fold_auc:.3f}",
+            22 + (fold_idx + 1) * 10,
+        )
+
+    mean_accuracy = float(np.mean(fold_accuracies))
+    mean_f1       = float(np.mean(fold_f1s))
+    mean_roc_auc  = float(np.mean(fold_aucs))
 
     log.info(
         "ml_scorer_pdf: cross-validation results",
@@ -442,8 +536,13 @@ def train_pdf(csv_paths: List[str], output_pkl: str) -> Dict[str, Any]:
             "roc_auc": round(mean_roc_auc, 4),
         },
     )
+    _emit(
+        f"Cross-validation complete  —  avg accuracy {mean_accuracy:.1%}  |  F1 {mean_f1:.1%}  |  AUC {mean_roc_auc:.3f}",
+        73,
+    )
 
     # Hard-case evaluation using hard_subtle_case column in the expert CSV.
+    _emit("Checking hard-case performance...", 76)
     hard_case_metrics: Dict[str, Any] = {}
     for csv_path in csv_paths:
         raw = pd.read_csv(csv_path)
@@ -476,6 +575,7 @@ def train_pdf(csv_paths: List[str], output_pkl: str) -> Dict[str, Any]:
         )
 
     # Final fit on the entire combined dataset before serialising.
+    _emit("Fitting final model on all training data...", 84)
     pipe.fit(X, y)
 
     # Feature importance check — warn if one feature dominates (possible leakage).
@@ -495,16 +595,19 @@ def train_pdf(csv_paths: List[str], output_pkl: str) -> Dict[str, Any]:
         feature_importance_dict = {}
 
     # Save the trained pipeline.
+    _emit("Saving model to disk...", 93)
     output_path = Path(output_pkl)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(pipe, output_path)
     log.info("ml_scorer_pdf: model saved", extra={"path": str(output_path)})
+    _emit(f"Model saved  —  {str(output_path)}", 97)
 
     # Invalidate module cache so the new model is picked up immediately.
     global _MODEL_CACHE, _MODEL_LOAD_ATTEMPTED
     _MODEL_CACHE          = pipe
     _MODEL_LOAD_ATTEMPTED = True
 
+    _emit(f"Training complete!  Accuracy {mean_accuracy:.1%}  |  F1 {mean_f1:.1%}  |  AUC {mean_roc_auc:.3f}", 100)
     return {
         "rows_trained":       len(combined),
         "accuracy":           round(mean_accuracy, 4),

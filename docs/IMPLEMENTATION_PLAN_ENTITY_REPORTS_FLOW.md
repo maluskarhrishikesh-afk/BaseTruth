@@ -1,5 +1,7 @@
 # Implementation Plan — Entity Reports Full Flow Revamp
 
+> Historical implementation note. The live approval screen is now **Review Reports**, not **Cases**. Use `docs/FUNCTIONALITY.md` for the current workflow.
+
 **Status:** Draft v2 — awaiting review  
 **Based on:** `docs/new_features.txt` (April 17, 2026)  
 **Scope:** Document Intelligence → Cases → Reports end-to-end flow for BTR-XXXXXX reports

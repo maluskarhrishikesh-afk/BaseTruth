@@ -47,7 +47,7 @@ services:
     volumes:
       - ./artifacts:/app/artifacts
       - ./your_data:/app/your_data
-      - ./data:/app/data
+      - ./fraud_model:/app/fraud_model
       # DEV: mount the local src directory so code changes are reflected without
       # rebuilding the image. PYTHONPATH below ensures Python prefers this over
       # the installed package in site-packages.
@@ -72,6 +72,8 @@ services:
       BT_API_INTERNAL_URL: http://basetruth-api:8000
       # External URL embedded in session links shared with customers (reachable from their browser).
       BT_API_EXTERNAL_URL: http://localhost:8000
+      # Enable the CRUD panel in the Database Viewer (dev mode only — disable in production).
+      BASETRUTH_ENABLE_DB_VIEWER_CRUD: "true"
     depends_on:
       db:
         condition: service_healthy
@@ -107,7 +109,7 @@ services:
     volumes:
       - ./artifacts:/app/artifacts
       - ./your_data:/app/your_data
-      - ./data:/app/data
+      - ./fraud_model:/app/fraud_model
       - ./src:/app/src
       - ./logs:/app/logs
     environment:

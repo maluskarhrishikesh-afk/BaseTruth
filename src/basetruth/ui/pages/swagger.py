@@ -8,14 +8,39 @@ from basetruth.ui.components import _page_title
 # ── CSS shared across all endpoint cards ──────────────────────────────────────
 _SWAGGER_CSS = """
 <style>
+/* ── Animations ───────────────────────────────────────────────────────────── */
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(15px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes linkHover {
+    0% { box-shadow: 0 0 0 0 rgba(99,102,241,0.4); }
+    70% { box-shadow: 0 0 0 6px rgba(99,102,241,0); }
+    100% { box-shadow: 0 0 0 0 rgba(99,102,241,0); }
+}
+
 /* ── Base card ────────────────────────────────────────────────────────────── */
 .bt-api-card {
-    border-radius: 14px;
-    border: 1.5px solid rgba(99,102,241,0.18);
-    background: #0d1117;
+    border-radius: 16px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(10, 15, 24, 0.97);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
     overflow: hidden;
-    box-shadow: 0 4px 24px rgba(0,0,0,0.22);
-    margin-bottom: 28px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+    margin-bottom: 36px;
+    transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+    animation: fadeIn 0.6s ease-out backwards;
+}
+/* Stagger animations for consecutive cards */
+.bt-api-card:nth-child(2) { animation-delay: 0.1s; }
+.bt-api-card:nth-child(3) { animation-delay: 0.2s; }
+
+.bt-api-card:hover {
+    transform: translateY(-4px);
+    border: 1px solid rgba(99,102,241,0.4);
+    box-shadow: 0 12px 40px rgba(99,102,241,0.15);
 }
 
 /* ── Card header bar ──────────────────────────────────────────────────────── */
@@ -23,139 +48,245 @@ _SWAGGER_CSS = """
     display: flex;
     align-items: center;
     gap: 14px;
-    padding: 14px 20px;
-    background: linear-gradient(135deg, rgba(99,102,241,0.13) 0%, rgba(139,92,246,0.08) 100%);
-    border-bottom: 1px solid rgba(99,102,241,0.16);
+    padding: 16px 20px;
+    background: linear-gradient(135deg, rgba(99,102,241,0.15) 0%, rgba(139,92,246,0.05) 100%);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
     flex-wrap: wrap;
+    position: relative;
+    overflow: hidden;
 }
+.bt-api-header::after {
+    content: '';
+    position: absolute;
+    top: 0; left: -100%; width: 50%; height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.06), transparent);
+    transition: left 0.7s;
+}
+.bt-api-card:hover .bt-api-header::after {
+    left: 100%;
+}
+
 .bt-method-badge {
-    background: #238636;
+    background: linear-gradient(135deg, #22c55e, #16a34a);
     color: #ffffff;
     font-size: 0.75rem;
     font-weight: 800;
     letter-spacing: 0.08em;
-    padding: 4px 11px;
-    border-radius: 6px;
+    padding: 5px 12px;
+    border-radius: 8px;
     flex-shrink: 0;
+    box-shadow: 0 2px 10px rgba(34,197,94,0.3);
 }
+
 .bt-api-path {
     font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
-    font-size: 1rem;
+    font-size: 1.05rem;
     font-weight: 700;
-    color: #a5b4fc;
+    color: #c7d2fe;
     letter-spacing: 0.01em;
 }
+
 .bt-api-summary {
-    font-size: 0.82rem;
-    color: #64748b;
+    font-size: 0.85rem;
+    color: #94a3b8;
     margin-left: auto;
     font-style: italic;
 }
 
 /* ── Section inside card ──────────────────────────────────────────────────── */
 .bt-api-section {
-    padding: 14px 22px 6px 22px;
-    border-bottom: 1px solid rgba(99,102,241,0.08);
+    padding: 16px 24px 8px 24px;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+    transition: background 0.3s ease;
 }
-.bt-api-section:last-child { border-bottom: none; padding-bottom: 18px; }
+.bt-api-section:hover {
+    background: rgba(255, 255, 255, 0.01);
+}
+.bt-api-section:last-child { border-bottom: none; padding-bottom: 20px; }
+
 .bt-section-label {
-    font-size: 0.68rem;
+    font-size: 0.75rem;
     font-weight: 800;
     letter-spacing: 0.12em;
     text-transform: uppercase;
-    color: #475569;
-    margin-bottom: 10px;
+    color: #94a3b8;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.bt-section-label::before {
+    content: '';
+    display: block;
+    width: 6px;
+    height: 6px;
+    background: #6366f1;
+    border-radius: 50%;
+    box-shadow: 0 0 6px #6366f1;
 }
 
 /* ── Description text ─────────────────────────────────────────────────────── */
 .bt-api-desc {
-    font-size: 0.87rem;
-    color: #94a3b8;
-    line-height: 1.6;
+    font-size: 0.95rem;
+    color: #e2e8f0;
+    line-height: 1.65;
     margin: 0;
+}
+.bt-api-desc strong {
+    color: #cbd5e1;
 }
 
 /* ── Schema table ─────────────────────────────────────────────────────────── */
 .bt-schema-table {
     width: 100%;
-    border-collapse: collapse;
-    font-size: 0.8rem;
+    border-collapse: separate;
+    border-spacing: 0;
+    font-size: 0.85rem;
+    margin-top: 8px;
 }
 .bt-schema-table th {
     text-align: left;
-    color: #475569;
+    color: #a5b4fc;
     font-weight: 700;
-    font-size: 0.72rem;
-    letter-spacing: 0.07em;
+    font-size: 0.8rem;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
-    padding: 5px 10px;
-    border-bottom: 1px solid rgba(99,102,241,0.14);
+    padding: 8px 12px;
+    border-bottom: 1px solid rgba(99,102,241,0.18);
+    background: rgba(15, 23, 42, 0.3);
 }
+.bt-schema-table th:first-child { border-top-left-radius: 8px; }
+.bt-schema-table th:last-child { border-top-right-radius: 8px; }
+
 .bt-schema-table td {
-    padding: 7px 10px;
-    border-bottom: 1px solid rgba(99,102,241,0.06);
+    padding: 10px 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.03);
     vertical-align: top;
+    transition: background 0.2s ease;
+}
+.bt-schema-table tr:hover td {
+    background: rgba(99,102,241,0.04);
 }
 .bt-schema-table tr:last-child td { border-bottom: none; }
+.bt-schema-table tr:last-child td:first-child { border-bottom-left-radius: 8px; }
+.bt-schema-table tr:last-child td:last-child { border-bottom-right-radius: 8px; }
+
 .bt-field-name {
     font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
     color: #79c0ff;
     white-space: nowrap;
+    font-weight: 600;
 }
 .bt-field-type {
     color: #e3b341;
     white-space: nowrap;
 }
-.bt-field-req  { color: #ef4444; font-weight: 700; font-size: 0.8rem; }
-.bt-field-opt  { color: #475569; font-weight: 700; font-size: 0.8rem; }
-.bt-field-desc { color: #94a3b8; }
+.bt-field-req  { 
+    color: #fca5a5; 
+    font-weight: 700; 
+    font-size: 0.8rem; 
+    background: rgba(248, 113, 113, 0.1);
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid rgba(248, 113, 113, 0.2);
+}
+.bt-field-opt  { 
+    color: #cbd5e1; 
+    font-weight: 600; 
+    font-size: 0.8rem;
+    background: rgba(100, 116, 139, 0.1);
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid rgba(100, 116, 139, 0.2);
+}
+.bt-field-desc { color: #e2e8f0; line-height: 1.55; font-size: 0.92rem; }
+.bt-field-desc code {
+    background: rgba(255,255,255,0.06);
+    padding: 2px 5px;
+    border-radius: 4px;
+    color: #cbd5e1;
+    font-size: 0.8rem;
+}
 
 /* ── Content-type pill ────────────────────────────────────────────────────── */
 .bt-ct-pill {
-    display: inline-block;
-    background: rgba(99,102,241,0.14);
-    border: 1px solid rgba(99,102,241,0.24);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(99,102,241,0.12);
+    border: 1px solid rgba(99,102,241,0.3);
     border-radius: 999px;
     color: #a5b4fc;
-    font-size: 0.73rem;
+    font-size: 0.75rem;
     font-weight: 600;
-    padding: 2px 10px;
-    margin-bottom: 10px;
+    padding: 4px 12px;
+    margin-bottom: 14px;
+    box-shadow: 0 2px 8px rgba(99,102,241,0.1);
+}
+.bt-ct-pill::before {
+    content: '📄';
+    font-size: 0.8rem;
 }
 
 /* ── Sub-object note ──────────────────────────────────────────────────────── */
 .bt-sub-note {
-    font-size: 0.78rem;
-    color: #475569;
+    font-size: 0.85rem;
+    color: #94a3b8;
     font-style: italic;
-    margin: 4px 0 10px 10px;
+    margin: 0 0 12px 2px;
 }
 
 /* ── Live links bar ───────────────────────────────────────────────────────── */
 .bt-links-bar {
     display: flex;
-    gap: 12px;
+    gap: 16px;
     flex-wrap: wrap;
-    padding: 18px 0 6px 0;
+    padding: 20px 0 16px 0;
+    animation: fadeIn 0.4s ease-out;
 }
 .bt-link-btn {
-    display: inline-block;
-    padding: 9px 20px;
-    border-radius: 8px;
-    font-size: 0.82rem;
-    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 24px;
+    border-radius: 12px;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 0.95rem;
+    font-weight: 600;
     text-decoration: none !important;
     letter-spacing: 0.02em;
+    transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+    position: relative;
+    overflow: hidden;
 }
+
 .bt-link-primary {
-    background: rgba(99,102,241,0.18);
-    border: 1px solid rgba(99,102,241,0.35);
-    color: #a5b4fc !important;
+    background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    color: #ffffff !important;
+    box-shadow: 0 4px 15px rgba(79, 70, 229, 0.3);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
 }
+.bt-link-primary:hover {
+    transform: translateY(-3px);
+    background: linear-gradient(135deg, #4338ca 0%, #4f46e5 100%);
+    border-color: rgba(255, 255, 255, 0.3);
+    box-shadow: 0 8px 25px rgba(79, 70, 229, 0.4);
+    color: #ffffff !important;
+}
+
 .bt-link-secondary {
-    background: rgba(14,116,144,0.12);
-    border: 1px solid rgba(14,116,144,0.25);
-    color: #67e8f9 !important;
+    background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: #f8fafc !important;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+}
+.bt-link-secondary:hover {
+    transform: translateY(-3px);
+    background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+    border-color: rgba(255, 255, 255, 0.25);
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.2);
+    color: #ffffff !important;
 }
 </style>
 """
@@ -197,19 +328,18 @@ def _page_swagger() -> None:
     st.markdown(
         """
 <div class="bt-links-bar">
-  <a class="bt-link-btn bt-link-primary" href="http://localhost:8000/docs" target="_blank">
-    📖 Interactive Swagger UI
+  <a class="bt-link-btn bt-link-primary" href="http://localhost:8000/api/docs" target="_blank">
+    <span style="font-size:1.1rem; opacity:0.9;">📖</span> Interactive Swagger UI
   </a>
-  <a class="bt-link-btn bt-link-secondary" href="http://localhost:8000/redoc" target="_blank">
-    📄 ReDoc
+  <a class="bt-link-btn bt-link-secondary" href="http://localhost:8000/api/redoc" target="_blank">
+    <span style="font-size:1.1rem; opacity:0.9;">📄</span> ReDoc
   </a>
-  <a class="bt-link-btn bt-link-secondary" href="http://localhost:8000/openapi.json" target="_blank">
-    { } OpenAPI JSON
+  <a class="bt-link-btn bt-link-secondary" href="http://localhost:8000/api/openapi.json" target="_blank">
+    <span style="font-family:monospace; font-weight:bold; opacity:0.8; font-size:1.1rem;">{ }</span> OpenAPI JSON
   </a>
 </div>
-<p style="font-size:0.8rem;color:#475569;margin:6px 0 24px 0;">
-  BaseTruth API · Base URL: <code style="color:#a5b4fc;">http://localhost:8000</code>
-  · Start the API server before opening these links.
+<p style="font-size:0.85rem;color:#64748b;margin:0 0 28px 4px;font-weight:500;">
+  BaseTruth API Server · Base URL: <code style="color:#6366f1;background:rgba(99,102,241,0.1);padding:3px 8px;border-radius:6px;font-weight:600;">http://localhost:8000</code>
 </p>
 """,
         unsafe_allow_html=True,

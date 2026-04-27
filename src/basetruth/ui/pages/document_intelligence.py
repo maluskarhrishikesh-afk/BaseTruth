@@ -322,8 +322,8 @@ def _render_entity_reports_status(entity_ref: str) -> None:
     """Show a minimal one-line status strip for each saved entity report.
 
     The Document Intelligence screen is not an approval screen, so we only
-    show the reference, current approval state, and generation date.  Full
-    details (checks breakdown, JSON, approval buttons) live on the Cases screen.
+    show the reference, current approval state, and generation date. Full
+    details (checks breakdown, JSON, approval buttons) live on the Review Reports screen.
     """
     reports = get_entity_reports(entity_ref)
     if not reports:
@@ -343,7 +343,7 @@ def _render_entity_reports_status(entity_ref: str) -> None:
             badge = "⏳ Pending Review"
 
         gen_date = rpt.get("generated_at", "")[:10]
-        # One compact line per report — analysts go to Cases for the full detail.
+        # One compact line per report — analysts go to Review Reports for the full detail.
         st.caption(f"{rpt['report_ref']}  ·  {badge}  ·  {gen_date}")
 
 
@@ -365,7 +365,7 @@ grouped by applicant.
 - **Search** an applicant by name, PAN, Aadhaar, email, phone, or BaseTruth reference (BT-XXXXXX).
 - Select the entity to see all their scanned documents and the 11-layer forensic result for each.
 - Click **🔬 Forensic Details** inside a card to see the full layer breakdown.
-- Documents must pass the approval workflow on the **🔬 Scans** screen before they
+- Documents must pass the approval workflow on the **🔬 Review Scans** screen before they
   appear here under "Approved Documents".
 """
         )
@@ -503,7 +503,7 @@ grouped by applicant.
             parts.append(f"**{rejected_count}** rejected")
         st.warning(
             f"⚠️ {' and '.join(parts)} scan(s) are not shown in the approved section. "
-            "Go to **🔬 Scans** to approve them.",
+            "Go to **🔬 Review Scans** to approve them.",
             icon="⚠️",
         )
 
@@ -523,7 +523,7 @@ grouped by applicant.
         if not approved_scans:
             st.info(
                 "No fully approved scans yet. "
-                "Complete the 2-level approval workflow on the **🔬 Scans** screen."
+                "Complete the 2-level approval workflow on the **🔬 Review Scans** screen."
             )
         else:
             for scan in approved_scans:
@@ -556,7 +556,7 @@ grouped by applicant.
         _sref = st.session_state.pop("di_gen_report_success")
         st.success(
             f"✅ Report **{_sref}** generated and PDF saved. "
-            "Go to **📁 Cases** for the 2-level approval."
+            "Go to **📋 Review Reports** for the 2-level approval."
         )
 
     if st.button("🎯 Generate Final Report", type="primary", key="di_gen_report"):

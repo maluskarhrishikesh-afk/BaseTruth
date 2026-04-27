@@ -1,353 +1,1731 @@
-﻿I got similar data for pdfs, can you check if its proper or not?
-
-Yes — I checked your PDF forensic training dataset, and it has good feature ideas, but there are several major issues that should be corrected before using it for XGBoost or any ML model.
-
-Overall Verdict
-Current quality: 5.5/10
-
-Good direction, but there is label leakage, duplicated filenames, constant useless columns, and unrealistic labeling patterns.
-
-Good Things in Your PDF Dataset ✅
-You included strong PDF forensic signals:
-
-incremental updates
-
-EOF marker count
-
-metadata anomalies
-
-hidden text spans
-
-white text spans
-
-JavaScript presence
-
-embedded files
-
-signature gaps
-
-rendered ELA / noise ratios
-
-object count
-
-entropy
-
-These are exactly the kinds of signals used in PDF fraud detection.
-
-Major Problems Found 🚨
-1. Same filename exists with opposite labels (Very Dangerous)
-I found:
-
-33 filenames appearing as both:
-
-label = 0
-
-label = 1
-
-Why this breaks training:
-Model may memorize filename instead of fraud signals.
-
-Fix:
-Never train using filename
-
-Use:
-
-X = df.drop(columns=["filename", "label"])
-Or rename versions clearly:
-
-invoice_original.pdf
-
-invoice_tampered.pdf
-
-2. heuristic_score likely causing leakage
-Correlation with label:
-
-0.53
-That’s high.
-
-If heuristic_score is your own rule-engine output, then model just learns your old rules.
-
-Fix:
-Decide:
-
-Option A:
-Use ML to replace heuristics:
-
-➡️ remove heuristic_score
-
-Option B:
-Use ensemble:
-
-➡️ keep score, but know model partly copies rules.
-
-3. Constant Columns (Useless)
-These columns never change:
-
-non_embedded_fonts
-
-tiny_size_spans
-
-embedded_files_count
-
-has_xfa_form
-
-obj_stm_count
-
-Fix:
-Remove them or populate realistic values.
-
-4. Labels look suspiciously harsh
-Examples in your sample:
-
-Rows marked tampered / likely tampered while label = 0
-
-That means either:
-
-labels wrong
-
-heuristic verdict wrong
-
-many false positives
-
-Example:
-heuristic_verdict = TAMPERED, but label = 0
-
-This can confuse model.
-
-Fix:
-Need clean ground truth labels.
-
-5. Very Small Dataset
-Only:
-
-66 rows
-That is far too small.
-
-Recommended:
-Minimum: 500 rows
-
-Better: 3000+
-
-Best: 10000+
-
-Strong Feature Engineering Advice
-Binary Features Good for PDFs
-Keep:
-
-has_open_action
-
-javascript_count > 0
-
-hidden spans > 0
-
-white text > 0
-
-signature gaps > 0
-
-Normalize Ratios
-Good:
-
-render_ela_suspicious_block_ratio
-
-render_noise_hotspot_ratio
-
-Keep them.
-
-What to Remove for Training
-drop_cols = [
- "filename",
- "heuristic_verdict"
-]
-Maybe also remove:
-
-"heuristic_score"
-if you want pure ML.
-
-Best Realistic Fraud Cases for PDFs
-Need these in training:
-
-Genuine but suspicious:
-scanned PDF
-
-digitally signed file
-
-OCR converted doc
-
-compressed bank statement
-
-print-to-PDF invoice
-
-Fraud but subtle:
-edited amount only
-
-changed date
-
-changed payee name
-
-hidden white text
-
-overlay object
-
-removed signature layer
-
-My Honest Verdict
-Structure = Good
-Data realism = Medium
-Ready for Production = No
-If You Train XGBoost Right Now
-Likely result:
-
-Training accuracy high
-
-Real-world performance poor
-
-Because of duplicate filenames + small data + leakage.
-
-Recommended Next Move
-I can generate a Production-Grade PDF Dataset (10,000 rows) with:
-
-✅ real PDF fraud patterns
-✅ hidden text attacks
-✅ signature fraud
-✅ metadata fraud
-✅ OCR scan genuine files
-✅ balanced labels
-✅ hard subtle fraud cases
-✅ XGBoost ready
-
-Just say:
-
-Generate PDF Ultimate Dataset
-
-
-Generate PDF Ultimate Dataset
-
-Your PDF Ultimate Dataset is ready.
-
-Downloads
-📄 10,000-row PDF forensic dataset: pdf_ultimate_dataset_10000_rows.csv
-
-📓 XGBoost + SHAP notebook: pdf_xgboost_shap_notebook.ipynb
-
-What’s Included
-Dataset Quality
-10,000 rows
-
-Balanced labels (5,000 genuine / 5,000 tampered)
-
-Realistic correlated PDF fraud signals
-
-Hard subtle fraud cases (hard_subtle_case=1)
-
-Scanned PDFs, signed PDFs, OCR-converted files
-
-No filename leakage (pdf_id only)
-
-Features Included
-incremental_updates
-
-eof_marker_count
-
-metadata_anomaly_score
-
-hidden_text_spans
-
-white_text_spans
-
-javascript_count
-
-embedded_files_count
-
-signature_gap_score
-
-render_ela_suspicious_block_ratio
-
-render_noise_hotspot_ratio
-
-object_count
-
-stream_entropy
-
-xref_mismatch_score
-
-font_switch_score
-
-ocr_text_layer_gap
-
-is_scanned_pdf
-
-has_signature
-
-hard_subtle_case
-
-label
-
-Fraud Types Simulated
-Genuine
-Native exported PDFs
-
-Scanned PDFs
-
-OCR-generated PDFs
-
-Digitally signed documents
-
-Large complex PDFs
-
-Tampered
-Edited amount/date/payee
-
-Hidden white-text injection
-
-Metadata manipulation
-
-XREF/object rewrite fraud
-
-Signature replacement
-
-Overlay tampering
-
-Subtle expert fraud
-
-Recommended Training Code
-X = df.drop(columns=["pdf_id", "label"])
-y = df["label"]
-Best Real-World Evaluation
-Check subtle fraud only:
-
-df[df["hard_subtle_case"] == 1]
-That tells you if model catches professional fraud.
-
-If you'd like, I can generate the Final Enterprise Version:
-🔥 Multi-format Fraud Engine Dataset
-Combines:
-
-Images
-
-PDFs
-
-Scans
-
-IDs
-
-Payslips
-
-Invoices
-
-Bank statements
-
-Signatures
-
-With:
-
-✅ 100,000 rows
-✅ One universal fraud model
-✅ Explainable AI dashboard
-✅ Confidence score
-✅ FastAPI deployment
-✅ Human review routing
-
-Just say Generate Enterprise Fraud Engine 
-
-
-
+﻿BaseTruth - Notes
+=================
+
+This file used to hold raw console output from the ML Training Pipeline launcher.
+That output was removed because it was noisy, stale, and not useful as product documentation.
+
+Use these files instead:
+
+- docs/ML_PIPELINE.md for the current ML training workflow
+- docs/ML_SCORING_IMPLEMENTATION_PLAN.md for current ML scoring status
+- docs/FUNCTIONALITY.md for the current screen-by-screen UI behavior
+
+If you need a real pipeline run log, keep it under logs/ rather than inside docs/.
+[INFO] 12:17:45  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:17:45  analysis.image_forensics_detect:1846  run_forensics: complete
+🟡 UNCERTAIN  (score=23.0)
+  [ 10/113] IMG_20161101_131759.jpg … [INFO] 12:17:45  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:17:57  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:17:57  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:17:57  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=40.7)
+  [ 11/113] IMG_20161101_131759_org.bmp … [INFO] 12:17:57  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:18:08  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:18:08  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:18:08  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=51.0)
+  [ 12/113] IMG_20161101_131759_org.png … [INFO] 12:18:08  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+libpng warning: iCCP: cHRM chunk does not match sRGB
+libpng warning: iCCP: cHRM chunk does not match sRGB
+libpng warning: iCCP: cHRM chunk does not match sRGB
+libpng warning: iCCP: cHRM chunk does not match sRGB
+libpng warning: iCCP: cHRM chunk does not match sRGB
+libpng warning: iCCP: cHRM chunk does not match sRGB
+libpng warning: iCCP: cHRM chunk does not match sRGB
+[INFO] 12:18:19  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:18:19  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:18:19  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=46.8)
+  [ 13/113] IMG_20220207_191507.jpg … [INFO] 12:18:19  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:18:33  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:18:33  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:18:33  analysis.image_forensics_detect:1846  run_forensics: complete
+🟡 UNCERTAIN  (score=23.4)
+  [ 14/113] IMG_20220207_191507_org.bmp … [INFO] 12:18:33  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:18:45  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:18:45  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:18:45  analysis.image_forensics_detect:1846  run_forensics: complete
+🟡 UNCERTAIN  (score=23.4)
+  [ 15/113] IMG_20220207_191507_org.png … [INFO] 12:18:45  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:18:58  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:18:58  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:18:58  analysis.image_forensics_detect:1846  run_forensics: complete
+🟡 UNCERTAIN  (score=23.4)
+  [ 16/113] IMG_20240520_133353448.jpg … [INFO] 12:18:58  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:19:12  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:19:12  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:19:12  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=42.2)
+  [ 17/113] IMG_20240520_133353448_org.bmp … [INFO] 12:19:12  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:19:23  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:19:23  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:19:23  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=60.5)
+  [ 18/113] IMG_20240520_133353448_org.png … [INFO] 12:19:23  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:19:35  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:19:35  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:19:35  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=54.6)
+  [ 19/113] IMG_20250708_235937.jpg … [INFO] 12:19:35  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:19:37  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:19:37  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:19:37  analysis.image_forensics_detect:1846  run_forensics: complete
+🟡 UNCERTAIN  (score=16.7)
+  [ 20/113] IMG_20250708_235937_org.bmp … [INFO] 12:19:37  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:19:39  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:19:39  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:19:39  analysis.image_forensics_detect:1846  run_forensics: complete
+🟡 UNCERTAIN  (score=23.4)
+  [ 21/113] IMG_20250708_235937_org.png … [INFO] 12:19:39  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:19:41  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:19:41  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:19:41  analysis.image_forensics_detect:1846  run_forensics: complete
+🟡 UNCERTAIN  (score=29.1)
+  [ 22/113] IMG_20251220_141012.jpg … [INFO] 12:19:41  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:20:02  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:20:02  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:20:02  analysis.image_forensics_detect:1846  run_forensics: complete
+🟡 UNCERTAIN  (score=26.2)
+  [ 23/113] IMG_20251220_141012_org.bmp … [INFO] 12:20:02  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:20:17  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:20:17  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:20:17  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=34.7)
+  [ 24/113] IMG_20251220_141012_org.png … [INFO] 12:20:17  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:20:47  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:20:47  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:20:47  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=33.0)
+  [ 25/113] IMG_20260422_145719.jpg … [INFO] 12:20:48  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:21:06  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:21:06  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:21:06  analysis.image_forensics_detect:1846  run_forensics: complete
+🟡 UNCERTAIN  (score=22.6)
+  [ 26/113] IMG_20260422_145719_org.bmp … [INFO] 12:21:06  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:21:19  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:21:19  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:21:19  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=45.6)
+  [ 27/113] IMG_20260422_145719_org.png … [INFO] 12:21:19  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:21:33  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:21:33  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:21:33  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=45.6)
+  [ 28/113] IMG_20260422_145756.jpg … [INFO] 12:21:33  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:22:06  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:22:06  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:22:06  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=51.7)
+  [ 29/113] IMG_20260422_145756_org.bmp … [INFO] 12:22:06  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:22:34  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:22:34  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:22:35  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=48.1)
+  [ 30/113] IMG_20260422_145756_org.png … [INFO] 12:22:35  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:23:05  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:23:05  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:23:05  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=48.1)
+  [ 31/113] IMG_20260422_145846.jpg … [INFO] 12:23:05  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:23:16  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:23:16  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:23:16  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=37.2)
+  [ 32/113] IMG_20260422_145846_org.bmp … [INFO] 12:23:16  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:23:24  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:23:24  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:23:24  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=53.4)
+  [ 33/113] IMG_20260422_145846_org.png … [INFO] 12:23:24  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:23:34  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:23:34  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:23:34  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=53.4)
+  [ 34/113] IMG_20260422_145912.jpg … [INFO] 12:23:34  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:23:49  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:23:49  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:23:49  analysis.image_forensics_detect:1846  run_forensics: complete
+🟡 UNCERTAIN  (score=18.9)
+  [ 35/113] IMG_20260422_145912.png … [INFO] 12:23:49  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:24:04  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:24:04  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:24:04  analysis.image_forensics_detect:1846  run_forensics: complete
+🟡 UNCERTAIN  (score=18.9)
+  [ 36/113] IMG_20260422_145912_1.bmp … [INFO] 12:24:04  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:24:18  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:24:18  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:24:18  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=38.7)
+  [ 37/113] IMG_20260422_145912_3.tiff … [INFO] 12:24:18  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:24:31  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:24:31  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:24:31  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=38.7)
+  [ 38/113] IMG_20260422_145942.jpg … [INFO] 12:24:31  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:24:41  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:24:41  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:24:41  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=62.0)
+  [ 39/113] IMG_20260422_145942_org.bmp … [INFO] 12:24:41  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:24:49  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:24:49  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:24:49  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=52.6)
+  [ 40/113] IMG_20260422_145942_org.png … [INFO] 12:24:49  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:24:57  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:24:57  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:24:57  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=52.6)
+  [ 41/113] IMG_20260422_150011.jpg … [INFO] 12:24:57  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:25:15  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:25:15  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:25:15  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=48.9)
+  [ 42/113] IMG_20260422_150011_org.bmp … [INFO] 12:25:15  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:25:25  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:25:25  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:25:25  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=46.9)
+  [ 43/113] IMG_20260422_150011_org.jpg … [INFO] 12:25:25  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:25:38  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:25:38  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:25:38  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=52.6)
+  [ 44/113] IMG_20260422_150036.jpg … [INFO] 12:25:38  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:25:50  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:25:50  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:25:50  analysis.image_forensics_detect:1846  run_forensics: complete
+🟡 UNCERTAIN  (score=16.4)
+  [ 45/113] IMG_20260422_150036_org.bmp … [INFO] 12:25:50  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:26:00  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:26:00  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:26:00  analysis.image_forensics_detect:1846  run_forensics: complete
+🟡 UNCERTAIN  (score=19.8)
+  [ 46/113] IMG_20260422_150036_org.png … [INFO] 12:26:00  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:26:10  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:26:10  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:26:10  analysis.image_forensics_detect:1846  run_forensics: complete
+🟡 UNCERTAIN  (score=19.8)
+  [ 47/113] IMG_20260422_150105.jpg … [INFO] 12:26:10  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:26:19  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:26:19  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:26:19  analysis.image_forensics_detect:1846  run_forensics: complete
+🟡 UNCERTAIN  (score=21.0)
+  [ 48/113] IMG_20260422_150105_org.bmp … [INFO] 12:26:19  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:26:26  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:26:26  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:26:26  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=43.6)
+  [ 49/113] IMG_20260422_150105_org.png … [INFO] 12:26:26  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:26:33  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:26:33  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:26:33  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=43.6)
+  [ 50/113] IMG_20260422_150127.jpg … [INFO] 12:26:33  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:27:04  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:27:04  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:27:04  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=67.0)
+  [ 51/113] IMG_20260422_150127_org.bmp … [INFO] 12:27:04  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:27:32  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:27:32  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:27:32  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=48.4)
+  [ 52/113] IMG_20260422_150127_org.png … [INFO] 12:27:32  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:28:00  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:28:00  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:28:00  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=48.4)
+  [ 53/113] IMG_20260422_150156.jpg … [INFO] 12:28:00  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:28:35  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:28:35  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:28:35  analysis.image_forensics_detect:1846  run_forensics: complete
+🟡 UNCERTAIN  (score=21.3)
+  [ 54/113] IMG_20260422_150156_org.bmp … [INFO] 12:28:35  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:29:07  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:29:07  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:29:07  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=41.2)
+  [ 55/113] IMG_20260422_150156_org.png … [INFO] 12:29:07  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:29:43  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:29:43  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:29:43  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=41.2)
+  [ 56/113] IMG_20260422_150212.jpg … [INFO] 12:29:43  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:29:53  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:29:53  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:29:53  analysis.image_forensics_detect:1846  run_forensics: complete
+🟡 UNCERTAIN  (score=26.6)
+  [ 57/113] IMG_20260422_150212_org.bmp … [INFO] 12:29:53  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:30:00  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:30:00  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:30:00  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=36.5)
+  [ 58/113] IMG_20260422_150212_org.png … [INFO] 12:30:00  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:30:09  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:30:09  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:30:09  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=37.4)
+  [ 59/113] IMG_20260422_150242.jpg … [INFO] 12:30:09  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:30:20  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:30:20  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:30:20  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=30.5)
+  [ 60/113] IMG_20260422_150242_org.bmp … [INFO] 12:30:20  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:30:30  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:30:30  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:30:30  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=53.4)
+  [ 61/113] IMG_20260422_150242_org.png … [INFO] 12:30:30  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:30:40  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:30:40  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:30:40  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=53.4)
+  [ 62/113] IMG_20260422_150326.jpg … [INFO] 12:30:40  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:30:49  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:30:49  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:30:49  analysis.image_forensics_detect:1846  run_forensics: complete
+🟡 UNCERTAIN  (score=26.7)
+  [ 63/113] IMG_20260422_150326_org.bmp … [INFO] 12:30:49  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:30:56  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:30:56  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:30:56  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=53.1)
+  [ 64/113] IMG_20260422_150326_org.png … [INFO] 12:30:56  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 12:31:09  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 12:31:09  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 12:31:09  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=53.1)
+  [ 65/113] IMG_20260422_150405.jpg … [INFO] 12:31:09  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:22:50  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:22:50  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:22:50  analysis.image_forensics_detect:1846  run_forensics: complete
+🟡 UNCERTAIN  (score=20.2)
+  [ 66/113] IMG_20260422_150405_org.bmp … [INFO] 13:22:50  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:22:56  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:22:56  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:22:56  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=45.1)
+  [ 67/113] IMG_20260422_150405_org.png … [INFO] 13:22:56  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:23:04  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:23:04  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:23:04  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=45.1)
+  [ 68/113] IMG_20260422_150414.jpg … [INFO] 13:23:04  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:23:15  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:23:15  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:23:15  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=34.7)
+  [ 69/113] IMG_20260422_150414_org.bmp … [INFO] 13:23:15  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:23:25  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:23:25  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:23:25  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=61.0)
+  [ 70/113] IMG_20260422_150414_org.png … [INFO] 13:23:25  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:23:35  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:23:35  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:23:35  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=62.0)
+  [ 71/113] IMG_20260422_150450.jpg … [INFO] 13:23:35  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:23:42  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:23:42  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:23:42  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=36.2)
+  [ 72/113] IMG_20260422_150450_org.bmp … [INFO] 13:23:42  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:23:48  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:23:48  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:23:48  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=59.9)
+  [ 73/113] IMG_20260422_150450_org.png … [INFO] 13:23:48  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:23:55  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:23:55  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:23:55  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=59.9)
+  [ 74/113] IMG_20260422_150501.jpg … [INFO] 13:23:55  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:24:03  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:24:03  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:24:03  analysis.image_forensics_detect:1846  run_forensics: complete
+🟡 UNCERTAIN  (score=25.3)
+  [ 75/113] IMG_20260422_150501_org.bmp … [INFO] 13:24:03  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:24:09  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:24:09  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:24:09  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=52.1)
+  [ 76/113] IMG_20260422_150501_org.png … [INFO] 13:24:09  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:24:16  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:24:16  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:24:16  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=52.1)
+  [ 77/113] IMG_20260422_150553.jpg … [INFO] 13:24:16  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:24:25  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:24:25  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:24:25  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=43.7)
+  [ 78/113] IMG_20260422_150553_org.bmp … [INFO] 13:24:25  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:24:32  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:24:32  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:24:32  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=63.4)
+  [ 79/113] IMG_20260422_150553_org.png … [INFO] 13:24:32  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:24:39  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:24:39  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:24:39  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=63.4)
+  [ 80/113] IMG_20260422_150607.jpg … [INFO] 13:24:40  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:24:51  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:24:51  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:24:51  analysis.image_forensics_detect:1846  run_forensics: complete
+🟡 UNCERTAIN  (score=28.1)
+  [ 81/113] IMG_20260422_150607_org.bmp … [INFO] 13:24:51  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:25:01  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:25:01  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:25:01  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=48.6)
+  [ 82/113] IMG_20260422_150607_org.png … [INFO] 13:25:01  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:25:15  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:25:15  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:25:15  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=48.6)
+  [ 83/113] IMG_20260422_150641.jpg … [INFO] 13:25:15  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:25:26  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:25:26  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:25:26  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=32.7)
+  [ 84/113] IMG_20260422_150718.jpg … [INFO] 13:25:27  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:25:47  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:25:47  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:25:47  analysis.image_forensics_detect:1846  run_forensics: complete
+🟡 UNCERTAIN  (score=16.1)
+  [ 85/113] IMG_20260422_150718_org.bmp … [INFO] 13:25:47  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:26:00  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:26:00  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:26:00  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=31.6)
+  [ 86/113] IMG_20260422_150718_org.png … [INFO] 13:26:00  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:26:16  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:26:16  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:26:16  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=31.6)
+  [ 87/113] IMG_20260422_150745.jpg … [INFO] 13:26:16  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:26:36  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:26:36  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:26:36  analysis.image_forensics_detect:1846  run_forensics: complete
+🟢 ORIGINAL  (score=14.7)
+  [ 88/113] IMG_20260422_150745_org.bmp … [INFO] 13:26:36  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:26:51  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:26:51  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:26:51  analysis.image_forensics_detect:1846  run_forensics: complete
+🟡 UNCERTAIN  (score=24.9)
+  [ 89/113] IMG_20260422_150745_org.png … [INFO] 13:26:51  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:27:06  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:27:06  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:27:06  analysis.image_forensics_detect:1846  run_forensics: complete
+🟡 UNCERTAIN  (score=21.5)
+  [ 90/113] IMG_20260422_150811.jpg … [INFO] 13:27:06  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:27:33  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:27:33  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:27:33  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=33.9)
+  [ 91/113] IMG_20260422_150811_org.bmp … [INFO] 13:27:33  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:27:54  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:27:54  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:27:54  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=48.9)
+  [ 92/113] IMG_20260422_150811_org.png … [INFO] 13:27:54  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:28:11  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:28:11  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:28:11  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=48.9)
+  [ 93/113] IMG_20260422_151327.jpg … [INFO] 13:28:11  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:28:15  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:28:15  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:28:15  analysis.image_forensics_detect:1846  run_forensics: complete
+🟢 ORIGINAL  (score=10.0)
+  [ 94/113] IMG_20260422_151327_org.bmp … [INFO] 13:28:15  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:28:19  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:28:19  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:28:19  analysis.image_forensics_detect:1846  run_forensics: complete
+🟢 ORIGINAL  (score=13.1)
+  [ 95/113] IMG_20260422_151327_org.png … [INFO] 13:28:19  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:28:23  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:28:23  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:28:23  analysis.image_forensics_detect:1846  run_forensics: complete
+🟢 ORIGINAL  (score=9.7)
+  [ 96/113] IMG_20260422_151352.jpg … [INFO] 13:28:23  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:28:27  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:28:27  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:28:27  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=34.7)
+  [ 97/113] IMG_20260422_151352_org.bmp … [INFO] 13:28:27  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:28:31  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:28:31  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:28:31  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=49.3)
+  [ 98/113] IMG_20260422_151352_org.png … [INFO] 13:28:31  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:28:34  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:28:34  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:28:34  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=56.6)
+  [ 99/113] IMG_20260422_151357.jpg … [INFO] 13:28:34  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:28:39  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:28:39  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:28:39  analysis.image_forensics_detect:1846  run_forensics: complete
+🟡 UNCERTAIN  (score=21.6)
+  [100/113] IMG_20260422_151357_org.bmp … [INFO] 13:28:39  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:28:45  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:28:45  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:28:45  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=31.6)
+  [101/113] IMG_20260422_151357_org.png … [INFO] 13:28:45  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:28:53  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:28:53  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:28:53  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=31.6)
+  [102/113] IMG_20260422_151404.jpg … [INFO] 13:28:53  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:28:59  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:28:59  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:28:59  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=48.0)
+  [103/113] IMG_20260422_151404_org.bmp … [INFO] 13:28:59  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:29:03  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:29:03  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:29:03  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=46.6)
+  [104/113] IMG_20260422_151404_org.png … [INFO] 13:29:03  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:29:07  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:29:07  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:29:07  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=46.6)
+  [105/113] IMG_20260422_151411.jpg … [INFO] 13:29:07  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:29:12  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:29:12  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:29:12  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=31.7)
+  [106/113] IMG_20260422_151411_org.bmp … [INFO] 13:29:12  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:29:19  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:29:19  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:29:19  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=48.4)
+  [107/113] IMG_20260422_151411_org.png … [INFO] 13:29:19  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:29:28  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:29:28  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:29:28  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=41.8)
+  [108/113] IMG_20260422_151423.jpg … [INFO] 13:29:28  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:29:32  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:29:32  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:29:32  analysis.image_forensics_detect:1846  run_forensics: complete
+🟢 ORIGINAL  (score=9.7)
+  [109/113] IMG_20260422_151423_org.bmp … [INFO] 13:29:32  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:29:35  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:29:35  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:29:35  analysis.image_forensics_detect:1846  run_forensics: complete
+🟡 UNCERTAIN  (score=20.5)
+  [110/113] IMG_20260422_151423_org.png … [INFO] 13:29:35  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:29:38  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:29:38  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:29:38  analysis.image_forensics_detect:1846  run_forensics: complete
+🟡 UNCERTAIN  (score=19.6)
+  [111/113] IMG_20260422_151531.jpg … [INFO] 13:29:38  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:30:12  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:30:12  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:30:12  analysis.image_forensics_detect:1846  run_forensics: complete
+🟡 UNCERTAIN  (score=19.4)
+  [112/113] IMG_20260422_151531_org.bmp … [INFO] 13:30:12  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:30:30  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:30:30  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:30:30  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=38.7)
+  [113/113] IMG_20260422_151531_org.png … [INFO] 13:30:30  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:30:57  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:30:57  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:30:57  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=38.7)
+
+────────────────────────────────────────────────────────────
+  Done. 113 rows written, 0 failed.
+  CSV saved to: C:\Hrishikesh\BaseTruth\fraud_model\data\training_data_image.csv
+────────────────────────────────────────────────────────────
+
+
+[Step 2/6]  Collecting TAMPERED image features  (label = 1)
+------------------------------------------------
+  Folder  : C:\Hrishikesh\BaseTruth\fraud_model\sample\tampered
+  Images  : 179 found
+  Label   : 1  (tampered/forged)
+  Output  : C:\Hrishikesh\BaseTruth\fraud_model\data\training_data_image.csv  (append)
+
+────────────────────────────────────────────────────────────
+  Folder  : C:\Hrishikesh\BaseTruth\fraud_model\sample\tampered
+  Images  : 142 found
+  Label   : 1  (tampered/forged)
+  Output  : C:\Hrishikesh\BaseTruth\fraud_model\data\training_data_image.csv  (append)
+────────────────────────────────────────────────────────────
+
+  [  1/142] 2db7b028-f1b2-4e5c-83c6-b934ee19a248.jpg … [INFO] 13:30:57  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:30:59  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:30:59  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:30:59  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=92.8)
+  [  2/142] 2db7b028-f1b2-4e5c-83c6-b934ee19a248_dup.bmp … [INFO] 13:30:59  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:31:00  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:31:00  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:31:00  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=92.3)
+  [  3/142] 2db7b028-f1b2-4e5c-83c6-b934ee19a248_dup.png … [INFO] 13:31:00  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:31:01  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:31:01  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:31:01  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=92.3)
+  [  4/142] 8d659896-8e8f-4fa7-8363-669c251d6769.jpg … [INFO] 13:31:01  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:31:01  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:31:01  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:31:01  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=95.4)
+  [  5/142] 8d659896-8e8f-4fa7-8363-669c251d6769_dup.bmp … [INFO] 13:31:01  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:31:02  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:31:02  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:31:02  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=79.1)
+  [  6/142] 8d659896-8e8f-4fa7-8363-669c251d6769_dup.png … [INFO] 13:31:02  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:31:03  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:31:03  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:31:03  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=77.1)
+  [  7/142] cb891a0b-cc69-465f-be94-f366b85b33c0.jpg … [INFO] 13:31:03  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:31:03  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:31:03  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:31:03  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=98.6)
+  [  8/142] cb891a0b-cc69-465f-be94-f366b85b33c0_dup.bmp … [INFO] 13:31:03  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:31:04  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:31:04  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:31:04  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=94.4)
+  [  9/142] cb891a0b-cc69-465f-be94-f366b85b33c0_dup.png … [INFO] 13:31:04  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:31:04  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:31:04  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:31:04  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=94.5)
+  [ 10/142] IMG20221125181716.png … [INFO] 13:31:04  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:31:22  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:31:22  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:31:22  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=80.2)
+  [ 11/142] IMG20221125181716_dup.bmp … [INFO] 13:31:22  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:31:37  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:31:37  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:31:37  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=80.2)
+  [ 12/142] IMG20221125181716_dup.png … [INFO] 13:31:37  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:31:54  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:31:54  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:31:54  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=80.5)
+  [ 13/142] IMG20250407134458.jpg … [INFO] 13:31:54  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:32:07  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:32:07  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:32:07  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=54.0)
+  [ 14/142] IMG20250407134458_dup.bmp … [INFO] 13:32:07  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:32:22  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:32:22  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:32:22  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=76.8)
+  [ 15/142] IMG20250407134458_dup.png … [INFO] 13:32:22  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:32:37  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:32:37  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:32:37  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=72.2)
+  [ 16/142] IMG_20161101_131639.bmp … [INFO] 13:32:37  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:32:37  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:32:37  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:32:37  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=91.5)
+  [ 17/142] IMG_20161101_131639.jpg … [INFO] 13:32:37  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:32:38  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:32:38  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:32:38  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=97.1)
+  [ 18/142] IMG_20161101_131639.png … [INFO] 13:32:38  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:32:38  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:32:38  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:32:38  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=90.5)
+  [ 19/142] IMG_20240520_133353448.jpg … [INFO] 13:32:38  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:32:52  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:32:52  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:32:52  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=58.7)
+  [ 20/142] IMG_20240520_133353448_dup.bmp … [INFO] 13:32:52  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:33:02  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:33:02  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:33:02  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=77.5)
+  [ 21/142] IMG_20240520_133353448_dup.png … [INFO] 13:33:02  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:33:19  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:33:19  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:33:19  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=77.5)
+  [ 22/142] IMG_20251220_141012.png … [INFO] 13:33:19  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:33:37  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:33:37  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:33:37  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=71.6)
+  [ 23/142] IMG_20251220_141012_dup.bmp … [INFO] 13:33:37  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:33:49  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:33:49  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:33:49  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=72.1)
+  [ 24/142] IMG_20251220_141012_dup.png … [INFO] 13:33:49  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:34:04  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:34:04  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:34:04  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=69.8)
+  [ 25/142] IMG_20260422_145719.jpg … [INFO] 13:34:04  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:34:17  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:34:17  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:34:17  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=98.5)
+  [ 26/142] IMG_20260422_145719_dup.bmp … [INFO] 13:34:17  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:34:29  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:34:29  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:34:29  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=50.4)
+  [ 27/142] IMG_20260422_145719_dup.jpg … [INFO] 13:34:29  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:34:43  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:34:43  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:34:43  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=59.9)
+  [ 28/142] IMG_20260422_145719_dup.png … [INFO] 13:34:43  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:34:57  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:34:57  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:34:57  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=50.4)
+  [ 29/142] IMG_20260422_145755_dup.bmp … [INFO] 13:34:57  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:35:45  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:35:45  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:35:45  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=48.1)
+  [ 30/142] IMG_20260422_145755_dup.jpg … [INFO] 13:35:45  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:36:16  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:36:16  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:36:16  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=68.8)
+  [ 31/142] IMG_20260422_145755_dup.png … [INFO] 13:36:16  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:36:46  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:36:46  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:36:46  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=48.1)
+  [ 32/142] IMG_20260422_145756.jpg … [INFO] 13:36:46  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:37:15  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:37:15  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:37:15  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=98.8)
+  [ 33/142] IMG_20260422_145756_dup.jpg … [INFO] 13:37:15  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:37:46  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:37:46  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:37:46  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=74.0)
+  [ 34/142] IMG_20260422_145846.jpg … [INFO] 13:37:46  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:37:57  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:37:57  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:37:58  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=99.0)
+  [ 35/142] IMG_20260422_145846_dup.bmp … [INFO] 13:37:58  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:38:06  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:38:06  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:38:06  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=53.4)
+  [ 36/142] IMG_20260422_145846_dup.jpg … [INFO] 13:38:06  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:38:16  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:38:16  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:38:16  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=63.8)
+  [ 37/142] IMG_20260422_145846_dup.png … [INFO] 13:38:16  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:38:26  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:38:26  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:38:26  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=53.4)
+  [ 38/142] IMG_20260422_145912.jpg … [INFO] 13:38:26  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:38:39  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:38:39  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:38:39  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=99.2)
+  [ 39/142] IMG_20260422_145912_dup.bmp … [INFO] 13:38:39  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:38:52  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:38:52  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:38:52  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=50.6)
+  [ 40/142] IMG_20260422_145912_dup.jpg … [INFO] 13:38:52  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:39:09  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:39:09  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:39:09  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=61.2)
+  [ 41/142] IMG_20260422_145912_dup.png … [INFO] 13:39:09  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:39:23  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:39:23  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:39:23  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=44.5)
+  [ 42/142] IMG_20260422_145942.jpg … [INFO] 13:39:23  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:39:32  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:39:32  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:39:32  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=98.3)
+  [ 43/142] IMG_20260422_145942_dup.bmp … [INFO] 13:39:32  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:39:39  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:39:39  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:39:39  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=73.3)
+  [ 44/142] IMG_20260422_145942_dup.jpg … [INFO] 13:39:39  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:39:49  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:39:49  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:39:49  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=77.2)
+  [ 45/142] IMG_20260422_145942_dup.png … [INFO] 13:39:49  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:39:57  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:39:57  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:39:57  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=73.3)
+  [ 46/142] IMG_20260422_150011.jpg … [INFO] 13:39:57  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:40:10  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:40:10  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:40:10  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=97.3)
+  [ 47/142] IMG_20260422_150011_dup.bmp … [INFO] 13:40:10  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:40:20  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:40:20  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:40:20  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=59.0)
+  [ 48/142] IMG_20260422_150011_dup.jpg … [INFO] 13:40:20  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:40:31  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:40:31  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:40:31  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=65.3)
+  [ 49/142] IMG_20260422_150011_dup.png … [INFO] 13:40:31  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:40:43  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:40:43  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:40:43  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=59.0)
+  [ 50/142] IMG_20260422_150036.jpg … [INFO] 13:40:43  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:40:58  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:40:58  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:40:58  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=87.1)
+  [ 51/142] IMG_20260422_150036_dup.bmp … [INFO] 13:40:58  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:41:09  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:41:09  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:41:09  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=63.7)
+  [ 52/142] IMG_20260422_150036_dup.jpg … [INFO] 13:41:09  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:41:20  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:41:20  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:41:20  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=55.3)
+  [ 53/142] IMG_20260422_150036_dup.png … [INFO] 13:41:20  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:41:33  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:41:33  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:41:33  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=63.7)
+  [ 54/142] IMG_20260422_150105.jpg … [INFO] 13:41:33  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:41:46  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:41:46  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:41:46  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=97.2)
+  [ 55/142] IMG_20260422_150105_dup.bmp … [INFO] 13:41:46  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:41:56  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:41:56  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:41:56  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=68.5)
+  [ 56/142] IMG_20260422_150105_dup.jpg … [INFO] 13:41:56  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:42:10  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:42:10  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:42:10  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=59.9)
+  [ 57/142] IMG_20260422_150105_dup.png … [INFO] 13:42:10  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:42:21  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:42:21  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:42:21  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=68.5)
+  [ 58/142] IMG_20260422_150127.jpg … [INFO] 13:42:21  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:43:11  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:43:11  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:43:11  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=97.3)
+  [ 59/142] IMG_20260422_150127_dup.bmp … [INFO] 13:43:11  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:43:54  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:43:54  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:43:54  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=61.2)
+  [ 60/142] IMG_20260422_150127_dup.jpg … [INFO] 13:43:54  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:44:25  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:44:25  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:44:25  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=77.9)
+  [ 61/142] IMG_20260422_150127_dup.png … [INFO] 13:44:25  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:45:12  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:45:12  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:45:12  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=61.2)
+  [ 62/142] IMG_20260422_150156.jpg … [INFO] 13:45:12  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:46:28  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:46:28  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:46:28  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=96.8)
+  [ 63/142] IMG_20260422_150156_dup.bmp … [INFO] 13:46:28  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:47:41  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:47:41  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:47:41  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=64.7)
+  [ 64/142] IMG_20260422_150156_dup.jpg … [INFO] 13:47:41  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:49:03  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:49:03  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:49:03  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=91.2)
+  [ 65/142] IMG_20260422_150156_dup.png … [INFO] 13:49:03  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:50:24  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:50:24  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:50:24  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=64.7)
+  [ 66/142] IMG_20260422_150212.jpg … [INFO] 13:50:24  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:50:41  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:50:41  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:50:41  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=96.1)
+  [ 67/142] IMG_20260422_150212_dup.bmp … [INFO] 13:50:41  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:50:49  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:50:49  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:50:49  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=53.4)
+  [ 68/142] IMG_20260422_150212_dup.jpg … [INFO] 13:50:49  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:50:58  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:50:58  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:50:58  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=70.8)
+  [ 69/142] IMG_20260422_150212_dup.png … [INFO] 13:50:58  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:51:07  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:51:07  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:51:07  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=53.4)
+  [ 70/142] IMG_20260422_150242.jpg … [INFO] 13:51:07  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:51:18  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:51:18  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:51:18  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=98.5)
+  [ 71/142] IMG_20260422_150242_dup.bmp … [INFO] 13:51:18  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:51:27  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:51:27  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:51:27  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=56.4)
+  [ 72/142] IMG_20260422_150242_dup.jpg … [INFO] 13:51:27  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:51:38  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:51:38  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:51:38  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=74.8)
+  [ 73/142] IMG_20260422_150242_dup.png … [INFO] 13:51:38  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:51:50  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:51:50  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:51:50  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=63.6)
+  [ 74/142] IMG_20260422_150326.jpg … [INFO] 13:51:50  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:52:01  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:52:01  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:52:01  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=63.0)
+  [ 75/142] IMG_20260422_150326_dup.bmp … [INFO] 13:52:01  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:52:09  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:52:09  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:52:09  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=45.0)
+  [ 76/142] IMG_20260422_150326_dup.jpg … [INFO] 13:52:09  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:52:19  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:52:19  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:52:19  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=99.3)
+  [ 77/142] IMG_20260422_150326_dup.png … [INFO] 13:52:19  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:52:28  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:52:28  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:52:28  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=45.0)
+  [ 78/142] IMG_20260422_150405.jpg … [INFO] 13:52:28  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:52:38  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:52:38  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:52:38  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=82.8)
+  [ 79/142] IMG_20260422_150405_dup.bmp … [INFO] 13:52:38  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:52:46  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:52:46  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:52:46  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=74.8)
+  [ 80/142] IMG_20260422_150405_dup.jpg … [INFO] 13:52:46  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:52:57  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:52:57  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:52:57  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=98.7)
+  [ 81/142] IMG_20260422_150405_dup.png … [INFO] 13:52:57  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:53:06  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:53:06  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:53:06  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=74.8)
+  [ 82/142] IMG_20260422_150414.jpg … [INFO] 13:53:06  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:53:17  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:53:17  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:53:17  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=38.1)
+  [ 83/142] IMG_20260422_150414_dup.bmp … [INFO] 13:53:17  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:53:27  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:53:27  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:53:27  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=64.7)
+  [ 84/142] IMG_20260422_150414_dup.jpg … [INFO] 13:53:27  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:53:39  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:53:39  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:53:39  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=98.4)
+  [ 85/142] IMG_20260422_150414_dup.png … [INFO] 13:53:39  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:53:50  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:53:50  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:53:50  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=64.7)
+  [ 86/142] IMG_20260422_150450.jpg … [INFO] 13:53:50  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:53:59  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:53:59  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:53:59  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=83.6)
+  [ 87/142] IMG_20260422_150450_dup.bmp … [INFO] 13:53:59  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:54:06  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:54:06  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:54:06  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=57.3)
+  [ 88/142] IMG_20260422_150450_dup.jpg … [INFO] 13:54:06  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:54:15  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:54:15  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:54:15  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=97.2)
+  [ 89/142] IMG_20260422_150450_dup.png … [INFO] 13:54:15  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:54:24  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:54:24  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:54:24  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=57.3)
+  [ 90/142] IMG_20260422_150501-dup.jpg … [INFO] 13:54:24  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:54:33  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:54:33  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:54:33  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=98.1)
+  [ 91/142] IMG_20260422_150501.jpg … [INFO] 13:54:33  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:54:42  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:54:42  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:54:42  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=78.7)
+  [ 92/142] IMG_20260422_150501_dup.bmp … [INFO] 13:54:42  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:54:49  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:54:49  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:54:49  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=65.2)
+  [ 93/142] IMG_20260422_150501_dup.png … [INFO] 13:54:49  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:54:57  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:54:57  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:54:57  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=65.2)
+  [ 94/142] IMG_20260422_150553-dup.bmp … [INFO] 13:54:57  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:55:07  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:55:07  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:55:07  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=68.3)
+  [ 95/142] IMG_20260422_150553-dup.jpg … [INFO] 13:55:07  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:55:16  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:55:16  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:55:16  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=97.7)
+  [ 96/142] IMG_20260422_150553-dup.png … [INFO] 13:55:16  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:55:25  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:55:25  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:55:25  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=68.3)
+  [ 97/142] IMG_20260422_150553.jpg … [INFO] 13:55:25  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:55:35  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:55:35  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:55:35  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=95.8)
+  [ 98/142] IMG_20260422_150607.jpg … [INFO] 13:55:35  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:55:50  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:55:50  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:55:50  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=81.8)
+  [ 99/142] IMG_20260422_150607_dup.bmp … [INFO] 13:55:50  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:56:00  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:56:00  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:56:00  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=53.4)
+  [100/142] IMG_20260422_150607_dup.jpg … [INFO] 13:56:00  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:56:13  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:56:13  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:56:13  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=95.3)
+  [101/142] IMG_20260422_150607_dup.png … [INFO] 13:56:13  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:56:25  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:56:25  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:56:25  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=53.4)
+  [102/142] IMG_20260422_150641.jpg … [INFO] 13:56:25  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:56:34  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:56:34  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:56:34  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=97.9)
+  [103/142] IMG_20260422_150718.jpg … [INFO] 13:56:34  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:56:44  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:56:44  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:56:44  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=96.8)
+  [104/142] IMG_20260422_150718_dup.bmp … [INFO] 13:56:44  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:56:51  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:56:51  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:56:51  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=60.9)
+  [105/142] IMG_20260422_150718_dup.jpg … [INFO] 13:56:51  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:57:01  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:57:01  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:57:01  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=69.7)
+  [106/142] IMG_20260422_150718_dup.png … [INFO] 13:57:01  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:57:10  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:57:10  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:57:10  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=60.9)
+  [107/142] IMG_20260422_150745.jpg … [INFO] 13:57:10  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:57:19  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:57:19  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:57:19  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=78.6)
+  [108/142] IMG_20260422_150745_dup.bmp … [INFO] 13:57:19  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:57:25  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:57:25  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:57:25  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=58.0)
+  [109/142] IMG_20260422_150745_dup.jpg … [INFO] 13:57:25  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:57:35  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:57:35  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:57:35  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=97.6)
+  [110/142] IMG_20260422_150745_dup.png … [INFO] 13:57:35  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:57:44  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:57:44  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:57:44  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=58.0)
+  [111/142] IMG_20260422_150811.jpg … [INFO] 13:57:44  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:57:56  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:57:56  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:57:56  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=92.1)
+  [112/142] IMG_20260422_150811_dup.bmp … [INFO] 13:57:56  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:58:06  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:58:06  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:58:06  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=68.4)
+  [113/142] IMG_20260422_150811_dup.jpg … [INFO] 13:58:06  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:58:18  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:58:18  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:58:18  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=99.3)
+  [114/142] IMG_20260422_150811_dup.png … [INFO] 13:58:18  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:58:30  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:58:30  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:58:30  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=68.4)
+  [115/142] IMG_20260422_151327.jpg … [INFO] 13:58:30  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:58:35  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:58:35  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:58:35  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=58.6)
+  [116/142] IMG_20260422_151327_dup.bmp … [INFO] 13:58:35  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:58:40  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:58:40  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:58:40  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=64.4)
+  [117/142] IMG_20260422_151327_dup.jpg … [INFO] 13:58:40  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:58:46  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:58:46  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:58:46  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=54.7)
+  [118/142] IMG_20260422_151327_dup.png … [INFO] 13:58:46  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:58:51  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:58:51  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:58:51  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=58.0)
+  [119/142] IMG_20260422_151352.jpg … [INFO] 13:58:51  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:58:55  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:58:55  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:58:55  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=98.8)
+  [120/142] IMG_20260422_151352_dup.bmp … [INFO] 13:58:55  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:58:58  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:58:58  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:58:58  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=62.7)
+  [121/142] IMG_20260422_151352_dup.jpg … [INFO] 13:58:58  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:59:02  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:59:02  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:59:02  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=69.0)
+  [122/142] IMG_20260422_151352_dup.png … [INFO] 13:59:02  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:59:06  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:59:06  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:59:06  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=69.2)
+  [123/142] IMG_20260422_151357.jpg … [INFO] 13:59:06  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:59:10  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:59:10  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:59:10  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=98.7)
+  [124/142] IMG_20260422_151357_dup.bmp … [INFO] 13:59:10  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:59:13  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:59:13  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:59:13  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=69.4)
+  [125/142] IMG_20260422_151357_dup.JPG … [INFO] 13:59:13  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:59:18  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:59:18  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:59:18  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=91.1)
+  [126/142] IMG_20260422_151357_dup.png … [INFO] 13:59:18  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:59:22  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:59:22  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:59:22  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=69.4)
+  [127/142] IMG_20260422_151404.jpg … [INFO] 13:59:22  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:59:26  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:59:26  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:59:26  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=98.2)
+  [128/142] IMG_20260422_151404_dup.bmp … [INFO] 13:59:26  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:59:30  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:59:30  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:59:30  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=68.5)
+  [129/142] IMG_20260422_151404_dup.jpg … [INFO] 13:59:30  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:59:34  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:59:34  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:59:34  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=60.9)
+  [130/142] IMG_20260422_151404_dup.png … [INFO] 13:59:34  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:59:38  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:59:38  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:59:38  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=68.5)
+  [131/142] IMG_20260422_151411.jpg … [INFO] 13:59:38  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:59:43  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:59:43  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:59:43  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=98.0)
+  [132/142] IMG_20260422_151411_dup.bmp … [INFO] 13:59:43  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:59:46  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:59:46  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:59:47  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=57.0)
+  [133/142] IMG_20260422_151411_dup.jpg … [INFO] 13:59:47  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:59:51  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:59:51  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:59:51  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=40.9)
+  [134/142] IMG_20260422_151411_dup.png … [INFO] 13:59:52  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 13:59:56  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 13:59:56  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 13:59:56  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 LIKELY TAMPERED  (score=50.4)
+  [135/142] IMG_20260422_151423.jpg … [INFO] 13:59:57  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 14:00:00  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 14:00:00  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 14:00:00  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=97.5)
+  [136/142] IMG_20260422_151423_dup.bmp … [INFO] 14:00:00  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 14:00:03  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 14:00:03  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 14:00:03  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=76.3)
+  [137/142] IMG_20260422_151423_dup.JPG … [INFO] 14:00:03  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 14:00:07  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 14:00:07  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 14:00:07  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=76.3)
+  [138/142] IMG_20260422_151423_dup.png … [INFO] 14:00:07  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 14:00:11  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 14:00:11  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 14:00:11  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=77.1)
+  [139/142] IMG_20260422_151531.jpg … [INFO] 14:00:11  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 14:00:35  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 14:00:36  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 14:00:36  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=95.3)
+  [140/142] IMG_20260422_151531_dup.bmp … [INFO] 14:00:36  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 14:00:54  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 14:00:54  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 14:00:54  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=65.5)
+  [141/142] IMG_20260422_151531_dup.jpg … [INFO] 14:00:54  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 14:01:14  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 14:01:14  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 14:01:14  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=85.8)
+  [142/142] IMG_20260422_151531_dup.png … [INFO] 14:01:14  analysis.image_forensics_detect:1803  run_forensics: starting analysis
+[INFO] 14:01:36  analysis.ml_scorer:249  ml_scorer: XGBoost prediction complete
+[INFO] 14:01:36  analysis.image_forensics_detect:1105  image_forensics_detect: scoring_method=ML (XGBoost)
+[INFO] 14:01:36  analysis.image_forensics_detect:1846  run_forensics: complete
+🔴 TAMPERED  (score=65.5)
+
+────────────────────────────────────────────────────────────
+  Done. 142 rows written, 0 failed.
+  CSV saved to: C:\Hrishikesh\BaseTruth\fraud_model\data\training_data_image.csv
+────────────────────────────────────────────────────────────
+
+
+[Step 3/6]  Collecting ORIGINAL PDF features    (label = 0)
+------------------------------------------------
+  Folder  : C:\Hrishikesh\BaseTruth\fraud_model\sample\original_pdfs
+  PDFs    : 33 found
+  Label   : 0  (original/clean)
+  Output  : C:\Hrishikesh\BaseTruth\fraud_model\data\training_data_pdf.csv  (create new)
+
+────────────────────────────────────────────────────────────
+  Folder  : C:\Hrishikesh\BaseTruth\fraud_model\sample\original_pdfs
+  PDFs    : 33 found
+  Label   : 0  (original/clean)
+  Output  : C:\Hrishikesh\BaseTruth\fraud_model\data\training_data_pdf.csv  (create new)
+────────────────────────────────────────────────────────────
+
+  [  1/33] 114266-Mastercard-Experience.pdf … [INFO] 14:01:37  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:01:38  analysis.ml_scorer_pdf:240  ml_scorer_pdf: XGBoost PDF model loaded successfully
+[INFO] 14:01:38  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:01:38  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:01:38  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟡 UNCERTAIN  (score=15.3)
+  [  2/33] 20099939-ECard.pdf … [INFO] 14:01:38  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:01:39  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:01:39  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:01:39  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟢 ORIGINAL  (score=11.9)
+  [  3/33] 20099939-Wipro-Experience.pdf … [INFO] 14:01:39  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:01:40  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:01:40  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:01:40  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟢 ORIGINAL  (score=13.8)
+  [  4/33] 212608633-GE-Experience.pdf … [INFO] 14:01:40  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:01:41  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:01:41  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:01:41  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟢 ORIGINAL  (score=8.6)
+  [  5/33] 212608633_65_2017-2018.pdf … [INFO] 14:01:41  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:01:42  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:01:42  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:01:42  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟢 ORIGINAL  (score=10.9)
+  [  6/33] 212608633_65_2018-2019.pdf … [INFO] 14:01:42  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:01:43  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:01:43  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:01:43  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟢 ORIGINAL  (score=4.3)
+  [  7/33] 3126014-CMC-Experience.pdf … [INFO] 14:01:43  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:01:44  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:01:44  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:01:44  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟢 ORIGINAL  (score=6.0)
+  [  8/33] 3682612-CMC-Contract-Experience.pdf … [INFO] 14:01:44  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:01:45  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:01:45  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:01:45  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟢 ORIGINAL  (score=6.4)
+  [  9/33] 508961.pdf … [INFO] 14:01:45  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:01:46  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:01:46  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:01:46  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟢 ORIGINAL  (score=9.9)
+  [ 10/33] 508963.pdf … [INFO] 14:01:46  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:01:47  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:01:47  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:01:47  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟢 ORIGINAL  (score=9.5)
+  [ 11/33] 678217-iGATE-Experience.pdf … [INFO] 14:01:47  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:01:48  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:01:48  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:01:48  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟢 ORIGINAL  (score=1.0)
+  [ 12/33] April-2019-GE-Salary-Slip.pdf … [INFO] 14:01:48  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:01:48  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:01:48  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:01:48  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟢 ORIGINAL  (score=6.0)
+  [ 13/33] Bank_Statement.pdf … [INFO] 14:01:49  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:01:50  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:01:50  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:01:50  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟢 ORIGINAL  (score=4.6)
+  [ 14/33] Deutsche_Offer_Letter.pdf … [INFO] 14:01:50  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:01:51  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:01:51  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:01:51  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟢 ORIGINAL  (score=5.9)
+  [ 15/33] Feb-2019-GE-Salary-Slip.pdf … [INFO] 14:01:51  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:01:52  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:01:52  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:01:52  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟢 ORIGINAL  (score=9.7)
+  [ 16/33] GE-Experience-Letter.pdf … [INFO] 14:01:52  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:01:52  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:01:52  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:01:52  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟢 ORIGINAL  (score=8.6)
+  [ 17/33] GE-Releiving-Letter.pdf … [INFO] 14:01:52  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:01:53  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:01:53  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:01:53  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 LIKELY TAMPERED  (score=36.1)
+  [ 18/33] Hrishikesh_Maluskar_Payslip_December_2019_unlocked.pdf … [INFO] 14:01:53  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:01:53  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:01:53  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:01:53  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟢 ORIGINAL  (score=10.5)
+  [ 19/33] Hrishikesh_Maluskar_Payslip_November_2019_unlocked.pdf … [INFO] 14:01:53  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:01:54  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:01:54  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:01:54  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟢 ORIGINAL  (score=10.4)
+  [ 20/33] Hrishikesh_Maluskar_Payslip_October_2019_unlocked.pdf … [INFO] 14:01:54  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:01:55  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:01:55  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:01:55  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟢 ORIGINAL  (score=4.1)
+  [ 21/33] iGATE-Patni_Offer_Letter.pdf … [INFO] 14:01:55  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:01:55  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:01:55  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:01:55  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟡 UNCERTAIN  (score=16.1)
+  [ 22/33] Intellect_Offer_Letter.pdf … [INFO] 14:01:55  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:01:56  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:01:56  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:01:56  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟢 ORIGINAL  (score=14.5)
+  [ 23/33] Invoice_168804260.pdf … [INFO] 14:01:56  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:01:57  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:01:57  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:01:57  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟢 ORIGINAL  (score=14.7)
+  [ 24/33] Jan-2019-GE-Salary-Slip.pdf … [INFO] 14:01:57  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:01:58  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:01:58  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:01:58  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟢 ORIGINAL  (score=9.7)
+  [ 25/33] L8F-Intellect-Experience.pdf … [INFO] 14:01:58  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:01:59  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:01:59  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:01:59  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟢 ORIGINAL  (score=3.2)
+  [ 26/33] March-2019-GE-Salary-Slip.pdf … [INFO] 14:01:59  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:00  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:00  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:00  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟢 ORIGINAL  (score=10.0)
+  [ 27/33] Mastercard-Appraisal-Letter.pdf … [INFO] 14:02:00  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:01  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:01  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:01  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 LIKELY TAMPERED  (score=51.8)
+  [ 28/33] Mastercard_Offer_Letter.pdf … [INFO] 14:02:01  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:01  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:01  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:01  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟢 ORIGINAL  (score=4.7)
+  [ 29/33] May-2019-GE-Salary-Slip.pdf … [INFO] 14:02:01  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:02  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:02  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:02  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟢 ORIGINAL  (score=6.5)
+  [ 30/33] Moder_Offer_Letter.pdf … [INFO] 14:02:02  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+MuPDF error: format error: No common ancestor in structure tree
+
+[INFO] 14:02:03  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:03  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:03  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟡 UNCERTAIN  (score=16.9)
+  [ 31/33] Payslip April 2023_unlocked.pdf … [INFO] 14:02:03  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:04  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:04  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:04  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟡 UNCERTAIN  (score=16.3)
+  [ 32/33] Payslip-Dec-2022_unlocked.pdf … [INFO] 14:02:04  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:04  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:04  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:04  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟢 ORIGINAL  (score=14.8)
+  [ 33/33] Wipro_Offer_Letter.pdf … [INFO] 14:02:04  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:05  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:05  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:05  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟡 UNCERTAIN  (score=15.1)
+
+────────────────────────────────────────────────────────────
+  Done. 33 rows written, 0 failed.
+  CSV saved to: C:\Hrishikesh\BaseTruth\fraud_model\data\training_data_pdf.csv
+────────────────────────────────────────────────────────────
+
+
+[Step 4/6]  Collecting TAMPERED PDF features    (label = 1)
+------------------------------------------------
+  Folder  : C:\Hrishikesh\BaseTruth\fraud_model\sample\tampered_pdfs
+  PDFs    : 34 found
+  Label   : 1  (tampered/forged)
+  Output  : C:\Hrishikesh\BaseTruth\fraud_model\data\training_data_pdf.csv  (append)
+
+────────────────────────────────────────────────────────────
+  Folder  : C:\Hrishikesh\BaseTruth\fraud_model\sample\tampered_pdfs
+  PDFs    : 34 found
+  Label   : 1  (tampered/forged)
+  Output  : C:\Hrishikesh\BaseTruth\fraud_model\data\training_data_pdf.csv  (append)
+────────────────────────────────────────────────────────────
+
+  [  1/34] 114266-Mastercard-Experience-01.pdf … [INFO] 14:02:05  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:06  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:06  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:06  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 TAMPERED  (score=98.1)
+  [  2/34] 114266-Mastercard-Experience.pdf … [INFO] 14:02:06  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:06  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:06  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:06  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 TAMPERED  (score=80.6)
+  [  3/34] 20099939-ECard.pdf … [INFO] 14:02:06  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:07  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:07  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:07  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 TAMPERED  (score=92.3)
+  [  4/34] 20099939-Wipro-Experience.pdf … [INFO] 14:02:07  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:08  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:08  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:08  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 TAMPERED  (score=90.6)
+  [  5/34] 212608633-GE-Experience.pdf … [INFO] 14:02:08  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:08  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:08  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:08  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 TAMPERED  (score=84.0)
+  [  6/34] 212608633_65_2017-2018.pdf … [INFO] 14:02:08  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:09  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:09  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:09  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 TAMPERED  (score=94.4)
+  [  7/34] 212608633_65_2018-2019.pdf … [INFO] 14:02:09  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:10  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:10  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:10  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 TAMPERED  (score=81.8)
+  [  8/34] 3126014-CMC-Experience.pdf … [INFO] 14:02:10  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:12  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:12  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:12  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟢 ORIGINAL  (score=6.0)
+  [  9/34] 3682612-CMC-Contract-Experience.pdf … [INFO] 14:02:12  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:13  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:13  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:13  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟢 ORIGINAL  (score=6.4)
+  [ 10/34] 508961.pdf … [INFO] 14:02:13  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:14  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:14  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:14  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 TAMPERED  (score=94.0)
+  [ 11/34] 508963.pdf … [INFO] 14:02:14  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:14  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:14  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:14  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 TAMPERED  (score=93.7)
+  [ 12/34] 678217-iGATE-Experience.pdf … [INFO] 14:02:14  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:15  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:15  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:15  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🟢 ORIGINAL  (score=6.1)
+  [ 13/34] April-2019-GE-Salary-Slip.pdf … [INFO] 14:02:15  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:16  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:16  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:16  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 TAMPERED  (score=87.7)
+  [ 14/34] Bank_Statement.pdf … [INFO] 14:02:16  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:17  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:17  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:17  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 TAMPERED  (score=81.4)
+  [ 15/34] Deutsche_Offer_Letter.pdf … [INFO] 14:02:17  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:18  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:18  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:18  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 TAMPERED  (score=90.1)
+  [ 16/34] Feb-2019-GE-Salary-Slip.pdf … [INFO] 14:02:18  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:19  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:19  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:19  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 TAMPERED  (score=90.7)
+  [ 17/34] GE-Experience-Letter.pdf … [INFO] 14:02:19  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:20  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:20  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:20  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 TAMPERED  (score=83.9)
+  [ 18/34] GE-Releiving-Letter.pdf … [INFO] 14:02:20  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:20  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:20  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:20  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 TAMPERED  (score=72.4)
+  [ 19/34] Hrishikesh_Maluskar_Payslip_December_2019_unlocked.pdf … [INFO] 14:02:20  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:21  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:21  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:21  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 TAMPERED  (score=97.8)
+  [ 20/34] Hrishikesh_Maluskar_Payslip_November_2019_unlocked.pdf … [INFO] 14:02:21  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:22  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:22  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:22  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 TAMPERED  (score=97.5)
+  [ 21/34] Hrishikesh_Maluskar_Payslip_October_2019_unlocked.pdf … [INFO] 14:02:22  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:22  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:22  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:22  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 TAMPERED  (score=93.4)
+  [ 22/34] iGATE-Patni_Offer_Letter.pdf … [INFO] 14:02:22  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:23  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:23  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:23  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 TAMPERED  (score=90.1)
+  [ 23/34] Intellect_Offer_Letter.pdf … [INFO] 14:02:23  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:24  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:24  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:24  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 TAMPERED  (score=83.5)
+  [ 24/34] Invoice_168804260.pdf … [INFO] 14:02:24  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:24  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:24  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:24  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 TAMPERED  (score=95.1)
+  [ 25/34] Jan-2019-GE-Salary-Slip.pdf … [INFO] 14:02:24  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:25  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:25  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:25  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 TAMPERED  (score=93.4)
+  [ 26/34] L8F-Intellect-Experience.pdf … [INFO] 14:02:25  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:27  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:27  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:27  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 LIKELY TAMPERED  (score=50.9)
+  [ 27/34] March-2019-GE-Salary-Slip.pdf … [INFO] 14:02:27  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:27  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:27  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:27  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 TAMPERED  (score=93.7)
+  [ 28/34] Mastercard-Appraisal-Letter.pdf … [INFO] 14:02:27  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:28  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:28  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:28  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 TAMPERED  (score=97.0)
+  [ 29/34] Mastercard_Offer_Letter.pdf … [INFO] 14:02:28  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:29  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:29  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:29  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 TAMPERED  (score=91.9)
+  [ 30/34] May-2019-GE-Salary-Slip.pdf … [INFO] 14:02:29  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:30  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:30  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:30  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 TAMPERED  (score=90.9)
+  [ 31/34] Moder_Offer_Letter.pdf … [INFO] 14:02:30  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+MuPDF error: format error: No common ancestor in structure tree
+
+[INFO] 14:02:31  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:31  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:31  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 TAMPERED  (score=91.9)
+  [ 32/34] Payslip April 2023_unlocked.pdf … [INFO] 14:02:31  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:31  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:31  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:31  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 TAMPERED  (score=94.7)
+  [ 33/34] Payslip-Dec-2022_unlocked.pdf … [INFO] 14:02:31  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:32  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:32  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:32  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 TAMPERED  (score=94.2)
+  [ 34/34] Wipro_Offer_Letter.pdf … [INFO] 14:02:32  analysis.pdf_forensics_detect:1543  run_pdf_forensics: starting
+[INFO] 14:02:33  analysis.ml_scorer_pdf:275  ml_scorer_pdf: XGBoost PDF prediction complete
+[INFO] 14:02:33  analysis.pdf_forensics_detect:1967  run_pdf_forensics: scoring_method=ML (XGBoost)
+[INFO] 14:02:33  analysis.pdf_forensics_detect:1980  run_pdf_forensics: complete
+🔴 TAMPERED  (score=97.1)
+
+────────────────────────────────────────────────────────────
+  Done. 34 rows written, 0 failed.
+  CSV saved to: C:\Hrishikesh\BaseTruth\fraud_model\data\training_data_pdf.csv
+────────────────────────────────────────────────────────────
+
+
+[Step 5/6]  Training XGBoost Image Fraud Classifier
+------------------------------------------------
+  ✔  Real image CSV    : training_data_image.csv
+
+  Training XGBoost image scorer …
+[INFO] 14:02:33  analysis.ml_scorer:378  ml_scorer: training on combined dataset
+[INFO] 14:02:34  analysis.ml_scorer:430  ml_scorer: cross-validation results
+[INFO] 14:02:34  analysis.ml_scorer:487  ml_scorer: model saved
+
+  ─────────────────────────────────────────────
+  Image Scorer — Training Results
+  ─────────────────────────────────────────────
+  Rows trained  : 281
+  Accuracy (CV) : 0.8898
+  F1 Score (CV) : 0.9067
+  ROC AUC  (CV) : 0.9128
+
+  Feature Importances (top 5):
+    font_inconsistency             0.3699  ██████████████
+    metadata_flag_count            0.2004  ████████
+    dct_score                      0.1076  ████
+    ela_score                      0.0716  ██
+    signature_mismatch             0.0680  ██
+  ✔  Model saved → C:\Hrishikesh\BaseTruth\fraud_model\models\ml_scorer_image.pkl
+
+[Step 6/6]  Training XGBoost PDF Fraud Classifier
+------------------------------------------------
+  ✔  Real PDF CSV      : training_data_pdf.csv
+
+  Training XGBoost PDF scorer …
+[INFO] 14:02:35  analysis.ml_scorer_pdf:442  ml_scorer_pdf: training on combined dataset
+[INFO] 14:02:36  analysis.ml_scorer_pdf:496  ml_scorer_pdf: cross-validation results
+[INFO] 14:02:36  analysis.ml_scorer_pdf:560  ml_scorer_pdf: model saved
+
+  ─────────────────────────────────────────────
+  PDF Scorer — Training Results
+  ─────────────────────────────────────────────
+  Rows trained  : 67
+  Accuracy (CV) : 0.7615
+  F1 Score (CV) : 0.7435
+  ROC AUC  (CV) : 0.8126
+
+  Feature Importances (top 5):
+    javascript_count               0.2675  ██████████
+    white_text_spans               0.2314  █████████
+    metadata_anomaly_score         0.1537  ██████
+    hidden_text_spans              0.1280  █████
+    render_ela_suspicious_block_ratio 0.0437  █
+  ✔  Model saved → C:\Hrishikesh\BaseTruth\fraud_model\models\ml_scorer_pdf.pkl
+
+================================================================
+  Pipeline Complete
+================================================================
+  Finished  : 2026-04-25 19:32:36
+  Elapsed   : 108.2 minutes
+
+  All steps completed successfully.
+
+  Image model : C:\Hrishikesh\BaseTruth\fraud_model\models\ml_scorer_image.pkl
+  PDF model   : C:\Hrishikesh\BaseTruth\fraud_model\models\ml_scorer_pdf.pkl
+
+================================================================
+  SUCCESS — All models trained and saved
+================================================================
+
+----------------------------------------------------------------
+  Pipeline finished successfully.
+  Press ENTER to close this window …

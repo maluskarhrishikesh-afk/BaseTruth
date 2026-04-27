@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import streamlit as st
 
@@ -19,10 +20,23 @@ from basetruth.ui.components import (
     minio_truncate_bucket,
     reset_db,
     truncate_table,
+    db_viewer_get_row,
+    db_viewer_fk_options,
+    db_viewer_create_row,
+    db_viewer_update_row,
+    db_viewer_delete_row,
 )
 from basetruth.logger import get_logger
 
 log = get_logger(__name__)
+
+# Table metadata that drives form generation — imported from store so there
+# is exactly one source of truth.  Falls back to empty dict when the DB
+# module is unavailable (prevents NameError in the render path).
+try:
+    from basetruth.store import _DB_VIEWER_TABLE_META  # type: ignore[import]
+except Exception:  # noqa: BLE001
+    _DB_VIEWER_TABLE_META: dict = {}
 
 _DB_TABLE_LABELS: dict[str, str] = {
     "entities": "Entities",
@@ -131,6 +145,337 @@ def _cached_minio_docs_bucket_stats() -> dict:
 @st.cache_data(ttl=60, show_spinner=False)
 def _cached_minio_list_docs_objects(limit: int = 200) -> list:
     return minio_list_docs_objects(limit=limit)
+
+
+# ---------------------------------------------------------------------------
+# CRUD panel helper
+# ---------------------------------------------------------------------------
+
+def _crud_form_fields(
+    table: str,
+    mode: str,
+    prefill: dict,
+    form_key: str,
+) -> "dict | None":
+    """Render create/edit form fields inside a Streamlit form and return the
+    submitted payload, or None if the form was not submitted.
+
+    Parameters
+    ----------
+    table     : allowlisted table name
+    mode      : "create" | "edit" | "duplicate"
+    prefill   : dict of current column values (empty for create)
+    form_key  : unique key for the st.form widget
+    """
+    meta = _DB_VIEWER_TABLE_META.get(table)
+    if meta is None:
+        st.error(f"No metadata found for table '{table}'.")
+        return None
+
+    payload: dict = {}
+
+    with st.form(key=form_key, clear_on_submit=False):
+        for col_def in meta["editable"]:
+            col_name = col_def["name"]
+            label = col_def["label"]
+            ui = col_def["ui"]
+            nullable = col_def.get("nullable", False)
+            # In duplicate mode we clear system-managed fields so the new row
+            # gets fresh values instead of carrying over old IDs / timestamps.
+            is_system_key = col_name in {"entity_ref", "report_ref"} and mode == "duplicate"
+            raw_val = prefill.get(col_name)
+
+            if ui == "text":
+                default_str = "" if is_system_key else (_safe_str(raw_val) if raw_val is not None else "")
+                payload[col_name] = st.text_input(label, value=default_str, key=f"{form_key}_{col_name}")
+
+            elif ui == "textarea":
+                default_str = _safe_str(raw_val) if raw_val is not None else ""
+                payload[col_name] = st.text_area(label, value=default_str, height=80, key=f"{form_key}_{col_name}")
+
+            elif ui == "int":
+                default_int = int(raw_val) if raw_val not in (None, "") else 0
+                payload[col_name] = st.number_input(label, value=default_int, step=1, key=f"{form_key}_{col_name}")
+
+            elif ui == "float":
+                # Use a text input so the user can type an empty string for NULL
+                hint = " (leave blank for NULL)" if nullable else ""
+                default_float = str(raw_val) if raw_val not in (None, "") else ""
+                payload[col_name] = st.text_input(f"{label}{hint}", value=default_float, key=f"{form_key}_{col_name}")
+
+            elif ui == "bool":
+                hint = " (unchecked = NULL/false)" if nullable else ""
+                default_bool = bool(raw_val) if raw_val is not None else False
+                payload[col_name] = st.checkbox(f"{label}{hint}", value=default_bool, key=f"{form_key}_{col_name}")
+
+            elif ui == "select":
+                choices = col_def.get("choices", [])
+                # Find current index — default to first choice if not found
+                current = _safe_str(raw_val) if raw_val is not None else ""
+                idx = choices.index(current) if current in choices else 0
+                payload[col_name] = st.selectbox(label, choices, index=idx, key=f"{form_key}_{col_name}")
+
+            elif ui == "json":
+                # Pretty-print existing JSON or start with a minimal empty object
+                if isinstance(raw_val, (dict, list)):
+                    default_json = json.dumps(raw_val, indent=2, ensure_ascii=False)
+                elif isinstance(raw_val, str) and raw_val.strip():
+                    try:
+                        default_json = json.dumps(json.loads(raw_val), indent=2)
+                    except Exception:  # noqa: BLE001
+                        default_json = raw_val
+                else:
+                    default_json = "{}"
+                col1, col2 = st.columns([5, 1])
+                with col1:
+                    entered = st.text_area(label, value=default_json, height=220, key=f"{form_key}_{col_name}")
+                with col2:
+                    st.markdown("&nbsp;", unsafe_allow_html=True)
+                    if st.form_submit_button("Format", help="Pretty-print the JSON text above"):
+                        try:
+                            entered = json.dumps(json.loads(entered), indent=2)
+                        except Exception:  # noqa: BLE001
+                            pass
+                payload[col_name] = entered
+
+            elif ui == "fk":
+                # Live query to build the selectbox options for the parent table
+                fk_tbl = col_def["fk_table"]
+                options = db_viewer_fk_options(fk_tbl)
+                hint = " (optional)" if nullable else ""
+                if options:
+                    labels = [o["label"] for o in options]
+                    ids = [o["id"] for o in options]
+                    # Find the index that matches the current prefill value
+                    current_id = raw_val
+                    try:
+                        current_id = int(current_id) if current_id not in (None, "") else None
+                    except (TypeError, ValueError):
+                        current_id = None
+                    default_idx = ids.index(current_id) if current_id in ids else 0
+                    if nullable:
+                        # Prepend a blank "—" option so user can set FK to NULL
+                        labels = ["— (none)"] + labels
+                        ids = [None] + ids
+                        default_idx = default_idx + 1 if current_id in ids else 0
+                    selected_label = st.selectbox(f"{label}{hint}", labels, index=default_idx, key=f"{form_key}_{col_name}")
+                    selected_idx = labels.index(selected_label)
+                    payload[col_name] = ids[selected_idx]
+                else:
+                    # Table is empty — fall back to a plain number input
+                    default_id = int(raw_val) if raw_val not in (None, "") else 0
+                    payload[col_name] = st.number_input(
+                        f"{label}{hint} (no rows in {fk_tbl} yet — enter id manually)",
+                        value=default_id, step=1, key=f"{form_key}_{col_name}",
+                    )
+
+        # Action buttons at the bottom of the form
+        save_label = "💾 Save new row" if mode in ("create", "duplicate") else "💾 Save changes"
+        col_save, col_cancel = st.columns([2, 1])
+        with col_save:
+            submitted = st.form_submit_button(save_label, type="primary")
+        with col_cancel:
+            cancelled = st.form_submit_button("✖ Cancel")
+
+    if cancelled:
+        return None  # signal: user bailed out
+    if submitted:
+        return payload  # signal: user submitted the form
+    return ...  # Ellipsis = form shown but no submit yet (don't clear mode)
+
+
+def _safe_str(val: object) -> str:
+    """Convert any value to a display string for text inputs."""
+    if isinstance(val, (dict, list)):
+        try:
+            return json.dumps(val, ensure_ascii=False)
+        except Exception:  # noqa: BLE001
+            return str(val)
+    return str(val) if val is not None else ""
+
+
+def _render_crud_panel(table: str, rows: list, selected_row: "dict | None") -> None:
+    """Render the row-operations panel inside the PostgreSQL tab.
+
+    This function is only called when BASETRUTH_ENABLE_DB_VIEWER_CRUD=true.
+    It shows 4 action buttons (Create / Edit / Duplicate / Delete) and renders
+    the appropriate form or confirmation widget based on the current mode.
+
+    Session-state keys used:
+      db_crud_mode         – "create" | "edit" | "duplicate" | "delete" | None
+      db_crud_target_table – table that was active when mode was set (used to
+                             reset mode automatically when the user switches table)
+    """
+    # ------------------------------------------------------------------
+    # Reset the mode if the user switched to a different table
+    # ------------------------------------------------------------------
+    if st.session_state.get("db_crud_target_table") != table:
+        st.session_state["db_crud_mode"] = None
+        st.session_state["db_crud_target_table"] = table
+
+    current_mode: "str | None" = st.session_state.get("db_crud_mode")
+    row_id: "int | None" = int(selected_row["id"]) if selected_row and "id" in selected_row else None
+
+    st.divider()
+    st.warning(
+        "⚠️ **Development Mode** — Row editing is enabled. "
+        "These tools can create inconsistent data if used carelessly.",
+        icon="🔧",
+    )
+    st.markdown("### 🛠️ Row Operations")
+
+    # ------------------------------------------------------------------
+    # Show which row is currently targeted (for edit/duplicate/delete)
+    # ------------------------------------------------------------------
+    if selected_row is not None:
+        # Build a compact one-line summary of the selected row
+        _id = selected_row.get("id", "?")
+        _hint_keys = ["entity_ref", "source_name", "file_name", "report_ref", "check_type"]
+        _hint = next(
+            (f"{k}={selected_row[k]!r}" for k in _hint_keys if selected_row.get(k)),
+            "",
+        )
+        st.caption(f"Selected row: **id={_id}** in `{table}`" + (f"  ·  {_hint}" if _hint else ""))
+    else:
+        st.caption("No row selected — browse and select a row above to edit, duplicate, or delete it.")
+
+    # ------------------------------------------------------------------
+    # Action buttons
+    # ------------------------------------------------------------------
+    btn_col1, btn_col2, btn_col3, btn_col4 = st.columns(4)
+    with btn_col1:
+        if st.button("➕ Create", key="db_crud_btn_create", use_container_width=True):
+            st.session_state["db_crud_mode"] = "create"
+            st.rerun()
+    with btn_col2:
+        if st.button(
+            "✏️ Edit Row",
+            key="db_crud_btn_edit",
+            disabled=row_id is None,
+            use_container_width=True,
+        ):
+            st.session_state["db_crud_mode"] = "edit"
+            st.rerun()
+    with btn_col3:
+        if st.button(
+            "🧬 Duplicate",
+            key="db_crud_btn_dup",
+            disabled=row_id is None,
+            use_container_width=True,
+        ):
+            st.session_state["db_crud_mode"] = "duplicate"
+            st.rerun()
+    with btn_col4:
+        if st.button(
+            "🗑️ Delete Row",
+            key="db_crud_btn_delete",
+            disabled=row_id is None,
+            use_container_width=True,
+        ):
+            st.session_state["db_crud_mode"] = "delete"
+            st.rerun()
+
+    if current_mode is None:
+        return  # nothing further to render until user picks an action
+
+    # ------------------------------------------------------------------
+    # Create / Edit / Duplicate — render the form
+    # ------------------------------------------------------------------
+    if current_mode in ("create", "edit", "duplicate"):
+        # Decide what to prefill
+        if current_mode == "create":
+            prefill: dict = {}
+            caption = f"Creating a new row in `{table}`"
+        elif current_mode == "edit" and row_id is not None:
+            # Fetch the full row (the dataframe view may truncate JSONB columns)
+            full_row = db_viewer_get_row(table, row_id)
+            prefill = full_row or selected_row or {}
+            caption = f"Editing row **id={row_id}** in `{table}`"
+        else:  # duplicate
+            full_row = db_viewer_get_row(table, row_id) if row_id else None
+            prefill = dict(full_row or selected_row or {})
+            # Clear system-managed fields so the new row gets fresh defaults
+            for _sys_col in ("id", "created_at", "updated_at", "generated_at"):
+                prefill.pop(_sys_col, None)
+            caption = f"Duplicating row **id={row_id}** in `{table}` — save will create a new row"
+
+        st.markdown(f"**{caption}**")
+        # Include row_id in the form key so Streamlit creates a fresh form
+        # (with new prefill values) whenever the selected row changes.
+        # Without this, Streamlit reuses cached widget values from the old row.
+        form_key = f"db_crud_form_{current_mode}_{table}_{row_id}"
+        result = _crud_form_fields(table, current_mode, prefill, form_key)
+
+        if result is None:
+            # User hit Cancel
+            log.debug("Database Viewer CRUD: user cancelled %s on %s", current_mode, table)
+            st.session_state["db_crud_mode"] = None
+            st.rerun()
+
+        elif result is ...:
+            pass  # Form shown, waiting for user input — do nothing
+
+        else:
+            # User submitted the form — call the appropriate store helper
+            if current_mode in ("create", "duplicate"):
+                ok, msg, _new_row = db_viewer_create_row(table, result)
+            else:
+                ok, msg, _new_row = db_viewer_update_row(table, row_id, result)  # type: ignore[arg-type]
+
+            if ok:
+                log.info("Database Viewer CRUD [%s]: %s", current_mode, msg)
+                st.success(f"✅ {msg}")
+                st.session_state["db_crud_mode"] = None
+                # Invalidate the row cache so the table refreshes
+                _cached_db_table_counts.clear()
+                _cached_db_table_rows.clear()
+                st.rerun()
+            else:
+                log.error("Database Viewer CRUD [%s] failed: %s", current_mode, msg)
+                st.error(f"Save failed: {msg}")
+
+    # ------------------------------------------------------------------
+    # Delete — confirmation flow
+    # ------------------------------------------------------------------
+    elif current_mode == "delete":
+        if row_id is None:
+            st.error("No row selected. Select a row from the table above.")
+            st.session_state["db_crud_mode"] = None
+            return
+
+        _id = selected_row.get("id", "?")   # type: ignore[union-attr]
+        st.error(
+            f"⚠️ You are about to permanently delete row **id={_id}** from `{table}`. "
+            "This cannot be undone. Type **DELETE** below to confirm."
+        )
+        del_col1, del_col2, del_col3 = st.columns([3, 2, 2])
+        with del_col1:
+            del_confirm = st.text_input(
+                "Type DELETE to confirm",
+                key="db_crud_delete_confirm",
+                placeholder="DELETE",
+                label_visibility="collapsed",
+            )
+        with del_col2:
+            if st.button("💀 Confirm Delete", type="primary", key="db_crud_delete_exec"):
+                if del_confirm.strip() == "DELETE":
+                    ok, msg = db_viewer_delete_row(table, row_id)
+                    if ok:
+                        log.info("Database Viewer CRUD [delete]: %s", msg)
+                        st.success(f"✅ {msg}")
+                        st.session_state["db_crud_mode"] = None
+                        _cached_db_table_counts.clear()
+                        _cached_db_table_rows.clear()
+                        st.rerun()
+                    else:
+                        log.error("Database Viewer CRUD [delete] failed: %s", msg)
+                        st.error(f"Delete failed: {msg}")
+                else:
+                    st.error("Type exactly DELETE (all caps) to confirm.")
+        with del_col3:
+            if st.button("✖ Cancel", key="db_crud_delete_cancel"):
+                st.session_state["db_crud_mode"] = None
+                st.rerun()
 
 
 def _page_database() -> None:
@@ -264,43 +609,75 @@ This screen gives you direct visibility into what is stored in the system.
                     elif col.endswith("_at") or col in ("created_at", "updated_at", "generated_at"):
                         col_cfg[col] = st.column_config.TextColumn(col, width="medium")
 
-                st.dataframe(
+                # Session state key that persists the selected row index for this table.
+                # Using a per-table key means switching tables resets the selection.
+                sel_idx_key = f"db_viewer_selected_idx_{chosen_table}"
+
+                # Render the dataframe with single-row click-to-select enabled.
+                # on_select="rerun" means Streamlit reruns the page immediately
+                # when the user clicks a row, and the return value carries the
+                # selected row indices.
+                event = st.dataframe(
                     df,
                     hide_index=True,
                     use_container_width=True,
                     height=480,
                     column_config=col_cfg,
+                    on_select="rerun",
+                    selection_mode="single-row",
                 )
 
-                st.caption(f"Columns ({len(df.columns)}): " + " · ".join(df.columns.tolist()))
+                st.caption(
+                    f"Columns ({len(df.columns)}): " + " · ".join(df.columns.tolist())
+                    + "  ·  *Click any row to select it.*"
+                )
+
+                # If the user just clicked a row, persist that index.
+                if event.selection.rows:
+                    st.session_state[sel_idx_key] = event.selection.rows[0]
+
+                # Read back the persisted index (it survives CRUD action reruns).
+                active_idx: "int | None" = st.session_state.get(sel_idx_key)
+
+                # Discard stale index when the row count changed (e.g. after a delete).
+                if active_idx is not None and (active_idx < 0 or active_idx >= len(rows)):
+                    active_idx = None
+                    st.session_state.pop(sel_idx_key, None)
+
+                # The active row object (or None if nothing selected yet).
+                selected_row: "dict | None" = rows[active_idx] if active_idx is not None else None
 
                 # ── Full row JSON inspector ──────────────────────────────
                 st.markdown("**🔍 Inspect Full Row**")
-                row_options = {
-                    f"Row {index + 1}  ·  {next(iter(row.values()), '')}": index
-                    for index, row in enumerate(rows)
-                }
-                selected_label = st.selectbox(
-                    "Select row to inspect",
-                    list(row_options.keys()),
-                    key=f"db_viewer_row_{chosen_table}",
-                )
-                selected_row = rows[row_options[selected_label]]
-                # Full payload — parse JSONB string back to dict for pretty display
-                display_row: dict = {}
-                for column, value in selected_row.items():
-                    if isinstance(value, bytes):
-                        display_row[column] = f"<{len(value)} bytes binary — excluded>"
-                    elif isinstance(value, str) and len(value) > 2 and value[0] in "{[":
-                        try:
-                            display_row[column] = json.loads(value)
-                        except Exception:  # noqa: BLE001
+                if selected_row is not None:
+                    # Full payload — parse JSONB string back to dict for pretty display
+                    display_row: dict = {}
+                    for column, value in selected_row.items():
+                        if isinstance(value, bytes):
+                            display_row[column] = f"<{len(value)} bytes binary — excluded>"
+                        elif isinstance(value, str) and len(value) > 2 and value[0] in "{[":
+                            try:
+                                display_row[column] = json.loads(value)
+                            except Exception:  # noqa: BLE001
+                                display_row[column] = value
+                        else:
                             display_row[column] = value
-                    else:
-                        display_row[column] = value
-                st.json(display_row, expanded=False)
+                    st.json(display_row, expanded=False)
+                else:
+                    st.info("Click any row in the table above to inspect it and enable row operations.")
+
+                # Keep a reference accessible outside this block for the CRUD panel.
+                _current_selected_row: "dict | None" = selected_row
             else:
                 st.info(f"No rows in **{_DB_TABLE_LABELS[chosen_table]}** yet.")
+                _current_selected_row = None
+
+            # ── CRUD Row Operations panel (enabled via env-var) ──────────
+            _crud_enabled = os.environ.get(
+                "BASETRUTH_ENABLE_DB_VIEWER_CRUD", ""
+            ).lower() in ("1", "true", "yes")
+            if _crud_enabled:
+                _render_crud_panel(chosen_table, rows, _current_selected_row)
 
     # ── MinIO tab ────────────────────────────────────────────────────────────
     with minio_tab:

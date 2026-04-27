@@ -1,4 +1,4 @@
-"""BaseTruth Q&A page — local LLM chat via Ollama."""
+"""BaseTruth AI Copilot page — local LLM chat via Ollama."""
 from __future__ import annotations
 
 import json
@@ -1406,7 +1406,7 @@ def _page_gemma_chat() -> None:
         _, _clear_col = st.columns([8, 1])
         with _clear_col:
             if st.button("🗑️ Clear", key="bt_clear_chat", help="Clear this conversation"):
-                log.debug("BaseTruth Q&A: User cleared the chat conversation history.")
+                log.debug("BaseTruth AI Copilot: User cleared the chat conversation history.")
                 st.session_state["gemma_messages"] = []
                 st.session_state.pop("bt_qa_replied", None)
                 st.rerun()
@@ -1445,7 +1445,7 @@ def _page_gemma_chat() -> None:
         st.session_state.pop("bt_qa_replied", None)
 
     # ── Chat input ────────────────────────────────────────────────────────
-    if user_input := st.chat_input("Message BaseTruth Q&A…"):
+    if user_input := st.chat_input("Message BaseTruth AI Copilot…"):
         log.info(
             "BaseTruth AI Copilot: User submitted question | question=%r provider=%s model=%s",
             user_input[:300], provider_cfg.get("provider", "ollama"), model_name,

@@ -70,6 +70,11 @@ try:
         second_level_reject_scan,
         truncate_table,
         update_entity,
+        db_viewer_get_row,
+        db_viewer_fk_options,
+        db_viewer_create_row,
+        db_viewer_update_row,
+        db_viewer_delete_row,
     )
     _DB_IMPORTS_OK = True
 except Exception:  # noqa: BLE001
@@ -149,6 +154,21 @@ except Exception:  # noqa: BLE001
 
     def truncate_table(table_name: str) -> bool:  # type: ignore[misc]
         return False
+
+    def db_viewer_get_row(table: str, row_id: int) -> Optional[dict]:  # type: ignore[misc]
+        return None
+
+    def db_viewer_fk_options(fk_table: str) -> list:  # type: ignore[misc]
+        return []
+
+    def db_viewer_create_row(table: str, payload: dict) -> tuple:  # type: ignore[misc]
+        return False, "DB unavailable", None
+
+    def db_viewer_update_row(table: str, row_id: int, payload: dict) -> tuple:  # type: ignore[misc]
+        return False, "DB unavailable", None
+
+    def db_viewer_delete_row(table: str, row_id: int) -> tuple:  # type: ignore[misc]
+        return False, "DB unavailable"
 
     def save_identity_check(**kwargs) -> Optional[dict]:  # type: ignore[misc]
         return None
@@ -256,7 +276,7 @@ def _page_title(emoji: str, title_text: str) -> str:
 
     Usage::
 
-        st.markdown(_page_title("�️", "Database Viewer"), unsafe_allow_html=True)
+        st.markdown(_page_title("🗄️", "Database Viewer"), unsafe_allow_html=True)
     """
     return (
         '<h1 style="letter-spacing:-0.03em;font-weight:800;font-size:2.1rem;'

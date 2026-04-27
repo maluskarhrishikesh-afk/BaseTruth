@@ -944,6 +944,7 @@ _PAGES: Dict[str, str] = {
     "📊  Reports": "reports",
     "🪵  Log Analyzer": "logs",
     "🗄️  Database Viewer": "database",
+    "🧠  ML Training Pipeline": "ml_training",
     "📘  Swagger": "swagger",
     "💬  BaseTruth AI Copilot": "gemma_chat",
 }
@@ -2189,7 +2190,7 @@ def _page_logs() -> None:
 
     # ── Header row ──────────────────────────────────────────────────────────
     _hdr_l, _hdr_r, _hdr_clr = st.columns([5, 1, 1])
-    _hdr_l.markdown('<div class="log-header"><h1>📋 Log Analyzer</h1></div>', unsafe_allow_html=True)
+    _hdr_l.markdown('<div class="log-header"><h1>🪵 Log Analyzer</h1></div>', unsafe_allow_html=True)
     if _hdr_r.button("🔄 Refresh", use_container_width=True, key="log_refresh"):
         st.rerun()
 
@@ -3958,6 +3959,7 @@ def main() -> None:
     from basetruth.ui.pages.video_kyc import _page_video_kyc as _m_video_kyc  # noqa: PLC0415
     from basetruth.ui.pages.gemma_chat import _page_gemma_chat as _m_gemma_chat  # noqa: PLC0415
     from basetruth.ui.pages.swagger import _page_swagger as _m_swagger  # noqa: PLC0415
+    from basetruth.ui.pages.ml_training import render as _m_ml_training  # noqa: PLC0415
 
     if page == "dashboard":
         _m_dashboard(service)
@@ -3987,6 +3989,8 @@ def main() -> None:
         _m_gemma_chat()
     elif page == "swagger":
         _m_swagger()
+    elif page == "ml_training":
+        _m_ml_training()
     else:
         st.warning(f"Unknown page: {page}")
 

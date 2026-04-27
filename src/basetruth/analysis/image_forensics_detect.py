@@ -1067,7 +1067,7 @@ def _heuristic_score(layers: Dict[str, Any]) -> Tuple[float, str, List[str]]:
     return round(score, 1), verdict, evidence
 
 
-def _compute_score(layers: Dict[str, Any], file_size_bytes: int) -> Tuple[float, str, List[str], str]:
+def _compute_score(layers: Dict[str, Any], file_size_bytes: int) -> Tuple[float, str, List[str], str, Optional[Dict[str, float]]]:
     """Aggregate all 11 layer results into a single 0–100 forgery score.
 
     This function always computes the heuristic score first (so evidence strings
@@ -1079,9 +1079,11 @@ def _compute_score(layers: Dict[str, Any], file_size_bytes: int) -> Tuple[float,
     train_ml_scorer.py has been run — or if the model fails for any reason, the
     function silently falls back to the heuristic score unchanged.
 
-    Returns a 4-tuple: (score, verdict, evidence, scoring_method)
+    Returns a 5-tuple: (score, verdict, evidence, scoring_method, feature_contributions)
       scoring_method is "ML" when the XGBoost model produced the score,
       or "heuristic" when the rule-based fallback was used.
+      feature_contributions is a {feature_name: shap_value} dict when ML ran,
+      or None when the heuristic was used or SHAP computation failed.
     """
     # Step 1: always run the heuristic to collect evidence strings.
     # These descriptive messages are shown in the UI regardless of which
@@ -1091,6 +1093,12 @@ def _compute_score(layers: Dict[str, Any], file_size_bytes: int) -> Tuple[float,
     # Step 2: attempt ML scoring.  Any failure falls through to heuristic.
     final_score = heuristic_score
     scoring_method = "heuristic"
+    feature_contributions: Optional[Dict[str, float]] = None
+    # ml_verdict_from_model holds the 4-class verdict string returned by the ML
+    # model (ORIGINAL, ORIGINAL-DERIVED, TAMPERED, TAMPERED-DERIVED).
+    # It is None when the model is not available — the heuristic threshold
+    # mapping in Step 3 is used instead.
+    ml_verdict_from_model: Optional[str] = None
     try:
         from basetruth.analysis import ml_scorer  # noqa: PLC0415
         feature_vector = ml_scorer.extract_feature_vector(layers)
@@ -1099,14 +1107,19 @@ def _compute_score(layers: Dict[str, Any], file_size_bytes: int) -> Tuple[float,
             # ML model is available and returned a valid prediction — use it.
             final_score = ml_result["score"]
             scoring_method = "ML"
+            ml_verdict_from_model = ml_result.get("ml_verdict")
             log.info(
                 "image_forensics_detect: scoring_method=ML (XGBoost)",
                 extra={
                     "ml_score": final_score,
+                    "ml_verdict": ml_verdict_from_model,
                     "heuristic_score": heuristic_score,
                     "confidence": ml_result.get("confidence"),
                 },
             )
+            # Compute per-feature SHAP contributions for the UI.
+            # Non-blocking — failures leave feature_contributions as None.
+            feature_contributions = ml_scorer.explain(feature_vector)
         else:
             # predict() returned None — model file absent or load failed.
             # ml_scorer already logged a warning with the reason.
@@ -1122,14 +1135,22 @@ def _compute_score(layers: Dict[str, Any], file_size_bytes: int) -> Tuple[float,
             extra={"error": str(exc)},
         )
 
-    # Step 3: derive the verdict from whichever score was selected.
-    verdict = (
-        "TAMPERED" if final_score >= 55
-        else "LIKELY TAMPERED" if final_score >= 30
-        else "UNCERTAIN" if final_score >= 15
-        else "ORIGINAL"
-    )
-    return round(final_score, 1), verdict, evidence, scoring_method
+    # Step 3: derive the final verdict string.
+    # When the ML model ran, it returns an exact 4-class verdict — use it
+    # directly without any threshold guessing.
+    # When only the heuristic ran (cold start or model file absent), fall back
+    # to the traditional 4-tier threshold mapping which keeps the UI functional
+    # even before the model has been trained on 4-class data.
+    if ml_verdict_from_model is not None:
+        verdict = ml_verdict_from_model
+    else:
+        verdict = (
+            "TAMPERED" if final_score >= 55
+            else "LIKELY TAMPERED" if final_score >= 30
+            else "UNCERTAIN" if final_score >= 15
+            else "ORIGINAL"
+        )
+    return round(final_score, 1), verdict, evidence, scoring_method, feature_contributions
 
 
 # ── Public entry point ─────────────────────────────────────────────────────────
@@ -1199,7 +1220,7 @@ def run_forensics(path: str) -> Dict[str, Any]:
         "layer_11_ai":        _ai_artifact_analysis(path),   # AI-generation artefacts (FFT)
     }
 
-    score, verdict, evidence, scoring_method = _compute_score(layers, file_size)
+    score, verdict, evidence, scoring_method, feature_contributions = _compute_score(layers, file_size)
 
     suspicious_count = sum(
         1 for v in layers.values() if isinstance(v, dict) and v.get("status") == "SUSPICIOUS"
@@ -1240,6 +1261,8 @@ def run_forensics(path: str) -> Dict[str, Any]:
             "overall_explanation": explanation,
             "evidence": evidence,
             "scoring_method": scoring_method,
+            # feature_contributions is None when heuristic was used or SHAP failed
+            "feature_contributions": feature_contributions,
         },
         "layers": layers,
     }

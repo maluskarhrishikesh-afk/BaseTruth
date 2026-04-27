@@ -44,7 +44,7 @@ import tempfile
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from basetruth.logger import get_logger
 
@@ -1929,10 +1929,12 @@ def run_pdf_forensics(pdf_path: str) -> Dict[str, Any]:
         # ── Attempt ML scoring; fall back to heuristic if model not available ─
         # This mirrors the same pattern used in image_forensics_detect._compute_score().
         scoring_method = "heuristic"
+        feature_contributions: Optional[Dict[str, float]] = None  # type: ignore[type-arg]
         try:
             from basetruth.analysis.ml_scorer_pdf import (  # noqa: PLC0415
                 extract_feature_vector_pdf,
                 predict_pdf,
+                explain_pdf,
             )
             feature_vec = extract_feature_vector_pdf(layers)
             ml_result   = predict_pdf(feature_vec)
@@ -1966,6 +1968,10 @@ def run_pdf_forensics(pdf_path: str) -> Dict[str, Any]:
                     "run_pdf_forensics: scoring_method=ML (XGBoost)",
                     extra={"ml_score": score, "verdict": verdict},
                 )
+                # Compute per-feature SHAP contributions so the UI can show which
+                # signals drove the score.  This is a non-blocking call — failures
+                # are silently ignored and contributions stays None.
+                feature_contributions = explain_pdf(feature_vec)
         except Exception as _ml_exc:
             log.warning(
                 "run_pdf_forensics: ML scoring failed — falling back to heuristic: %s", _ml_exc,
@@ -1987,6 +1993,8 @@ def run_pdf_forensics(pdf_path: str) -> Dict[str, Any]:
                 "evidence":            evidence,
                 # scoring_method is read by forensics_utils.py to show the ML/heuristic badge
                 "scoring_method":      scoring_method,
+                # feature_contributions is None when heuristic was used or SHAP failed
+                "feature_contributions": feature_contributions,
             },
             "layers": layers,
         }

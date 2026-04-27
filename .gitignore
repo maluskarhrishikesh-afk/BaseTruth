@@ -1,4 +1,5 @@
 .pytest_cache/
+.coverage
 __pycache__/
 .venv/
 .vscode/
@@ -13,6 +14,7 @@ artifacts/
 outputs/
 start.exe
 stop.exe
+train_model.exe
 *.spec
 # but track the BaseTruth launcher spec
 !start.spec
@@ -21,7 +23,14 @@ stop.exe
 your_data/
 data/mortgage_docs/cases/
 data/datasets/
+data/format_aware_image_fraud_50000.csv
 logs/
+
+# ── ML generated artifacts ──
+fraud_model/*.png
+fraud_model/data/*.csv
+fraud_model/models/*.pkl
+fraud_model/sample/
 
 # ── Large / binary files ──
 *.zip

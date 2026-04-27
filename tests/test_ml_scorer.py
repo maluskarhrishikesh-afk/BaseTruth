@@ -40,8 +40,9 @@ from basetruth.analysis.ml_scorer import (
 def minimal_layers() -> dict:
     """A minimal but valid layers dict with all 11 layers present."""
     return {
-        "layer_1_ela": {"metrics": {"suspicious_block_ratio": 0.10, "mean_ela": 12.0, "std_ela": 5.0}},
+        "layer_1_ela": {"metrics": {"suspicious_block_ratio": 0.10, "mean_ela": 12.0, "std_ela": 5.0, "max_ela": 30.0}},
         "layer_2_metadata": {"suspicious_flags": ["Software mismatch", "GPS stripped"]},
+        "layer_3_entropy": {"metrics": {"entropy_bits": 7.5}},
         "layer_4_noise": {"metrics": {"hotspot_tile_ratio": 0.05}},
         "layer_5_dct": {"metrics": {"comb_ratio": 1.5, "skipped": False}},
         "layer_6_clone": {"metrics": {"clone_ratio": 0.30}},
@@ -65,35 +66,56 @@ def empty_layers() -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_feature_vector_shape(minimal_layers):
-    """extract_feature_vector must return a numpy array of exactly 11 floats."""
+    """extract_feature_vector must return a numpy array of exactly 19 floats."""
     fv = extract_feature_vector(minimal_layers)
     assert isinstance(fv, np.ndarray), "result should be a numpy ndarray"
-    assert fv.shape == (11,), f"expected shape (11,), got {fv.shape}"
+    assert fv.shape == (19,), f"expected shape (19,), got {fv.shape}"
     assert fv.dtype == np.float32, f"expected float32 dtype, got {fv.dtype}"
-    assert len(FEATURE_NAMES) == 11, "FEATURE_NAMES must have exactly 11 entries"
+    assert len(FEATURE_NAMES) == 19, "FEATURE_NAMES must have exactly 19 entries"
 
 
 def test_feature_vector_all_finite(minimal_layers):
     """No NaN or Inf values should appear in the feature vector for valid input."""
     fv = extract_feature_vector(minimal_layers)
-    # signature_mismatch is always -1 (N/A sentinel) — allow that through
-    without_sentinel = fv[fv != -1.0]
-    assert np.all(np.isfinite(without_sentinel)), "unexpected NaN or Inf in feature vector"
+    assert np.all(np.isfinite(fv)), "unexpected NaN or Inf in feature vector"
 
 
 def test_feature_vector_values_in_range(minimal_layers):
-    """All features except signature_mismatch must be in [0, 100].
+    """Raw feature values must meet their natural domain constraints.
+
+    Ratio-type features (fractions, CVs, ratios) must be >= 0.
+    Boolean skip flags must be 0 or 1.
+    Pixel-count features may be any non-negative number.
     clone_ratio must be in [0, 1].
     """
     fv = extract_feature_vector(minimal_layers)
     feat_dict = dict(zip(FEATURE_NAMES, fv))
-    for name, val in feat_dict.items():
-        if name == "signature_mismatch":
-            assert val == -1.0, "signature_mismatch sentinel must be -1.0"
-        elif name == "clone_ratio":
-            assert 0.0 <= val <= 1.0, f"clone_ratio out of [0,1]: {val}"
-        else:
-            assert 0.0 <= val <= 100.0, f"{name} out of [0,100]: {val}"
+
+    # Ratios and fractions must be non-negative
+    ratio_features = {
+        "ela_mean", "ela_max", "ela_std", "ela_suspicious_block_ratio",
+        "metadata_flag_count", "file_entropy_bits", "noise_hotspot_ratio",
+        "dct_comb_ratio", "color_anomaly_ratio",
+        "edge_high_density_ratio", "saturation_ratio",
+        "font_stroke_cv", "font_suspicious_regions", "font_sharpness_outlier_ratio",
+        "ai_spike_ratio",
+    }
+    for name in ratio_features:
+        assert feat_dict[name] >= 0.0, f"{name} must be >= 0, got {feat_dict[name]}"
+
+    # clone_ratio must be clamped to [0, 1]
+    assert 0.0 <= feat_dict["clone_ratio"] <= 1.0, (
+        f"clone_ratio out of [0,1]: {feat_dict['clone_ratio']}"
+    )
+
+    # Skip flags must be 0.0 or 1.0
+    for flag in ("dct_skipped", "font_skipped"):
+        assert feat_dict[flag] in (0.0, 1.0), (
+            f"{flag} must be 0.0 or 1.0, got {feat_dict[flag]}"
+        )
+
+    # color_largest_blob_px is a raw pixel count — just check non-negative
+    assert feat_dict["color_largest_blob_px"] >= 0.0, "blob pixel count must be >= 0"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -101,15 +123,13 @@ def test_feature_vector_values_in_range(minimal_layers):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_feature_vector_empty_layers(empty_layers):
-    """Empty dict must produce all zeros (plus -1 sentinel for signature_mismatch)."""
+    """Empty dict must produce all zeros (no sentinels any more)."""
     fv = extract_feature_vector(empty_layers)
-    assert fv.shape == (11,), "shape must still be (11,) for empty input"
-    feat_dict = dict(zip(FEATURE_NAMES, fv))
-    for name, val in feat_dict.items():
-        if name == "signature_mismatch":
-            assert val == -1.0
-        else:
-            assert val == 0.0, f"expected 0.0 for {name} with empty layers, got {val}"
+    assert fv.shape == (19,), "shape must still be (19,) for empty input"
+    assert np.all(fv == 0.0), (
+        f"expected all zeros for empty layers, non-zero positions: "
+        f"{[(FEATURE_NAMES[i], float(v)) for i, v in enumerate(fv) if v != 0.0]}"
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -129,7 +149,7 @@ def test_predict_returns_none_when_no_model():
     try:
         # Patch the model path to a non-existent file
         with patch.object(ms, "_MODEL_PATH", Path("/nonexistent/path/ml_scorer_image.pkl")):
-            fv = np.zeros(11, dtype=np.float32)
+            fv = np.zeros(19, dtype=np.float32)
             result = predict(fv)
         assert result is None, "predict() must return None when model file is absent"
     finally:
@@ -155,7 +175,7 @@ def test_predict_returns_valid_dict_with_mock_model():
     ms._MODEL_LOAD_ATTEMPTED = True
 
     try:
-        fv = np.zeros(11, dtype=np.float32)
+        fv = np.zeros(19, dtype=np.float32)
         result = predict(fv)
         assert result is not None, "predict() must return a dict when model is loaded"
         assert "score" in result
@@ -184,7 +204,7 @@ def test_predict_score_range_boundary():
         ms._MODEL_CACHE = mock_model
         ms._MODEL_LOAD_ATTEMPTED = True
         try:
-            fv = np.zeros(11, dtype=np.float32)
+            fv = np.zeros(19, dtype=np.float32)
             result = predict(fv)
             assert result is not None
             assert 0.0 <= result["score"] <= 100.0
@@ -213,12 +233,13 @@ def test_heuristic_fallback_when_ml_returns_none(minimal_layers):
     try:
         with patch.object(ms, "_MODEL_PATH", Path("/nonexistent/path/model.pkl")):
             h_score, h_verdict, h_evidence = _heuristic_score(minimal_layers)
-            c_score, c_verdict, c_evidence, c_method = _compute_score(minimal_layers, 100_000)
+            c_score, c_verdict, c_evidence, c_method, c_contribs = _compute_score(minimal_layers, 100_000)
 
         assert c_method == "heuristic", f"expected 'heuristic', got '{c_method}'"
         assert c_score == h_score, f"heuristic fallback score mismatch: {c_score} != {h_score}"
         assert c_verdict == h_verdict
         assert c_evidence == h_evidence
+        assert c_contribs is None, "feature_contributions must be None when heuristic ran"
     finally:
         ms._MODEL_CACHE = original_cache
         ms._MODEL_LOAD_ATTEMPTED = original_attempted
@@ -241,7 +262,7 @@ def test_ml_score_used_when_model_available(minimal_layers):
     ms._MODEL_LOAD_ATTEMPTED = True
 
     try:
-        c_score, c_verdict, c_evidence, c_method = _compute_score(minimal_layers, 100_000)
+        c_score, c_verdict, c_evidence, c_method, c_contribs = _compute_score(minimal_layers, 100_000)
         assert c_method == "ML", f"expected 'ML', got '{c_method}'"
         assert c_score == pytest.approx(90.0, abs=0.1)
         assert c_verdict == "TAMPERED"
@@ -257,24 +278,33 @@ def test_ml_score_used_when_model_available(minimal_layers):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_remap_raw_csv_columns():
-    """_remap_raw_csv must output exactly FEATURE_NAMES + 'label' columns."""
+    """_remap_raw_csv must output exactly FEATURE_NAMES + 'label' columns.
+
+    All output values must be non-negative.  clone_ratio must be in [0, 1].
+    color_largest_blob_px is a raw pixel count so it can exceed 100.
+    """
     import pandas as pd
 
     # Minimal one-row raw CSV as would be produced by collect_training_samples.py
     raw = pd.DataFrame([{
         "filename": "test.jpg",
-        "ela_suspicious_block_ratio": 0.10,
         "ela_mean": 12.0,
+        "ela_max": 30.0,
         "ela_std": 5.0,
+        "ela_suspicious_block_ratio": 0.10,
+        "metadata_flag_count": 2,
+        "file_entropy_bits": 7.5,
+        "noise_hotspot_ratio": 0.05,
         "dct_comb_ratio": 1.5,
         "dct_skipped": 0,
-        "metadata_flag_count": 2,
         "clone_ratio": 0.30,
-        "noise_hotspot_ratio": 0.05,
         "color_anomaly_ratio": 0.005,
         "color_largest_blob_px": 1500,
+        "edge_high_density_ratio": 0.08,
+        "saturation_ratio": 0.03,
         "font_stroke_cv": 0.50,
         "font_suspicious_regions": 2,
+        "font_sharpness_outlier_ratio": 0.10,
         "font_skipped": 0,
         "ai_spike_ratio": 2.0,
         "label": 1,
@@ -287,12 +317,8 @@ def test_remap_raw_csv_columns():
     )
     assert len(remapped) == 1
 
-    # All normalised features must be in [0, 100] or -1 (sentinel)
+    # clone_ratio clamped to [0, 1]; all others non-negative
     for col in FEATURE_NAMES:
         val = float(remapped[col].iloc[0])
-        if col == "signature_mismatch":
-            assert val == -1.0
-        elif col == "clone_ratio":
-            assert 0.0 <= val <= 1.0, f"clone_ratio out of range: {val}"
-        else:
-            assert 0.0 <= val <= 100.0, f"{col} out of [0,100]: {val}"
+        assert val >= 0.0, f"{col} must be non-negative, got {val}"
+    assert float(remapped["clone_ratio"].iloc[0]) <= 1.0, "clone_ratio must be <= 1.0"

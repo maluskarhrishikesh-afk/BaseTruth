@@ -133,7 +133,7 @@ def _page_logs() -> None:
 
     # ── Header ──────────────────────────────────────────────────────────────
     _h1, _h2, _h3 = st.columns([5, 1, 1])
-    _h1.markdown(_page_title("📋", "Log Analyzer"), unsafe_allow_html=True)
+    _h1.markdown(_page_title("🪵", "Log Analyzer"), unsafe_allow_html=True)
     
     # WebSocket simulated Auto-refresh Toggle instead of manual refresh button
     with _h2:

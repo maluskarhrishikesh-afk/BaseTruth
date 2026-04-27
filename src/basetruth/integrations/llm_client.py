@@ -443,7 +443,7 @@ class VLMClient:
         else:
             # Text-only call (e.g. honest-review summary generation — no document image needed).
             log.info(
-                "VLMClient._call_google: text-only request (no image, no PDF) — "
+                "VLMClient._call_google: text-only request (no image, no PDF) for summary generation — "
                 "model=%s base_url=%s",
                 self.model, base_url,
             )
