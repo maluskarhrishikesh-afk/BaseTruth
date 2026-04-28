@@ -108,39 +108,48 @@
 
 ## 🎥 Video KYC
 
-**Purpose:** Create a remote identity verification session where the customer performs live liveness challenges on their own device, while BaseTruth compares the live face and current location against uploaded proof documents.
+**Purpose:** Create a remote identity verification session where the customer performs live liveness challenges on their own device, while BaseTruth compares the live face and current location against uploaded proof documents. The operator creates and schedules the session in one step and then monitors the live status from a second tab.
 
-### Tab 1 — Start KYC Session
-
-| Element | Action | Expected Result |
-|---|---|---|
-| Entity selector | Search/select | Links KYC session to an entity record |
-| "Upload Reference ID Document" uploader | Upload | Extracts the reference face embedding and stores identity-proof details in session state; shows "ID subject successfully extracted" |
-| "Upload Permanent Address Proof" uploader | Upload Aadhaar or Passport | Extracts the proof-address payload before session creation and stores it in session state |
-| "Create KYC Session" button | Click | Calls `POST /kyc/sessions`; creates an in-memory session carrying the identity-proof payload and address-proof payload; shows shareable customer URL |
-| Customer URL | Copy/share | Customer opens URL on their phone, grants camera and location permissions, and runs blink, turn left/right, nod challenges |
-| "Refresh" / poll | Click | Calls `GET /kyc/sessions/{id}`; shows live session status, liveness results, and whether current-location capture succeeded |
-| "💾 Save to Database" button | Click after a completed KYC result | Saves the completed Video KYC result to `video_kyc_checks`; uploads the reference ID document, address proof, best frontal live frame, and one best frame per completed challenge to MinIO; stores location/address comparison fields and the PDF report MinIO key; PDF report download appears |
-
-### Tab 2 — Schedule Appointment
+### Tab 1 — Session Setup & Schedule
 
 | Element | Action | Expected Result |
 |---|---|---|
-| Date picker, time picker, duration | Select | Sets appointment time |
-| "Generate Calendar Invite" button | Click | Creates `.ics` file download; shows info message with 📧 emoji (not a string like "info") |
-| Download `.ics` | Click | Gets the calendar invite file |
+| Customer name | Enter | Stored in session state; used in .ics and email invite |
+| Customer email | Enter | Used to pre-populate the mailto: link |
+| Entity / Case ref | Enter | Manually typed entity reference to link the KYC session |
+| Agent name | Enter | Shown in the calendar invite and email body |
+| Challenge selection (optional) | Multi-select | Pick 1–4 of: blink, turn left, turn right, nod. Leave empty for 2 random. |
+| Appointment date picker | Select | The scheduled date for the KYC appointment |
+| Appointment time picker | Select | The scheduled time (IST); converted to UTC for the .ics |
+| Duration selector | Select | Meeting duration in minutes (15 / 30 / 45 / 60) |
+| "Upload Reference ID" uploader (optional) | Upload image | Extracts the reference face embedding and stores it in session state |
+| "Schedule Appointment & Create Session" button | Click | Calls `POST /kyc/sessions`; creates the session; generates .ics calendar invite; shows session URL and sharing panel |
+
+**After session creation (share panel — same tab, appears below the form):**
+
+| Element | Action | Expected Result |
+|---|---|---|
+| Customer URL | Copy | Customer opens URL on their phone to run liveness challenges |
+| "Download .ics" button | Click | Downloads calendar invite for the operator to forward |
+| "📧 Open Email Client" button | Click | Opens the system email client with a pre-filled mailto: link (customer email, subject, body) |
+| Email invite text expander | Open | Shows a copy-paste email body with date, time, join link, and instructions |
 
 **Important rules:**
-- Page title must be `_page_title("🎥", "Video KYC")` — only one 🎥, no duplication.
+- The "Schedule Appointment & Create Session" button creates BOTH the API session and the .ics in a single click.
 - `st.info(..., icon=...)` must use a real unicode emoji character, not a shortcode string like `"info"`.
+- Page title must be `_page_title("🎥", "Video KYC")` — only one 🎥, no duplication.
 
-### Tab 3 — In-Person Verify
+### Tab 2 — Session Status
 
 | Element | Action | Expected Result |
 |---|---|---|
-| Camera capture + liveness UI | Real-time | Runs blink, turn, and nod challenges locally |
-| Face-match section | After liveness passes | Compares the best live face frame to the uploaded reference ID and evaluates current-address vs proof-address match when location data is available |
-| "💾 Save to Database" button | Click after result is shown | Saves the in-person Video KYC result to `video_kyc_checks` and uploads the reference ID, address proof, best live image, and best challenge frames to MinIO |
+| Status metric | Auto-renders | Shows current session status (Waiting / In Progress / Completed / Failed / Expired) |
+| Challenges progress | Auto-renders | Shows `X / Y done` metric and progress bar while session is active |
+| Live poll | Auto (every 2 s while active) | Calls `GET /kyc/sessions/{id}`; reruns the page to refresh status |
+| Face match score | Auto-renders after completion | Shows `Identity Verified` or `Verification Failed` with display score |
+| "💾 Save to Database" button | Click after a completed KYC result | Saves the completed Video KYC result to `video_kyc_checks`; uploads the reference ID document and best frontal live frame and one best frame per completed challenge to MinIO; stores location/address comparison fields and the PDF report MinIO key; PDF report download appears |
+| PDF download button | Appears after save | Downloads the KYC report PDF |
+| "🔄 Start New Session" button | Click | Clears all `vkyc_*` session state and reruns the page |
 
 ### Liveness Challenges
 
@@ -152,7 +161,6 @@
 | `nod` | Nose-to-eye pitch range | Range > 0.28 over ≥ 6 frames |
 
 **Important Video KYC storage rules:**
-- Allowed permanent address-proof documents are Aadhaar or Passport only.
 - The save path keeps one current `video_kyc_checks` row per entity.
 - BaseTruth retains the best frontal live frame plus one best frame per completed challenge, not every intermediate frame.
 

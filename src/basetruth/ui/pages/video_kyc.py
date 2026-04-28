@@ -1,21 +1,29 @@
-﻿"""Video KYC page — create secure sessions, schedule appointments, and
-conduct in-person verification.
+"""Video KYC page — unified session setup, scheduling, and status monitoring.
 
 Architecture overview:
-  Tab 1  Start KYC Session  — Upload reference ID -> extract ArcFace embedding
-                               -> POST /kyc/sessions to API -> share link with
-                               customer -> poll status every 2 s -> result + PDF.
+  Tab 1  Session Setup & Schedule  — Fill in customer details, optionally upload
+                                     a reference ID for face-match, pick an
+                                     appointment date/time, then click one button
+                                     to create the KYC session AND generate the
+                                     calendar invite + email invite in one step.
 
-  Tab 2  Schedule            — Generate a .ics calendar invite that uses the
-                               BaseTruth KYC URL as the meeting link so the
-                               customer can open it directly in their browser.
+  Tab 2  Session Status            — Poll the active session for live status;
+                                     save the completed result to the database
+                                     and download the PDF report.
 
-  Tab 3  In-Person Verify    — Webcam-only check for face-to-face interactions
-                               (uses st.camera_input, runs locally in Streamlit).
+Customer-side flow (what the customer does after opening the link):
+  1. Upload ID — Aadhaar front or PAN card
+  2. Upload address proof — Aadhaar back or Passport back
+  3. Share live location — captures current GPS coordinates
+  4. Liveness check — auto-captures frames and compares with ID photo;
+     live location is also matched against the address on the proof
+     document (accepted within ~500 m).
+
+Note: In-Person Verify has been removed — use the Identity Verification
+screen for face-to-face checks.
 """
 from __future__ import annotations
 
-import io
 import os
 import socket
 import subprocess
@@ -157,37 +165,98 @@ def _make_ics(
 
 
 # ===========================================================================
-# Tab 1 -- Start KYC Session
+# Section 1 — Session Setup & Schedule  (unified operator form)
 # ===========================================================================
 
-def _tab_start_session() -> None:
-    st.markdown(
-        """
-        <div style="background:linear-gradient(135deg,#1e293b,#0f172a);
-                    border:1px solid #334155;border-radius:12px;
-                    padding:1rem 1.25rem;margin-bottom:1.2rem">
-        <h4 style="color:#e2e8f0;margin:0 0 .4rem">Why a dedicated Video SDK?</h4>
-        <p style="color:#94a3b8;font-size:.85rem;margin:0;line-height:1.6">
-        Third-party video platforms (Zoom, Teams) block server-side frame access -- making
-        real AI liveness and face-match impossible.<br>
-        <strong style="color:#c4b5fd">BaseTruth Video KYC</strong> streams frames through
-        our own WebSocket layer so RetinaFace + ArcFace run on every frame with full control
-        and zero third-party data sharing.
-        </p></div>
-        """,
-        unsafe_allow_html=True,
-    )
+def _section_setup_and_schedule() -> None:
+    """Unified operator form: fill in customer details, optionally upload a
+    reference ID for face-match, pick an appointment time, then create the
+    KYC session.  The session URL, calendar invite (.ics), and email invite
+    are all generated in one step so the operator can share everything from
+    a single screen.
+    """
+    # ── If a session already exists show a reset prompt instead of the form ──
+    if st.session_state.get("vkyc_session_created"):
+        session_url = st.session_state.get("vkyc_session_url", "")
+        st.success("Session is active — share this link with the customer:")
+        st.code(session_url, language="text")
+        st.markdown(
+            f'<a href="{session_url}" target="_blank" '
+            f'style="display:inline-block;padding:.45rem .9rem;background:#4f46e5;color:#fff;'
+            f'border-radius:8px;text-decoration:none;font-weight:600">🔗 Open KYC Page</a>',
+            unsafe_allow_html=True,
+        )
+        if st.button("🔄 Start a New Session", use_container_width=True):
+            _clear_session_state()
+            st.rerun()
+        return
 
-    # 0. Link entity
+    # ── Entity link (optional) ────────────────────────────────────────────
     forced_ref, extra_identity = None, None
     if _DB_IMPORTS_OK and _db_available_cached():
         forced_ref, extra_identity = _render_entity_link_widget("vkyc_start", mandatory=False)
         st.divider()
 
-    # 1. Reference ID upload
-    st.subheader("1  Upload Reference ID")
+    # ── Step 1: Customer & session fields ────────────────────────────────
+    st.subheader("1  Session Details")
+    c1, c2 = st.columns(2)
+    with c1:
+        customer_name = st.text_input(
+            "Customer name *", placeholder="e.g. Rahul Sharma", key="vkyc_cust_name"
+        )
+        customer_email = st.text_input(
+            "Customer email (for invite)", placeholder="e.g. rahul@example.com",
+            key="vkyc_cust_email",
+        )
+    with c2:
+        entity_ref_input = st.text_input(
+            "Entity / Case ref", placeholder="e.g. BT-000001", key="vkyc_entity_ref"
+        )
+        agent_name = st.text_input(
+            "Your name (agent)", placeholder="e.g. Priya Mehta", key="vkyc_agent_name"
+        )
+
+    with st.expander("Challenge selection (optional)", expanded=False):
+        ALL_CH = ["blink", "turn_left", "turn_right", "nod"]
+        CH_LABELS = {
+            "blink":      "Close eyes",
+            "turn_left":  "Turn head left",
+            "turn_right": "Turn head right",
+            "nod":        "Nod head",
+        }
+        selected = st.multiselect(
+            "Pick 1-4 challenges (leave empty for 2 random)",
+            options=ALL_CH,
+            format_func=lambda c: CH_LABELS.get(c, c),
+            key="vkyc_challenges",
+        )
+    challenges = selected or []
+
+    # ── Step 2: Appointment time ─────────────────────────────────────────
+    st.divider()
+    st.subheader("2  Appointment Time")
+    a1, a2, a3 = st.columns(3)
+    with a1:
+        session_date = st.date_input(
+            "Date *", min_value=datetime.today().date(), key="vkyc_date"
+        )
+    with a2:
+        session_time = st.time_input("Time (IST) *", value=None, key="vkyc_time")
+    with a3:
+        duration = st.selectbox(
+            "Duration", options=[15, 20, 30, 45, 60], index=2,
+            format_func=lambda x: f"{x} min", key="vkyc_duration",
+        )
+
+    # ── Step 3: Reference ID upload (optional — enables face-match) ──────
+    st.divider()
+    st.subheader("3  Reference ID  (optional)")
+    st.caption(
+        "Upload the customer's Aadhaar or PAN card to enable face-match during the session. "
+        "Leave empty for liveness-only verification."
+    )
     doc_file = st.file_uploader(
-        "Upload ID document (Aadhaar / PAN / Passport photo)",
+        "Upload ID document (Aadhaar front or PAN card with photo)",
         type=["jpg", "jpeg", "png", "webp"],
         key="vkyc_ref_doc",
     )
@@ -209,54 +278,45 @@ def _tab_start_session() -> None:
         if faces:
             face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
             emb  = face.normed_embedding
-            st.session_state["vkyc_ref_emb_b64"] = base64.b64encode(
+            import base64 as _b64  # noqa: PLC0415
+            st.session_state["vkyc_ref_emb_b64"] = _b64.b64encode(
                 emb.astype("float32").tobytes()
             ).decode()
             st.session_state["vkyc_doc_bytes"] = doc_file.getvalue()
-            st.success("Reference face extracted from ID.")
+            st.success("✅ Reference face extracted — face-match will run during the session.")
         else:
-            st.error("No face found in the uploaded document.")
+            st.error("No face found in the uploaded document. Try a clearer photo.")
             st.session_state.pop("vkyc_ref_emb_b64", None)
             st.session_state.pop("vkyc_doc_bytes", None)
+    elif not st.session_state.get("vkyc_ref_emb_b64"):
+        st.info(
+            "No reference ID uploaded — liveness-only mode. "
+            "Upload an ID above to also verify face identity.",
+            icon="ℹ️",
+        )
 
-    # 2. Session parameters
+    # ── Step 4: Create session ────────────────────────────────────────────
     st.divider()
-    st.subheader("2  Session Setup")
-    c1, c2 = st.columns(2)
-    with c1:
-        customer_name = st.text_input(
-            "Customer name", placeholder="e.g. Rahul Sharma", key="vkyc_cust_name"
-        )
-    with c2:
-        entity_ref_input = st.text_input(
-            "Entity / Case ref", placeholder="e.g. ENT-001", key="vkyc_entity_ref"
-        )
+    st.subheader("4  Create and Share")
 
-    with st.expander("Challenge selection (optional)", expanded=False):
-        ALL_CH = ["blink", "turn_left", "turn_right", "nod"]
-        CH_LABELS = {
-            "blink":      "Close eyes",
-            "turn_left":  "Turn head left",
-            "turn_right": "Turn head right",
-            "nod":        "Nod head",
-        }
-        selected = st.multiselect(
-            "Pick 1-4 challenges (leave empty for 2 random)",
-            options=ALL_CH,
-            format_func=lambda c: CH_LABELS.get(c, c),
-            key="vkyc_challenges",
-        )
-    challenges = selected or []
+    if st.button(
+        "📅 Schedule Appointment & Create Session",
+        type="primary",
+        use_container_width=True,
+    ):
+        # Validate required fields before calling the API
+        errors = []
+        if not customer_name.strip():
+            errors.append("Customer name is required.")
+        if session_time is None:
+            errors.append("Appointment time is required.")
+        for e in errors:
+            st.error(e)
+        if errors:
+            return
 
-    # 3. Create session
-    st.divider()
-    st.subheader("3  Create and Share")
-
-    ref_b64 = st.session_state.get("vkyc_ref_emb_b64")
-    if not ref_b64:
-        st.info("Upload a reference ID above to enable face-match (optional -- liveness-only is also supported).")
-
-    if st.button("Create Secure KYC Session", type="primary", use_container_width=True):
+        # Create the KYC session via the FastAPI backend
+        ref_b64 = st.session_state.get("vkyc_ref_emb_b64")
         payload: Dict[str, Any] = {
             "customer_name":           customer_name.strip(),
             "entity_ref":              entity_ref_input.strip() or (forced_ref or ""),
@@ -264,142 +324,179 @@ def _tab_start_session() -> None:
             "reference_embedding_b64": ref_b64,
         }
         resp = _api_post("/kyc/sessions", payload)
-        if resp:
-            sid = resp["session_id"]
-            session_url = f"{_API_EXTERNAL}/kyc/{sid}"
-            st.session_state["vkyc_active_sid"]      = sid
-            st.session_state["vkyc_session_url"]     = session_url
-            st.session_state["vkyc_session_created"] = True
-            st.session_state["vkyc_doc_filename"]    = doc_file.name if doc_file else ""
-            st.session_state["vkyc_forced_ref"]      = forced_ref
-            st.session_state["vkyc_extra_identity"]  = extra_identity
-            st.session_state["vkyc_saved_remote"]    = False
-            st.session_state.pop("vkyc_saved_remote_ref", None)
-            st.rerun()
+        if not resp:
+            return  # _api_post already showed the error banner
 
-    # 4. Monitor active session
+        sid         = resp["session_id"]
+        session_url = f"{_API_EXTERNAL}/kyc/{sid}"
+
+        # Build the .ics calendar invite bytes
+        ist_offset   = timezone(timedelta(hours=5, minutes=30))
+        start_dt     = datetime(
+            session_date.year, session_date.month, session_date.day,
+            session_time.hour, session_time.minute, tzinfo=ist_offset,
+        )
+        start_dt_utc = start_dt.astimezone(timezone.utc)
+        description  = (
+            f"Video KYC Session — BaseTruth AI Identity Verification\n\n"
+            f"Customer : {customer_name.strip()}\n"
+            f"Join URL : {session_url}\n\n"
+            "What the customer needs to do when they open the link:\n"
+            "  1. Upload Aadhaar (front) or PAN card\n"
+            "  2. Upload address proof (Aadhaar back or Passport back)\n"
+            "  3. Allow location access for address verification\n"
+            "  4. Complete the liveness challenge\n\n"
+            "What to have ready:\n"
+            "  - Aadhaar card and/or PAN card\n"
+            "  - Good lighting and a stable internet connection\n"
+            "  - A device with a front-facing camera and a modern browser"
+        )
+        ics_bytes = _make_ics(
+            customer_name.strip(),
+            agent_name.strip() or "BaseTruth Agent",
+            session_url,
+            start_dt_utc,
+            duration,
+            description,
+        )
+
+        # Persist all session data so both tabs can read it
+        st.session_state.update({
+            "vkyc_active_sid":       sid,
+            "vkyc_session_url":      session_url,
+            "vkyc_session_created":  True,
+            "vkyc_doc_filename":     doc_file.name if doc_file else "",
+            "vkyc_forced_ref":       forced_ref,
+            "vkyc_extra_identity":   extra_identity,
+            "vkyc_saved_remote":     False,
+            "vkyc_ics_bytes":        ics_bytes,
+            "vkyc_customer_name":    customer_name.strip(),
+            "vkyc_customer_email":   customer_email.strip(),
+            "vkyc_agent_name":       agent_name.strip() or "BaseTruth Agent",
+            "vkyc_appt_date_str":    session_date.strftime("%d %b %Y"),
+            "vkyc_appt_time_str":    session_time.strftime("%I:%M %p"),
+            "vkyc_duration_min":     duration,
+            "vkyc_challenges_used":  challenges,
+        })
+        st.session_state.pop("vkyc_saved_remote_ref", None)
+        st.rerun()
+
+
+def _section_share_panel() -> None:
+    """Shown after the session is created.  Displays the session URL, the
+    calendar invite download, and a ready-to-send email template so the
+    operator can share everything with the customer in one step.
+    """
     if not st.session_state.get("vkyc_session_created"):
         return
 
-    sid         = st.session_state.get("vkyc_active_sid", "")
-    session_url = st.session_state.get("vkyc_session_url", "")
+    session_url  = st.session_state.get("vkyc_session_url", "")
+    ics_bytes    = st.session_state.get("vkyc_ics_bytes")
+    cust_name    = st.session_state.get("vkyc_customer_name", "Customer")
+    cust_email   = st.session_state.get("vkyc_customer_email", "")
+    agent_name   = st.session_state.get("vkyc_agent_name", "")
+    date_str     = st.session_state.get("vkyc_appt_date_str", "")
+    time_str     = st.session_state.get("vkyc_appt_time_str", "")
+    duration_min = st.session_state.get("vkyc_duration_min", 30)
 
-    st.success("Session created -- share this URL with your customer:")
+    st.divider()
+    st.subheader("✅ Session Created — Share with Customer")
+
+    # Session URL display
+    st.markdown("**Session Link**")
     st.code(session_url, language="text")
     st.markdown(
         f'<a href="{session_url}" target="_blank" '
-        f'style="display:inline-block;padding:.5rem 1rem;background:#4f46e5;color:#fff;'
-        f'border-radius:8px;text-decoration:none;font-weight:600">Open KYC Page</a>',
+        f'style="display:inline-block;padding:.45rem .9rem;background:#4f46e5;color:#fff;'
+        f'border-radius:8px;text-decoration:none;font-size:.85rem;font-weight:600">'
+        f'🔗 Open KYC Page</a>',
         unsafe_allow_html=True,
     )
-    st.caption("The customer opens this link in their browser -- no app or plugin needed.")
+    st.caption(
+        "The customer opens this link on their phone or laptop. They upload their ID "
+        "and address proof, share their live location, then complete the liveness "
+        "challenge — no app download needed."
+    )
+
     st.divider()
 
-    # Live status poll (auto-refresh every 2 s while active)
-    status_resp = _api_get(f"/kyc/sessions/{sid}")
-    if not status_resp:
-        return
+    # Email body template (used by both the mailto link and the copy-paste expander)
+    email_body = (
+        f"Dear {cust_name},\n\n"
+        f"Your Video KYC session has been scheduled:\n\n"
+        f"  Date & Time : {date_str} at {time_str} IST\n"
+        f"  Duration    : {duration_min} minutes\n"
+        f"  Join Link   : {session_url}\n\n"
+        "When you open the link you will need to:\n"
+        "  1. Upload your Aadhaar card (front) or PAN card\n"
+        "  2. Upload your address proof (Aadhaar back or Passport back)\n"
+        "  3. Allow location access so we can verify your current address\n"
+        "  4. Complete the liveness check (follow the on-screen prompts)\n\n"
+        "The entire process takes under 2 minutes in your browser.\n\n"
+        f"Regards,\n{agent_name}"
+    )
 
-    status   = status_resp.get("status", "unknown")
-    ch_done  = status_resp.get("challenges_completed", 0)
-    ch_total = status_resp.get("total_challenges", len(challenges) or 2)
-    result   = status_resp.get("result")
-
-    col_s, col_p = st.columns([3, 2])
-    with col_s:
-        status_colors = {
-            "waiting":   ("Yellow circle", "Waiting for customer"),
-            "active":    ("Blue circle", "Session in progress"),
-            "completed": ("Green circle", "Completed"),
-            "failed":    ("Red circle", "Failed"),
-            "expired":   ("Black circle", "Expired"),
-        }
-        icon, label = status_colors.get(status, ("White circle", status))
-        st.metric("Session status", label)
-    with col_p:
-        st.metric("Challenges", f"{ch_done} / {ch_total} done")
-
-    if status in ("waiting", "active"):
-        st.progress(ch_done / max(ch_total, 1), text="Liveness challenges progress")
-        with st.spinner("Waiting for customer to complete verification..."):
-            time.sleep(2)
-        st.rerun()
-
-    elif status == "completed" and result:
-        passed     = result.get("passed", False)
-        disp_score = result.get("display_score", result.get("match_score", 0) * 100)
-        cosine_sim = result.get("cosine_similarity", 0.0)
-
-        if passed:
-            st.success(f"Identity Verified -- Face match score: {disp_score:.1f}%")
-        else:
-            st.error(f"Verification Failed -- Score: {disp_score:.1f}%")
-            st.caption(result.get("message", ""))
-
-        vkyc_result, entity_ref, vkyc_pdf = _build_kyc_save_artifacts(
-            result,
-            sid,
-            status_resp,
-            st.session_state.get("vkyc_doc_filename", ""),
-            st.session_state.get("vkyc_forced_ref"),
-            st.session_state.get("vkyc_extra_identity"),
-            cosine_sim,
-        )
-
-        if _DB_IMPORTS_OK and _db_available_cached():
-            if st.session_state.get("vkyc_saved_remote"):
-                st.success(
-                    f"Saved to database — Entity: **{st.session_state.get('vkyc_saved_remote_ref') or 'unlinked'}**"
-                )
-            elif st.button("💾 Save to Database", key="vkyc_remote_save_btn", use_container_width=True):
-                with st.spinner("Saving Video KYC result to database..."):
-                    saved = save_identity_check(
-                        check_type="video_kyc",
-                        result=vkyc_result,
-                        forced_entity_ref=st.session_state.get("vkyc_forced_ref"),
-                        extra_identity=st.session_state.get("vkyc_extra_identity"),
-                        doc_filename=st.session_state.get("vkyc_doc_filename", ""),
-                        pdf_bytes=vkyc_pdf,
-                        doc_bytes=st.session_state.get("vkyc_doc_bytes"),
-                    )
-                    if saved:
-                        st.session_state["vkyc_saved_remote"] = True
-                        st.session_state["vkyc_saved_remote_ref"] = saved.get("entity_ref")
-                        st.rerun()
-                    else:
-                        st.error(
-                            "Video KYC completed but could not be saved to the database. "
-                            "Check the Logs screen for details."
-                        )
-        else:
-            st.info("Database is offline — result not persisted.")
-
-        if vkyc_pdf and st.session_state.get("vkyc_saved_remote"):
+    # Calendar invite download + mailto: link
+    col_ics, col_mail = st.columns(2)
+    with col_ics:
+        if ics_bytes:
+            safe_name = cust_name.replace(" ", "_")
             st.download_button(
-                "Download KYC Report (PDF)",
-                data=vkyc_pdf,
-                file_name=f"video_kyc_{entity_ref or 'report'}.pdf",
-                mime="application/pdf",
-                key="vkyc_pdf_dl",
+                "📅 Download Calendar Invite (.ics)",
+                data=ics_bytes,
+                file_name=f"vkyc_{safe_name}.ics",
+                mime="text/calendar",
+                use_container_width=True,
             )
+            st.caption("Attach this .ics file when emailing the customer.")
+    with col_mail:
+        import urllib.parse  # noqa: PLC0415
+        # Build a mailto: link so the operator can open their email client pre-filled.
+        # This avoids needing SMTP credentials in BaseTruth.
+        subject = f"Your Video KYC Session — {date_str} at {time_str} IST"
+        mailto = (
+            f"mailto:{cust_email}"
+            f"?subject={urllib.parse.quote(subject)}"
+            f"&body={urllib.parse.quote(email_body)}"
+        )
+        st.markdown(
+            f'<a href="{mailto}" '
+            f'style="display:inline-block;width:100%;padding:.45rem .9rem;'
+            f'background:#0ea5e9;color:#fff;border-radius:8px;text-decoration:none;'
+            f'font-size:.85rem;font-weight:600;text-align:center">'
+            f'📧 Open Email Client</a>',
+            unsafe_allow_html=True,
+        )
+        if not cust_email:
+            st.caption("Add customer email in Step 1 to pre-fill the address.")
+        else:
+            st.caption(f"Opens your email client addressed to {cust_email}.")
 
-        if st.button("Start New Session", use_container_width=True):
-            for k in ["vkyc_active_sid", "vkyc_session_url", "vkyc_session_created",
-                      "vkyc_ref_emb_b64", "vkyc_doc_filename", "vkyc_doc_bytes",
-                      "vkyc_saved_remote", "vkyc_saved_remote_ref"]:
-                st.session_state.pop(k, None)
-            st.rerun()
+    with st.expander("📋 Email invite text (copy & paste)", expanded=False):
+        st.code(email_body, language="text")
 
-    elif status in ("failed", "expired"):
-        msg = "Session expired -- please create a new one." if status == "expired" \
-              else "Verification failed. Please retry."
-        st.error(msg)
-        if st.button("Start New Session", use_container_width=True):
-            for k in ["vkyc_active_sid", "vkyc_session_url", "vkyc_session_created",
-                      "vkyc_ref_emb_b64", "vkyc_doc_filename", "vkyc_doc_bytes",
-                      "vkyc_saved_remote", "vkyc_saved_remote_ref"]:
-                st.session_state.pop(k, None)
-            st.rerun()
+
+# ===========================================================================
+# Session-state reset helper
+# ===========================================================================
+
+def _clear_session_state() -> None:
+    """Reset all vkyc_* session-state keys to allow starting a fresh session."""
+    for k in [
+        "vkyc_active_sid", "vkyc_session_url", "vkyc_session_created",
+        "vkyc_ref_emb_b64", "vkyc_doc_filename", "vkyc_doc_bytes",
+        "vkyc_saved_remote", "vkyc_saved_remote_ref",
+        "vkyc_ics_bytes", "vkyc_customer_name", "vkyc_customer_email",
+        "vkyc_agent_name", "vkyc_appt_date_str", "vkyc_appt_time_str",
+        "vkyc_duration_min", "vkyc_forced_ref", "vkyc_extra_identity",
+        "vkyc_challenges_used",
+    ]:
+        st.session_state.pop(k, None)
+
+
+# ===========================================================================
+# KYC persistence helper (shared by the status section below)
+# ===========================================================================
 
 
 def _build_kyc_save_artifacts(
@@ -455,366 +552,124 @@ def _build_kyc_save_artifacts(
 
 
 # ===========================================================================
-# Tab 2 -- Schedule Appointment
+# Section 2 — Session Status  (live polling + save)
 # ===========================================================================
 
-def _tab_schedule() -> None:
-    st.markdown(
-        """
-        <div style="background:linear-gradient(135deg,#1e293b,#0f172a);
-                    border:1px solid #334155;border-radius:12px;
-                    padding:1rem 1.25rem;margin-bottom:1.2rem">
-        <h4 style="color:#e2e8f0;margin:0 0 .4rem">Schedule a Video KYC Appointment</h4>
-        <p style="color:#94a3b8;font-size:.85rem;margin:0;line-height:1.6">
-        Create a KYC session first (tab 1) to get the secure URL, then paste it as the
-        Meeting Link below. The customer receives a calendar invite -- when they click
-        the join link at the scheduled time, they land directly on the BaseTruth KYC page
-        in their browser. No Zoom or Teams account required.
-        </p></div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    _default_link = st.session_state.get("vkyc_session_url", "")
-
-    with st.form("vkyc_schedule_form", clear_on_submit=False):
-        st.subheader("Session Details")
-        c1, c2 = st.columns(2)
-        with c1:
-            customer_name = st.text_input("Customer Name *", placeholder="e.g. Rahul Sharma")
-            agent_name    = st.text_input("Agent / Your Name *", placeholder="e.g. Priya Mehta")
-        with c2:
-            session_date = st.date_input("Session Date *", min_value=datetime.today().date())
-            session_time = st.time_input("Session Time (IST) *", value=None)
-
-        duration = st.selectbox(
-            "Duration",
-            options=[15, 20, 30, 45, 60],
-            index=2,
-            format_func=lambda x: f"{x} minutes",
+def _section_session_status() -> None:
+    """Tab 2: polls the active session every 2 s while it is running, shows
+    the result when completed, and provides Save to Database and PDF download.
+    """
+    if not st.session_state.get("vkyc_session_created"):
+        st.info(
+            "No active session yet. Go to **Session Setup & Schedule** to create one.",
+            icon="ℹ️",
         )
-        meeting_link = st.text_input(
-            "KYC Session URL / Meeting Link *",
-            value=_default_link,
-            placeholder="http://localhost:8000/kyc/...  or  https://your-domain/kyc/...",
-            help=(
-                "Create a KYC session in the Start KYC Session tab to get this URL. "
-                "Alternatively paste a Zoom / Teams link if using external video."
-            ),
-        )
-        notes = st.text_area(
-            "Additional Notes (optional)",
-            placeholder="e.g. Please keep your Aadhaar card and PAN card handy.",
-            height=70,
-        )
-        submitted = st.form_submit_button(
-            "Generate Calendar Invite", type="primary", use_container_width=True
-        )
-
-    if submitted:
-        errors = []
-        if not customer_name.strip():  errors.append("Customer Name is required.")
-        if not agent_name.strip():     errors.append("Agent Name is required.")
-        if not meeting_link.strip():   errors.append("Meeting / KYC URL is required.")
-        if session_time is None:       errors.append("Session Time is required.")
-        for e in errors:
-            st.error(e)
-        if errors:
-            return
-
-        ist_offset   = timezone(timedelta(hours=5, minutes=30))
-        start_dt     = datetime(
-            session_date.year, session_date.month, session_date.day,
-            session_time.hour, session_time.minute, tzinfo=ist_offset,
-        )
-        start_dt_utc = start_dt.astimezone(timezone.utc)
-
-        description = textwrap.dedent(f"""\
-            Video KYC Session -- BaseTruth AI Identity Verification
-
-            Customer : {customer_name.strip()}
-            Agent    : {agent_name.strip()}
-            Join URL : {meeting_link.strip()}
-
-            What to prepare:
-            - Original Aadhaar Card (physical or digital)
-            - Original PAN Card
-            - Good lighting and a stable internet connection
-            - A device with a front-facing camera and a modern browser (Chrome, Safari, Edge)
-
-            {('Notes: ' + notes.strip()) if notes.strip() else ''}
-
-            Click the Join URL at the scheduled time to begin the verification.
-            The AI-powered check takes 30-60 seconds in your browser -- no app needed.
-        """).strip()
-
-        ics_bytes = _make_ics(
-            customer_name.strip(), agent_name.strip(), meeting_link.strip(),
-            start_dt_utc, duration, description,
-        )
-        st.success(
-            f"Calendar invite ready for {customer_name.strip()} -- "
-            f"{session_date.strftime('%d %b %Y')} at "
-            f"{session_time.strftime('%I:%M %p')} IST ({duration} min)"
-        )
-
-        col_dl, col_info = st.columns([1, 1])
-        with col_dl:
-            st.download_button(
-                "Download .ics (Calendar Invite)",
-                data=ics_bytes,
-                file_name=f"vkyc_{customer_name.strip().replace(' ', '_')}.ics",
-                mime="text/calendar",
-                use_container_width=True,
-            )
-        with col_info:
-            st.info("Forward the .ics to the customer via email or WhatsApp.", icon="📧")
-
-        with st.expander("Email invite text (copy & paste)", expanded=False):
-            email_body = textwrap.dedent(f"""\
-                Subject: Video KYC -- {session_date.strftime('%d %b %Y')} at {session_time.strftime('%I:%M %p')} IST
-
-                Dear {customer_name.strip()},
-
-                Your Video KYC session has been scheduled:
-
-                Date & Time : {session_date.strftime('%d %B %Y')} at {session_time.strftime('%I:%M %p')} IST
-                Duration    : {duration} minutes
-                Join Link   : {meeting_link.strip()}
-
-                What to keep ready:
-                  - Original Aadhaar Card (physical or digital)
-                  - Original PAN Card
-                  - Good lighting and a stable internet connection
-                  - A laptop or mobile with a front camera and Chrome / Safari / Edge
-
-                {('Notes: ' + notes.strip()) if notes.strip() else ''}
-
-                At the scheduled time, simply click the Join Link above.
-                The verification runs entirely in your browser -- no app download needed.
-
-                Regards,
-                {agent_name.strip()}
-            """).strip()
-            st.code(email_body, language="text")
-
-
-# ===========================================================================
-# Tab 3 -- In-Person Webcam Verify
-# ===========================================================================
-
-def _tab_conduct() -> None:
-    with st.expander("How it works", expanded=False):
-        st.markdown(
-            "For **face-to-face** or on-site KYC, use this tab.\n\n"
-            "1. Upload a reference ID document to extract the face embedding.\n"
-            "2. Use the camera input to capture a live photo.\n"
-            "3. The system runs RetinaFace + ArcFace to compare the live face with the ID.\n\n"
-            "For the liveness heuristic, slightly turn your head left or right before capturing."
-        )
-
-    forced_ref, extra_identity = None, None
-    if _DB_IMPORTS_OK and _db_available_cached():
-        forced_ref, extra_identity = _render_entity_link_widget("vkyc_conduct", mandatory=True)
-        st.divider()
-
-    st.subheader("1  Reference ID")
-    doc_file = st.file_uploader(
-        "Upload ID Document",
-        type=["jpg", "jpeg", "png", "webp"],
-        key="vk_doc",
-    )
-    if doc_file:
-        import cv2  # noqa: PLC0415
-        import numpy as np  # noqa: PLC0415
-        from basetruth.vision.face import get_face_analyzer  # noqa: PLC0415
-
-        face_app = get_face_analyzer()
-        nparr    = np.frombuffer(doc_file.getvalue(), np.uint8)
-        img      = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        try:
-            faces = face_app.get(img)
-        except Exception as exc:  # noqa: BLE001
-            st.error(f"Face detection failed: {exc}")
-            faces = []
-
-        if faces:
-            face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
-            st.session_state["vkyc_ref_emb"] = face.normed_embedding
-            st.success("Reference face extracted.")
-        else:
-            st.error("No face detected in the uploaded document.")
-            st.session_state.pop("vkyc_ref_emb", None)
-
-    st.divider()
-    st.subheader("2  Live Capture")
-
-    reference_emb = st.session_state.get("vkyc_ref_emb")
-    if reference_emb is None:
-        st.warning("Upload a Reference ID Document above first.")
         return
 
-    st.info("For liveness detection, slightly turn your head before capturing.", icon="ℹ️")
-    camera_photo = st.camera_input("Capture live photo", key="vkyc_camera")
+    sid        = st.session_state.get("vkyc_active_sid", "")
+    challenges = st.session_state.get("vkyc_challenges_used", [])
 
-    if camera_photo is not None:
-        camera_bytes = camera_photo.getvalue()
-        if st.session_state.get("vkyc_conduct_camera_bytes") != camera_bytes:
-            st.session_state["vkyc_conduct_camera_bytes"] = camera_bytes
-            st.session_state["vkyc_conduct_saved"] = False
-            st.session_state.pop("vkyc_conduct_saved_ref", None)
+    status_resp = _api_get(f"/kyc/sessions/{sid}")
+    if not status_resp:
+        return
 
-        if _DB_IMPORTS_OK and _db_available_cached() and not forced_ref and not extra_identity:
-            st.warning("Please link an entity (mandatory).")
-            st.stop()
+    status   = status_resp.get("status", "unknown")
+    ch_done  = status_resp.get("challenges_completed", 0)
+    ch_total = status_resp.get("total_challenges", len(challenges) or 2)
+    result   = status_resp.get("result")
 
-        import cv2  # noqa: PLC0415
-        import numpy as np  # noqa: PLC0415
+    col_s, col_p = st.columns([3, 2])
+    with col_s:
+        status_labels = {
+            "waiting":   "⏳ Waiting for customer",
+            "active":    "🔵 Session in progress",
+            "completed": "✅ Completed",
+            "failed":    "❌ Failed",
+            "expired":   "⚫ Expired",
+        }
+        st.metric("Session status", status_labels.get(status, status))
+    with col_p:
+        st.metric("Challenges", f"{ch_done} / {ch_total} done")
 
-        nparr    = np.frombuffer(camera_bytes, np.uint8)
-        live_img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        if live_img is None:
-            st.error("Failed to decode the captured image.")
-            return
+    if status in ("waiting", "active"):
+        # Auto-refresh every 2 s while the customer is active
+        st.progress(ch_done / max(ch_total, 1), text="Liveness challenges progress")
+        with st.spinner("Waiting for customer to complete verification..."):
+            time.sleep(2)
+        st.rerun()
 
-        with st.spinner("Running RetinaFace + ArcFace..."):
-            from basetruth.vision.face import get_face_analyzer  # noqa: PLC0415
-            face_app = get_face_analyzer()
-            try:
-                faces = face_app.get(live_img)
-            except Exception as exc:  # noqa: BLE001
-                st.error(f"Face detection failed: {exc}")
-                return
+    elif status == "completed" and result:
+        passed     = result.get("passed", False)
+        disp_score = result.get("display_score", result.get("match_score", 0) * 100)
+        cosine_sim = result.get("cosine_similarity", 0.0)
 
-        if not faces:
-            st.error("No face detected. Please try again with better lighting.")
-            return
+        if passed:
+            st.success(f"Identity Verified — Face match score: {disp_score:.1f}%")
+        else:
+            st.error(f"Verification Failed — Score: {disp_score:.1f}%")
+            st.caption(result.get("message", ""))
 
-        primary = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
-        box     = primary.bbox.astype(int)
-
-        liveness_state   = "Center"
-        head_turn_passed = False
-        if primary.kps is not None:
-            left_eye_x  = primary.kps[0][0]
-            right_eye_x = primary.kps[1][0]
-            nose_x      = primary.kps[2][0]
-            dist_l = abs(nose_x - left_eye_x)
-            dist_r = max(abs(right_eye_x - nose_x), 1.0)
-            ratio  = dist_l / dist_r
-            if ratio > 1.6:
-                liveness_state, head_turn_passed = "Turned Right", True
-            elif ratio < 0.6:
-                liveness_state, head_turn_passed = "Turned Left", True
-
-        emb      = primary.normed_embedding
-        sim      = float(np.dot(emb, reference_emb))
-        score    = min(max((sim - (-0.5)) / (1.0 - (-0.5)) * 100, 0), 100)
-        is_match = sim >= 0.40
-
-        color  = (0, 255, 0) if is_match else (0, 0, 255)
-        label  = f"VERIFIED: {score:.1f}%" if is_match else f"MISMATCH: {score:.1f}%"
-        cv2.rectangle(live_img, (box[0], box[1]), (box[2], box[3]), color, 3)
-        cv2.putText(live_img, label,
-                    (box[0], box[1] - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-        live_txt = f"Liveness: {liveness_state} {'(PASS)' if head_turn_passed else ''}"
-        cv2.putText(live_img, live_txt,
-                    (box[0], box[1] - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
-        if primary.kps is not None:
-            for p in primary.kps.astype(int):
-                cv2.circle(live_img, (p[0], p[1]), 3, (255, 0, 0), cv2.FILLED)
-
-        annotated_rgb = cv2.cvtColor(live_img, cv2.COLOR_BGR2RGB)
-        st.image(annotated_rgb, caption="Annotated Result", use_container_width=True)
-
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            if is_match:
-                st.success(f"Identity Match\nScore: {score:.1f}%")
-            else:
-                st.error(f"Identity Mismatch\nScore: {score:.1f}%")
-        with col2:
-            if head_turn_passed:
-                st.success(f"Liveness Passed\nHead: {liveness_state}")
-            else:
-                st.warning(f"Liveness Inconclusive\nHead: {liveness_state}\nTurn head and retake.")
-        with col3:
-            overall = "PASS" if (is_match and head_turn_passed) else "FAIL"
-            if overall == "PASS":
-                st.success("KYC Verdict: PASS")
-            else:
-                st.error("KYC Verdict: FAIL")
-            st.caption(f"Cosine similarity: {sim:.4f}")
+        vkyc_result, entity_ref, vkyc_pdf = _build_kyc_save_artifacts(
+            result,
+            sid,
+            status_resp,
+            st.session_state.get("vkyc_doc_filename", ""),
+            st.session_state.get("vkyc_forced_ref"),
+            st.session_state.get("vkyc_extra_identity"),
+            cosine_sim,
+        )
 
         if _DB_IMPORTS_OK and _db_available_cached():
-            vkyc_result: Dict[str, Any] = {
-                "is_match":          bool(is_match),
-                "confidence":        float(sim),
-                "cosine_similarity": float(sim),
-                "display_score":     float(score),
-                "threshold":         0.40,
-                "liveness_state":    liveness_state,
-                "liveness_passed":   bool(head_turn_passed),
-                "match":             bool(is_match),
-            }
-            _ref_for_pdf  = forced_ref or ""
-            _name_for_pdf = ""
-            if extra_identity:
-                _name_for_pdf = (
-                    f"{extra_identity.get('first_name', '')} "
-                    f"{extra_identity.get('last_name', '')}".strip()
-                )
-            vkyc_pdf: Optional[bytes] = None
-            try:
-                from basetruth.reporting.pdf import render_identity_check_pdf  # noqa: PLC0415
-                vkyc_pdf = render_identity_check_pdf(
-                    check_type="video_kyc",
-                    result=vkyc_result,
-                    entity_ref=_ref_for_pdf,
-                    entity_name=_name_for_pdf,
-                    doc_filename=doc_file.name if doc_file else "",
-                )
-            except Exception:  # noqa: BLE001
-                pass
-
-            if st.session_state.get("vkyc_conduct_saved"):
+            if st.session_state.get("vkyc_saved_remote"):
                 st.success(
-                    f"Saved to database — Entity: **{st.session_state.get('vkyc_conduct_saved_ref') or 'unlinked'}**"
+                    f"Saved to database — Entity: **{st.session_state.get('vkyc_saved_remote_ref') or 'unlinked'}**"
                 )
-            elif st.button("💾 Save to Database", key="vkyc_conduct_save_btn", use_container_width=True):
+            elif st.button("💾 Save to Database", key="vkyc_remote_save_btn", use_container_width=True):
                 with st.spinner("Saving Video KYC result to database..."):
-                    vkyc_saved = save_identity_check(
+                    saved = save_identity_check(
                         check_type="video_kyc",
                         result=vkyc_result,
-                        forced_entity_ref=forced_ref,
-                        extra_identity=extra_identity,
-                        doc_filename=doc_file.name if doc_file else "",
+                        forced_entity_ref=st.session_state.get("vkyc_forced_ref"),
+                        extra_identity=st.session_state.get("vkyc_extra_identity"),
+                        doc_filename=st.session_state.get("vkyc_doc_filename", ""),
                         pdf_bytes=vkyc_pdf,
-                        doc_bytes=doc_file.getvalue() if doc_file else None,
-                        selfie_bytes=camera_bytes,
+                        doc_bytes=st.session_state.get("vkyc_doc_bytes"),
                     )
-                    if vkyc_saved:
-                        st.session_state["vkyc_conduct_saved"] = True
-                        st.session_state["vkyc_conduct_saved_ref"] = vkyc_saved.get("entity_ref")
+                    if saved:
+                        st.session_state["vkyc_saved_remote"] = True
+                        st.session_state["vkyc_saved_remote_ref"] = saved.get("entity_ref")
                         st.rerun()
                     else:
                         st.error(
-                            "Video KYC result could not be saved to the database. "
+                            "Video KYC completed but could not be saved to the database. "
                             "Check the Logs screen for details."
                         )
-
-            if vkyc_pdf and st.session_state.get("vkyc_conduct_saved"):
-                st.download_button(
-                    "Download Video KYC Report (PDF)",
-                    data=vkyc_pdf,
-                    file_name=(
-                        f"video_kyc_{st.session_state.get('vkyc_conduct_saved_ref') or forced_ref or 'report'}.pdf"
-                    ),
-                    mime="application/pdf",
-                    key="vkyc_pdf_dl_conduct",
-                )
         else:
             st.info("Database is offline — result not persisted.")
+
+        if vkyc_pdf and st.session_state.get("vkyc_saved_remote"):
+            st.download_button(
+                "⬇ Download KYC Report (PDF)",
+                data=vkyc_pdf,
+                file_name=f"video_kyc_{entity_ref or 'report'}.pdf",
+                mime="application/pdf",
+                key="vkyc_pdf_dl",
+            )
+
+        if st.button("🔄 Start New Session", use_container_width=True):
+            _clear_session_state()
+            st.rerun()
+
+    elif status in ("failed", "expired"):
+        msg = "Session expired — please create a new one." if status == "expired" \
+              else "Verification failed. Please retry."
+        st.error(msg)
+        if st.button("🔄 Start New Session", use_container_width=True):
+            _clear_session_state()
+            st.rerun()
+
+
+
 
 
 # ===========================================================================
@@ -833,21 +688,19 @@ def _page_video_kyc() -> None:
 
     st.markdown(_page_title("🎥", "Video KYC"), unsafe_allow_html=True)
     st.caption(
-        "AI-powered identity verification -- create sessions, schedule appointments, "
-        "and conduct in-person checks."
+        "Create a secure remote session, schedule the appointment, and share "
+        "the link with the customer — all in one step."
     )
 
-    tab_start, tab_schedule, tab_conduct = st.tabs([
-        "Start KYC Session",
-        "Schedule Appointment",
-        "In-Person Verify",
+    tab_setup, tab_status = st.tabs([
+        "📅 Session Setup & Schedule",
+        "📊 Session Status",
     ])
 
-    with tab_start:
-        _tab_start_session()
+    with tab_setup:
+        _section_setup_and_schedule()
+        _section_share_panel()
 
-    with tab_schedule:
-        _tab_schedule()
+    with tab_status:
+        _section_session_status()
 
-    with tab_conduct:
-        _tab_conduct()
