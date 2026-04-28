@@ -4,11 +4,14 @@ You are working on **BaseTruth**, an AI-powered document fraud detection and ide
 
 ## Mandatory: Read Before Every Change
 
-Before writing any code, always read these documents first:
+Before writing any code, always read these documents first in this order:
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — System overview, layer descriptions, and technical decisions
 - [`docs/FUNCTIONALITY.md`](docs/FUNCTIONALITY.md) — Screen-by-screen behaviour, every button action, and rules that must never be broken
 - [`docs/IDENTITY_VERIFICATION.md`](docs/IDENTITY_VERIFICATION.md) — KYC/face-match flow details
+- [`docs/TESTING.md`](docs/TESTING.md) — How BaseTruth tests should be written, what must be unit tested, and how to validate changes
+
+These documents are the product contract. If implementation, tests, and docs diverge, bring them back into sync in the same change.
 
 ## Tech Stack
 
@@ -41,15 +44,23 @@ These rules exist because they have caused bugs in the past. **Do not violate th
 
 8. **Database destructive operations** — `TRUNCATE TABLE` must always be inside a `with st.spinner(...)` block so the user sees progress. Never use raw `DELETE FROM` for bulk deletes.
 
-9. **File Synchronization** — Always keep all configuration files, AI rule files (`.antigravityrules`, `.cursorrules`, `copilot-instructions.md`), and related technical documentation in sync whenever modifying one.
+9. **Documentation Is Source of Truth** — Always follow the documentation first. If behaviour changes, update the relevant docs in the same change. Do not leave stale or contradictory documentation behind.
 
-10. **Design Principles** — Follow coding standards like SOLID design principles uniformly. Ensure separation of concerns, single responsibilities, and well-structured interfaces to keep the application modular.
+10. **File Synchronization** — Always keep all configuration files, AI rule files (`.antigravityrules`, `.cursorrules`, `copilot-instructions.md`), and related technical documentation in sync whenever modifying one.
 
-11. **Temporary Files** — Whenever the "Coding Agent" creates temporary files or scratchpad tests, they MUST be deleted after use to avoid confusion and maintain clean codebases.
+11. **Git Hygiene** — Respect `.gitignore` at all times. Never add ignored files, generated artifacts, local credentials, logs, models, or runtime outputs to git. Keep changes in a clean, reviewable, push-ready state. If git operations are requested, run tests first, then commit and push.
 
-12. **Meaningful Loggers** — Every non-trivial function, API endpoint, service method, and background process must include structured log calls using `get_logger(__name__)`. Log at the right level: `log.info` for key lifecycle events (scan started, entity saved, session created), `log.warning` for recoverable issues (fallback used, field missing), `log.error` for failures that need attention, `log.debug` for step-by-step diagnostic detail. Always include relevant context in the message (entity_ref, scan_id, doc_type, etc.) so log entries are self-contained and searchable without needing a debugger.
+12. **Testing Is Mandatory** — Every non-trivial code change must add or update unit tests. Prefer narrow, deterministic `pytest` tests that do not require a live DB, MinIO, Ollama, webcam, or network. If a behaviour truly cannot be unit tested, add the cheapest higher-level test possible and document the limitation.
 
-13. **Code Comments in Simple Language** — Every significant function, algorithm, and non-obvious block of logic must have inline comments written in plain, simple English that any developer can understand on first read. Comments must explain *why* the code does something (the intent and the reason for choosing this approach), not just *what* it does (which the code itself already shows). Single-letter variables or complex maths must always be followed by a comment explaining what they represent. Forensic functions (ELA, DCT, noise, clone, etc.) must each have a plain-English docstring explaining the technique in 3–5 sentences a non-expert can follow.
+13. **Remove Stale Code And Docs** — When replacing behaviour, remove dead code, obsolete helpers, stale branches, unused imports, outdated comments, and stale documentation in the same area. BaseTruth should not accumulate superseded logic.
+
+14. **Design Principles** — Follow coding standards like SOLID design principles uniformly. Ensure separation of concerns, single responsibilities, and well-structured interfaces to keep the application modular.
+
+15. **Temporary Files** — Whenever the "Coding Agent" creates temporary files or scratchpad tests, they MUST be deleted after use to avoid confusion and maintain clean codebases.
+
+16. **Meaningful Loggers** — Every non-trivial function, API endpoint, service method, and background process must include structured log calls using `get_logger(__name__)`. Log at the right level: `log.info` for key lifecycle events (scan started, entity saved, session created), `log.warning` for recoverable issues (fallback used, field missing), `log.error` for failures that need attention, `log.debug` for step-by-step diagnostic detail. Always include relevant context in the message (entity_ref, scan_id, doc_type, etc.) so log entries are self-contained and searchable without needing a debugger.
+
+17. **Code Comments in Simple Language** — Every significant function, algorithm, and non-obvious block of logic must have inline comments written in plain, simple English that any developer can understand on first read. Comments must explain *why* the code does something (the intent and the reason for choosing this approach), not just *what* it does (which the code itself already shows). Single-letter variables or complex maths must always be followed by a comment explaining what they represent. Forensic functions (ELA, DCT, noise, clone, etc.) must each have a plain-English docstring explaining the technique in 3–5 sentences a non-expert can follow.
 
 ## File Map
 
@@ -66,14 +77,18 @@ These rules exist because they have caused bugs in the past. **Do not violate th
 | `src/basetruth/integrations/document_extract.py` | Gemma4-powered field extraction for bulk scans (payslips, marksheets, offer letters, etc.); called per-document in `bulk.py` after forensics; result stored in `document_extractions` |
 | `docs/ARCHITECTURE.md` | Architecture reference — keep updated |
 | `docs/FUNCTIONALITY.md` | Screen behaviour reference — keep updated |
+| `docs/TESTING.md` | Testing reference — how to write, scope, and run BaseTruth tests |
 
 ## Test Policy
 
-- Run `python -m pytest tests/ -q --tb=short` after every change.
-- All tests must pass before committing.
+- Follow `docs/TESTING.md` for every code change.
+- Add or update unit tests for every non-trivial behaviour change.
+- Run the narrowest relevant `pytest` command first, then run `python -m pytest tests/ -q --tb=short`.
+- All tests must pass before any commit or push.
 - The test file `tests/test_kyc_ws.py` is excluded (requires a live server) via `pyproject.toml`.
 
 ## Commit Policy
 
 - Commit message format: `fix:`, `feat:`, `docs:`, or `refactor:` followed by a short description.
-- Always push to `main` after all tests pass.
+- Respect `.gitignore`; never commit ignored files, local secrets, runtime outputs, or generated artifacts.
+- When git operations are requested, push only after all relevant tests pass.

@@ -1,157 +1,1206 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BaseTruth | Advanced Document Intelligence</title>
-    <meta name="description" content="BaseTruth is a premier Document Intelligence platform offering pinpoint AI-driven extraction, identity verification, and deep forensics detection.">
-    <!-- Google Fonts -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
-    <!-- Custom CSS -->
-    <link rel="stylesheet" href="css/style.css">
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BaseTruth — Document Fraud Detection &amp; Identity Verification</title>
+    <meta name="description" content="BaseTruth is the ground-truth engine for document integrity. Detect forged payslips, fake marksheets, tampered bank statements, and identity fraud with explainable AI forensics." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --blue: #0ea5e9;
+            --blue-light: #38bdf8;
+            --blue-dim: rgba(14,165,233,0.15);
+            --emerald: #10b981;
+            --emerald-dim: rgba(16,185,129,0.12);
+            --violet: #8b5cf6;
+            --violet-dim: rgba(139,92,246,0.12);
+            --amber: #f59e0b;
+            --pink: #ec4899;
+            --red: #ef4444;
+            --bg0: #05090f;
+            --bg1: #080f1d;
+            --bg2: #0c1828;
+            --card-bg: rgba(255,255,255,0.035);
+            --card-bg-hover: rgba(255,255,255,0.06);
+            --border: rgba(14,165,233,0.28);
+            --border-dim: rgba(255,255,255,0.07);
+            --text: #dce6f0;
+            --muted: #7a8899;
+            --radius: 20px;
+            --glow-blue: 0 0 56px rgba(14,165,233,0.22);
+            --glow-em: 0 0 56px rgba(16,185,129,0.22);
+        }
+
+        html { scroll-behavior: smooth; }
+        body { font-family: 'Inter', sans-serif; background: var(--bg0); color: var(--text); overflow-x: hidden; line-height: 1.65; }
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: var(--bg1); }
+        ::-webkit-scrollbar-thumb { background: var(--blue); border-radius: 2px; }
+
+        /* ── Ambient orbs ── */
+        .bg-orbs { position: fixed; inset: 0; pointer-events: none; z-index: 0; overflow: hidden; }
+        .orb { position: absolute; border-radius: 50%; filter: blur(120px); animation: drift 26s ease-in-out infinite alternate; }
+        .orb-1 { width: 700px; height: 700px; background: var(--blue); top: -220px; left: -220px; opacity: 0.09; animation-duration: 28s; }
+        .orb-2 { width: 560px; height: 560px; background: var(--emerald); top: 50%; right: -150px; opacity: 0.07; animation-duration: 34s; animation-delay: -14s; }
+        .orb-3 { width: 460px; height: 460px; background: var(--violet); bottom: -120px; left: 28%; opacity: 0.06; animation-duration: 30s; animation-delay: -20s; }
+        @keyframes drift { 0% { transform: translate(0,0) scale(1); } 100% { transform: translate(60px,50px) scale(1.12); } }
+
+        section { position: relative; z-index: 1; }
+
+        /* ── Nav ── */
+        nav {
+            position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 16px 6%;
+            background: rgba(5,9,15,0.7);
+            backdrop-filter: blur(28px);
+            border-bottom: 1px solid var(--border-dim);
+            transition: background 0.3s;
+        }
+        .nav-logo { display: flex; align-items: center; gap: 10px; font-size: 1.32rem; font-weight: 900; color: #fff; text-decoration: none; letter-spacing: -0.5px; }
+        .nav-logo span { color: var(--blue-light); }
+        .nav-links { display: flex; gap: 28px; align-items: center; }
+        .nav-links a { color: var(--muted); text-decoration: none; font-size: 0.87rem; font-weight: 500; transition: color 0.2s; }
+        .nav-links a:hover { color: #fff; }
+        .btn-nav { padding: 9px 24px; border-radius: 8px; background: var(--blue); color: #fff; font-size: 0.84rem; font-weight: 700; text-decoration: none; transition: all 0.22s; }
+        .btn-nav:hover { background: var(--blue-light); transform: translateY(-1px); box-shadow: var(--glow-blue); }
+        .hamburger { display: none; flex-direction: column; gap: 5px; cursor: pointer; }
+        .hamburger span { display: block; width: 24px; height: 2px; background: var(--text); border-radius: 2px; }
+
+        /* ── Hero ── */
+        #hero { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 130px 6% 100px; }
+        .badge { display: inline-flex; align-items: center; gap: 8px; padding: 6px 18px; border-radius: 100px; border: 1px solid var(--border); background: var(--blue-dim); font-size: 0.76rem; font-weight: 700; color: var(--blue-light); margin-bottom: 38px; letter-spacing: 0.6px; animation: fadeUp 0.8s ease both; }
+        .badge-dot { width: 7px; height: 7px; background: var(--blue); border-radius: 50%; animation: pulse 1.6s ease-in-out infinite; }
+        @keyframes pulse { 0%,100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.5); opacity: 0.5; } }
+        h1 { font-size: clamp(2.8rem, 7vw, 5.2rem); font-weight: 900; line-height: 1.06; letter-spacing: -2px; margin-bottom: 28px; animation: fadeUp 0.8s 0.1s ease both; }
+        h1 .gradient-text { background: linear-gradient(135deg, var(--blue) 0%, var(--violet) 50%, var(--emerald) 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+        .hero-sub { max-width: 640px; font-size: 1.14rem; color: var(--muted); margin-bottom: 52px; line-height: 1.8; animation: fadeUp 0.8s 0.2s ease both; }
+        .hero-buttons { display: flex; gap: 14px; flex-wrap: wrap; justify-content: center; margin-bottom: 72px; animation: fadeUp 0.8s 0.3s ease both; }
+        .btn-primary { display: inline-flex; align-items: center; gap: 8px; padding: 15px 36px; border-radius: 10px; background: var(--blue); color: #fff; font-size: 0.96rem; font-weight: 700; text-decoration: none; transition: all 0.25s; border: none; cursor: pointer; }
+        .btn-primary:hover { background: var(--blue-light); transform: translateY(-2px); box-shadow: 0 16px 48px rgba(14,165,233,0.4); }
+        .btn-secondary { display: inline-flex; align-items: center; gap: 8px; padding: 15px 36px; border-radius: 10px; background: transparent; color: var(--text); font-size: 0.96rem; font-weight: 600; text-decoration: none; border: 1px solid var(--border-dim); transition: all 0.25s; }
+        .btn-secondary:hover { border-color: var(--border); background: var(--card-bg); transform: translateY(-2px); }
+
+        /* Hero mockup card */
+        .hero-scan-card { width: 100%; max-width: 460px; border-radius: 24px; overflow: hidden; background: rgba(8,15,29,0.97); border: 1px solid var(--border-dim); box-shadow: 0 56px 120px rgba(0,0,0,0.65), 0 0 0 1px rgba(255,255,255,0.04); animation: fadeUp 0.9s 0.4s ease both; text-align: left; }
+        .scan-topbar { display: flex; align-items: center; gap: 12px; padding: 14px 20px; background: rgba(14,165,233,0.06); border-bottom: 1px solid var(--border-dim); }
+        .scan-icon-wrap { width: 36px; height: 36px; border-radius: 9px; background: var(--blue-dim); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 1.1rem; flex-shrink: 0; }
+        .scan-file-name { font-weight: 700; font-size: 0.87rem; color: #fff; }
+        .scan-status-line { font-size: 0.71rem; color: var(--muted); margin-top: 2px; }
+        .scan-body { padding: 18px 20px 22px; display: flex; flex-direction: column; gap: 14px; }
+        .score-row { display: flex; align-items: center; justify-content: space-between; }
+        .score-label { font-size: 0.74rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
+        .score-value { font-size: 2.2rem; font-weight: 900; color: #fff; letter-spacing: -1px; font-family: 'JetBrains Mono', monospace; }
+        .verdict-chip { padding: 5px 14px; border-radius: 100px; font-size: 0.73rem; font-weight: 800; letter-spacing: 0.08em; }
+        .verdict-clean { background: rgba(16,185,129,0.14); color: #34d399; border: 1px solid rgba(16,185,129,0.4); }
+        .verdict-suspicious { background: rgba(245,158,11,0.14); color: #fbbf24; border: 1px solid rgba(245,158,11,0.4); }
+        .verdict-forged { background: rgba(239,68,68,0.14); color: #f87171; border: 1px solid rgba(239,68,68,0.4); }
+        .score-bar-wrap { height: 6px; background: rgba(255,255,255,0.07); border-radius: 3px; overflow: hidden; }
+        .score-bar { height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--blue), var(--emerald)); width: 0; transition: width 1.4s ease; }
+        .signal-list { display: flex; flex-direction: column; gap: 7px; }
+        .signal-row { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 9px; font-size: 0.8rem; background: rgba(255,255,255,0.03); border: 1px solid var(--border-dim); }
+        .signal-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+        .sig-clean { background: var(--emerald); }
+        .sig-warn  { background: var(--amber); }
+        .sig-fail  { background: var(--red); }
+        .signal-name { color: var(--text); font-weight: 500; flex: 1; }
+        .signal-badge { font-size: 0.68rem; font-weight: 700; padding: 2px 8px; border-radius: 100px; }
+        .sb-clean { background: rgba(16,185,129,0.12); color: #34d399; }
+        .sb-warn  { background: rgba(245,158,11,0.12); color: #fbbf24; }
+        .sb-fail  { background: rgba(239,68,68,0.12); color: #f87171; }
+        .scan-footer-row { display: flex; justify-content: space-between; align-items: center; font-size: 0.71rem; color: var(--muted); padding-top: 8px; border-top: 1px solid var(--border-dim); }
+
+        /* ── Stats bar ── */
+        .stats-bar { display: flex; flex-wrap: wrap; justify-content: center; padding: 52px 6%; background: rgba(255,255,255,0.018); border-top: 1px solid var(--border-dim); border-bottom: 1px solid var(--border-dim); }
+        .stat-item { flex: 1; min-width: 150px; max-width: 220px; padding: 24px 28px; text-align: center; border-right: 1px solid var(--border-dim); }
+        .stat-item:last-child { border-right: none; }
+        .stat-number { font-size: 2.4rem; font-weight: 900; color: #fff; letter-spacing: -1px; }
+        .stat-number span { color: var(--blue); }
+        .stat-label { font-size: 0.8rem; color: var(--muted); margin-top: 5px; font-weight: 500; }
+
+        /* ── Section commons ── */
+        .section-header { text-align: center; margin-bottom: 64px; }
+        .section-tag { display: inline-block; padding: 4px 14px; border-radius: 100px; border: 1px solid var(--border); background: var(--blue-dim); font-size: 0.71rem; font-weight: 700; color: var(--blue-light); letter-spacing: 1.2px; text-transform: uppercase; margin-bottom: 20px; }
+        h2 { font-size: clamp(1.9rem, 4vw, 2.8rem); font-weight: 900; letter-spacing: -1px; line-height: 1.14; color: #fff; margin-bottom: 16px; }
+        h2 em { font-style: normal; color: var(--blue); }
+        .section-sub { font-size: 1.0rem; color: var(--muted); max-width: 520px; margin: 0 auto; line-height: 1.8; }
+        .section-pad { padding: 108px 6%; }
+        .section-pad-sm { padding: 72px 6%; }
+
+        /* ── Feature cards ── */
+        .features-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; max-width: 1100px; margin: 0 auto; }
+        .feature-card { background: var(--card-bg); border: 1px solid var(--border-dim); border-radius: var(--radius); padding: 34px 30px; transition: all 0.3s; position: relative; overflow: hidden; }
+        .feature-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, transparent, var(--blue), transparent); opacity: 0; transition: opacity 0.3s; }
+        .feature-card:hover { border-color: var(--border); transform: translateY(-4px); box-shadow: 0 24px 64px rgba(0,0,0,0.3), var(--glow-blue); background: var(--card-bg-hover); }
+        .feature-card:hover::before { opacity: 1; }
+        .feature-icon { font-size: 1.7rem; margin-bottom: 18px; display: flex; align-items: center; justify-content: center; width: 54px; height: 54px; background: var(--blue-dim); border-radius: 14px; border: 1px solid var(--border); }
+        .feature-title { font-size: 1.04rem; font-weight: 700; color: #fff; margin-bottom: 10px; }
+        .feature-desc { font-size: 0.9rem; color: var(--muted); line-height: 1.72; }
+        .feature-tag { display: inline-block; margin-top: 14px; padding: 3px 10px; border-radius: 100px; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.5px; }
+        .ft-blue { background: var(--blue-dim); color: var(--blue-light); border: 1px solid var(--border); }
+        .ft-em { background: var(--emerald-dim); color: #34d399; border: 1px solid rgba(16,185,129,0.3); }
+        .ft-vi { background: var(--violet-dim); color: #a78bfa; border: 1px solid rgba(139,92,246,0.3); }
+        .ft-am { background: rgba(245,158,11,0.1); color: #fbbf24; border: 1px solid rgba(245,158,11,0.3); }
+
+        /* ── Screen showcase ── */
+        #screens { background: linear-gradient(180deg, transparent 0%, rgba(14,165,233,0.03) 50%, transparent 100%); }
+        .screens-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 22px; max-width: 1200px; margin: 0 auto; }
+        .screen-card { background: var(--card-bg); border: 1px solid var(--border-dim); border-radius: var(--radius); overflow: hidden; transition: all 0.3s; }
+        .screen-card:hover { transform: translateY(-4px); border-color: var(--border); box-shadow: 0 24px 64px rgba(0,0,0,0.35); }
+        .screen-header { padding: 18px 22px 14px; border-bottom: 1px solid var(--border-dim); display: flex; align-items: center; gap: 14px; }
+        .screen-icon { font-size: 1.5rem; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; border-radius: 12px; flex-shrink: 0; }
+        .si-blue { background: var(--blue-dim); border: 1px solid var(--border); }
+        .si-em { background: var(--emerald-dim); border: 1px solid rgba(16,185,129,0.3); }
+        .si-vi { background: var(--violet-dim); border: 1px solid rgba(139,92,246,0.3); }
+        .si-am { background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.3); }
+        .si-pk { background: rgba(236,72,153,0.1); border: 1px solid rgba(236,72,153,0.3); }
+        .screen-title { font-size: 0.97rem; font-weight: 700; color: #fff; }
+        .screen-subtitle { font-size: 0.73rem; color: var(--muted); margin-top: 2px; }
+        .screen-body { padding: 20px 22px 24px; }
+        .screen-body p { font-size: 0.88rem; color: var(--muted); line-height: 1.75; margin-bottom: 0; }
+        .screen-pills { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 16px; }
+        .pill { font-size: 0.69rem; font-weight: 600; padding: 3px 10px; border-radius: 100px; background: rgba(255,255,255,0.05); border: 1px solid var(--border-dim); color: var(--muted); }
+
+        /* ── Data Extraction deep-dive ── */
+        #extraction { background: rgba(255,255,255,0.01); }
+        .extraction-split { display: grid; grid-template-columns: 1fr 1fr; gap: 52px; align-items: start; max-width: 1100px; margin: 0 auto; }
+        .extraction-list { display: flex; flex-direction: column; gap: 22px; }
+        .extr-item { display: flex; gap: 18px; align-items: flex-start; }
+        .extr-num { font-family: 'JetBrains Mono', monospace; font-size: 0.72rem; font-weight: 700; color: var(--blue-light); background: var(--blue-dim); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; flex-shrink: 0; margin-top: 2px; }
+        .extr-title { font-size: 0.95rem; font-weight: 700; color: #fff; margin-bottom: 5px; }
+        .extr-desc { font-size: 0.87rem; color: var(--muted); line-height: 1.72; }
+        .code-window { background: rgba(5,9,15,0.97); border: 1px solid var(--border-dim); border-radius: 16px; overflow: hidden; }
+        .code-window-bar { padding: 12px 18px; background: rgba(14,165,233,0.05); border-bottom: 1px solid var(--border-dim); display: flex; align-items: center; gap: 10px; }
+        .cw-dot { width: 9px; height: 9px; border-radius: 50%; }
+        .cw-red { background: #ef4444; }
+        .cw-yellow { background: #f59e0b; }
+        .cw-green { background: #10b981; }
+        .cw-title { font-size: 0.72rem; color: var(--muted); font-family: 'JetBrains Mono', monospace; margin-left: 6px; }
+        .code-body { padding: 22px 24px; font-family: 'JetBrains Mono', monospace; font-size: 0.78rem; line-height: 2.0; }
+        .ck { color: var(--blue-light); }
+        .cv { color: var(--text); }
+        .cp { color: #34d399; }
+        .cw { color: #fbbf24; }
+        .cf { color: #f87171; }
+        .cm { color: #3d5070; }
+
+        /* ── Forensic layers ── */
+        #forensics { background: linear-gradient(180deg, transparent 0%, rgba(14,165,233,0.035) 50%, transparent 100%); }
+        .layers-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(196px, 1fr)); gap: 13px; max-width: 1100px; margin: 0 auto; }
+        .layer-card { background: var(--card-bg); border: 1px solid var(--border-dim); border-radius: 15px; padding: 20px 18px; text-align: center; transition: all 0.3s; position: relative; }
+        .layer-card:hover { transform: translateY(-4px); border-color: var(--border); box-shadow: 0 14px 40px rgba(0,0,0,0.32); background: var(--card-bg-hover); }
+        .layer-num { font-size: 0.65rem; font-weight: 800; color: var(--blue); letter-spacing: 0.14em; text-transform: uppercase; margin-bottom: 8px; font-family: 'JetBrains Mono', monospace; }
+        .layer-icon { font-size: 1.55rem; margin-bottom: 8px; }
+        .layer-name { font-size: 0.83rem; font-weight: 700; color: #fff; margin-bottom: 4px; }
+        .layer-desc { font-size: 0.71rem; color: var(--muted); line-height: 1.55; }
+        .layer-badge { position: absolute; top: 10px; right: 10px; padding: 2px 8px; border-radius: 100px; font-size: 0.57rem; font-weight: 700; }
+        .badge-live { background: rgba(16,185,129,0.18); color: #34d399; border: 1px solid rgba(16,185,129,0.4); }
+
+        /* ── AI Copilot section ── */
+        #copilot { background: linear-gradient(180deg, transparent 0%, rgba(139,92,246,0.04) 50%, transparent 100%); }
+        .copilot-split { display: grid; grid-template-columns: 1fr 1fr; gap: 60px; align-items: center; max-width: 1100px; margin: 0 auto; }
+        .copilot-chat-demo { background: rgba(5,9,15,0.97); border: 1px solid var(--border-dim); border-radius: 20px; overflow: hidden; }
+        .chat-topbar { padding: 14px 18px; border-bottom: 1px solid var(--border-dim); background: rgba(139,92,246,0.06); display: flex; align-items: center; gap: 12px; }
+        .chat-avatar { width: 32px; height: 32px; border-radius: 10px; background: var(--violet-dim); border: 1px solid rgba(139,92,246,0.4); display: flex; align-items: center; justify-content: center; font-size: 1rem; }
+        .chat-name { font-size: 0.87rem; font-weight: 700; color: #fff; }
+        .chat-status { font-size: 0.67rem; color: var(--emerald); margin-top: 1px; }
+        .chat-messages { padding: 20px 18px; display: flex; flex-direction: column; gap: 14px; }
+        .msg { max-width: 90%; font-size: 0.82rem; line-height: 1.65; }
+        .msg-user { align-self: flex-end; background: var(--blue-dim); border: 1px solid var(--border); border-radius: 14px 14px 4px 14px; padding: 10px 14px; color: var(--text); }
+        .msg-ai { align-self: flex-start; background: rgba(139,92,246,0.1); border: 1px solid rgba(139,92,246,0.25); border-radius: 14px 14px 14px 4px; padding: 10px 14px; color: var(--text); }
+        .msg-ai .ai-label { font-size: 0.65rem; font-weight: 700; color: #a78bfa; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; }
+        .chat-input-row { padding: 14px 18px; border-top: 1px solid var(--border-dim); display: flex; gap: 10px; background: rgba(255,255,255,0.02); }
+        .chat-input-box { flex: 1; background: rgba(255,255,255,0.05); border: 1px solid var(--border-dim); border-radius: 9px; padding: 9px 14px; font-size: 0.8rem; color: var(--muted); font-family: 'Inter', sans-serif; }
+        .chat-send-btn { padding: 9px 16px; background: var(--violet); border-radius: 9px; color: #fff; font-size: 0.78rem; font-weight: 700; border: none; cursor: pointer; transition: background 0.2s; }
+        .chat-send-btn:hover { background: #7c3aed; }
+        .copilot-points { display: flex; flex-direction: column; gap: 28px; }
+        .cp-point { display: flex; gap: 20px; align-items: flex-start; }
+        .cp-icon { width: 48px; height: 48px; border-radius: 14px; display: flex; align-items: center; justify-content: center; font-size: 1.4rem; flex-shrink: 0; background: var(--violet-dim); border: 1px solid rgba(139,92,246,0.3); }
+        .cp-title { font-size: 0.96rem; font-weight: 700; color: #fff; margin-bottom: 5px; }
+        .cp-desc { font-size: 0.87rem; color: var(--muted); line-height: 1.72; }
+
+        /* ── KYC section ── */
+        #kyc { background: rgba(255,255,255,0.01); }
+        .kyc-split { display: grid; grid-template-columns: 1fr 1fr; gap: 60px; align-items: center; max-width: 1100px; margin: 0 auto; }
+        .kyc-demo { background: rgba(5,9,15,0.97); border: 1px solid var(--border-dim); border-radius: 20px; overflow: hidden; }
+        .kyc-topbar { padding: 14px 18px; border-bottom: 1px solid var(--border-dim); background: rgba(16,185,129,0.06); display: flex; align-items: center; gap: 12px; }
+        .kyc-title-text { font-size: 0.87rem; font-weight: 700; color: #fff; }
+        .kyc-subtitle-text { font-size: 0.67rem; color: var(--muted); margin-top: 1px; }
+        .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); animation: liveBlink 1.4s ease-in-out infinite; }
+        @keyframes liveBlink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+        .kyc-body { padding: 20px 18px; display: flex; flex-direction: column; gap: 14px; }
+        .kyc-challenge-row { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 10px; }
+        .kc-done { background: rgba(16,185,129,0.07); border: 1px solid rgba(16,185,129,0.25); }
+        .kc-active { background: rgba(14,165,233,0.07); border: 1px solid rgba(14,165,233,0.35); animation: activePulse 1.8s ease-in-out infinite; }
+        .kc-pending { background: rgba(255,255,255,0.03); border: 1px solid var(--border-dim); opacity: 0.5; }
+        @keyframes activePulse { 0%,100% { box-shadow: none; } 50% { box-shadow: 0 0 12px rgba(14,165,233,0.3); } }
+        .kc-icon { font-size: 1.1rem; }
+        .kc-label { font-size: 0.84rem; font-weight: 600; color: #fff; flex: 1; }
+        .kc-status { font-size: 0.72rem; font-weight: 700; padding: 3px 10px; border-radius: 100px; }
+        .kc-pass { background: rgba(16,185,129,0.15); color: #34d399; }
+        .kc-inprog { background: rgba(14,165,233,0.15); color: var(--blue-light); }
+        .kc-wait { color: var(--muted); }
+        .kyc-score-row { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; background: rgba(16,185,129,0.05); border: 1px solid rgba(16,185,129,0.2); border-radius: 10px; }
+        .kyc-score-label { font-size: 0.76rem; color: var(--muted); }
+        .kyc-score-val { font-size: 1.1rem; font-weight: 800; color: #34d399; font-family: 'JetBrains Mono', monospace; }
+        .kyc-points { display: flex; flex-direction: column; gap: 26px; }
+        .kyc-point { display: flex; gap: 18px; align-items: flex-start; }
+        .kyc-pt-icon { width: 46px; height: 46px; border-radius: 13px; display: flex; align-items: center; justify-content: center; font-size: 1.35rem; flex-shrink: 0; background: var(--emerald-dim); border: 1px solid rgba(16,185,129,0.3); }
+        .kyc-pt-title { font-size: 0.95rem; font-weight: 700; color: #fff; margin-bottom: 4px; }
+        .kyc-pt-desc { font-size: 0.87rem; color: var(--muted); line-height: 1.72; }
+
+        /* ── Document Intelligence ── */
+        #intelligence { background: linear-gradient(180deg, transparent 0%, rgba(16,185,129,0.03) 50%, transparent 100%); }
+        .intel-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; max-width: 1100px; margin: 0 auto; }
+        .intel-card { background: var(--card-bg); border: 1px solid var(--border-dim); border-radius: var(--radius); padding: 30px 28px; transition: all 0.3s; }
+        .intel-card:hover { transform: translateY(-4px); border-color: var(--border); box-shadow: 0 20px 52px rgba(0,0,0,0.3); background: var(--card-bg-hover); }
+        .intel-icon { font-size: 2rem; margin-bottom: 16px; }
+        .intel-title { font-size: 1.0rem; font-weight: 700; color: #fff; margin-bottom: 8px; }
+        .intel-desc { font-size: 0.88rem; color: var(--muted); line-height: 1.73; }
+
+        /* ── Evidence output demo ── */
+        #evidence { text-align: center; }
+        .demo-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; max-width: 1060px; margin: 0 auto; text-align: left; }
+        .demo-card { background: rgba(8,15,29,0.97); border: 1px solid var(--border-dim); border-radius: 16px; padding: 24px; font-family: 'JetBrains Mono', monospace; font-size: 0.78rem; line-height: 1.95; overflow: hidden; }
+        .demo-card-title { font-family: 'Inter', sans-serif; font-size: 0.8rem; font-weight: 700; color: var(--blue-light); margin-bottom: 14px; text-transform: uppercase; letter-spacing: 0.1em; display: flex; align-items: center; gap: 8px; }
+
+        /* ── Document types ── */
+        #documents { background: rgba(255,255,255,0.01); }
+        .doc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; max-width: 1100px; margin: 0 auto; }
+        .doc-card { background: var(--card-bg); border: 1px solid var(--border-dim); border-radius: 14px; padding: 22px 16px 18px; text-align: center; transition: all 0.3s; }
+        .doc-card:hover { transform: translateY(-4px); border-color: var(--border); background: rgba(14,165,233,0.05); }
+        .doc-emoji { font-size: 1.65rem; margin-bottom: 8px; }
+        .doc-name { font-size: 0.83rem; font-weight: 700; color: #fff; margin-bottom: 3px; }
+        .doc-industry { font-size: 0.7rem; color: var(--muted); }
+
+        /* ── Industries ── */
+        #industries { background: linear-gradient(180deg, transparent 0%, rgba(139,92,246,0.03) 50%, transparent 100%); }
+        .industry-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; max-width: 1100px; margin: 0 auto; }
+        .industry-card { background: var(--card-bg); border: 1px solid var(--border-dim); border-radius: var(--radius); padding: 30px; transition: all 0.3s; position: relative; overflow: hidden; }
+        .industry-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; opacity: 0; transition: opacity 0.3s; }
+        .industry-card:hover { transform: translateY(-4px); border-color: var(--border); box-shadow: 0 24px 64px rgba(0,0,0,0.3); background: var(--card-bg-hover); }
+        .industry-card:hover::before { opacity: 1; }
+        .ic1::before { background: linear-gradient(90deg, transparent, #0ea5e9, transparent); }
+        .ic2::before { background: linear-gradient(90deg, transparent, #10b981, transparent); }
+        .ic3::before { background: linear-gradient(90deg, transparent, #8b5cf6, transparent); }
+        .ic4::before { background: linear-gradient(90deg, transparent, #f59e0b, transparent); }
+        .ic5::before { background: linear-gradient(90deg, transparent, #ec4899, transparent); }
+        .ic6::before { background: linear-gradient(90deg, transparent, #a78bfa, transparent); }
+        .industry-emoji { font-size: 2rem; margin-bottom: 14px; }
+        .industry-name { font-size: 1.04rem; font-weight: 700; color: #fff; margin-bottom: 8px; }
+        .industry-desc { font-size: 0.87rem; color: var(--muted); line-height: 1.75; }
+        .industry-tags { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 14px; }
+        .itag { font-size: 0.68rem; font-weight: 600; padding: 3px 9px; border-radius: 100px; background: rgba(255,255,255,0.04); border: 1px solid var(--border-dim); color: var(--muted); }
+
+        /* ── How it works ── */
+        #how { background: rgba(255,255,255,0.01); }
+        .steps { display: flex; max-width: 960px; margin: 0 auto; border: 1px solid var(--border-dim); border-radius: 22px; overflow: hidden; }
+        .step { flex: 1; padding: 46px 32px; text-align: center; border-right: 1px solid var(--border-dim); background: var(--card-bg); transition: background 0.3s; }
+        .step:last-child { border-right: none; }
+        .step:hover { background: rgba(14,165,233,0.04); }
+        .step-number { font-size: 2.8rem; font-weight: 900; color: var(--blue); opacity: 0.28; line-height: 1; margin-bottom: 20px; font-family: 'JetBrains Mono', monospace; }
+        .step-title { font-size: 1.0rem; font-weight: 700; color: #fff; margin-bottom: 10px; }
+        .step-desc { font-size: 0.87rem; color: var(--muted); line-height: 1.72; }
+
+        /* ── Quick start ── */
+        #quickstart { background: linear-gradient(180deg, transparent, rgba(14,165,233,0.04), transparent); }
+        .qs-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 30px; max-width: 1020px; margin: 0 auto; }
+        .qs-step-label { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+        .qs-num { width: 30px; height: 30px; border-radius: 8px; background: var(--blue); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 0.78rem; font-weight: 800; flex-shrink: 0; }
+        .qs-title { font-size: 0.94rem; font-weight: 700; color: #fff; }
+        .code-block { background: rgba(5,9,15,0.97); border: 1px solid var(--border-dim); border-radius: 12px; padding: 22px 24px; font-family: 'JetBrains Mono', monospace; font-size: 0.78rem; line-height: 2.0; overflow-x: auto; }
+        .cb-comment { color: #2e4266; }
+        .cb-cmd { color: var(--blue-light); }
+        .cb-str { color: #fbbf24; }
+        .cb-ok { color: #34d399; }
+
+        /* ── CTA ── */
+        #cta { text-align: center; padding: 120px 6%; }
+        .cta-card { max-width: 760px; margin: 0 auto; background: linear-gradient(135deg, rgba(14,165,233,0.09) 0%, rgba(139,92,246,0.07) 50%, rgba(16,185,129,0.05) 100%); border: 1px solid var(--border); border-radius: 26px; padding: 72px 56px; }
+        .cta-card h2 { font-size: clamp(1.8rem, 4vw, 2.6rem); margin-bottom: 16px; }
+        .cta-card p { font-size: 1rem; color: var(--muted); max-width: 440px; margin: 0 auto 42px; line-height: 1.8; }
+        .cta-buttons { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+
+        /* ── Footer ── */
+        footer { padding: 52px 6% 30px; border-top: 1px solid var(--border-dim); background: rgba(5,9,15,0.7); }
+        .footer-top { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 40px; margin-bottom: 48px; }
+        .footer-brand p { font-size: 0.84rem; color: var(--muted); max-width: 280px; line-height: 1.75; margin-top: 12px; }
+        .footer-links h4 { font-size: 0.75rem; font-weight: 700; color: #fff; text-transform: uppercase; letter-spacing: 1.1px; margin-bottom: 16px; }
+        .footer-links ul { list-style: none; }
+        .footer-links ul li { margin-bottom: 10px; }
+        .footer-links ul a { font-size: 0.86rem; color: var(--muted); text-decoration: none; transition: color 0.2s; }
+        .footer-links ul a:hover { color: var(--blue-light); }
+        .footer-bottom { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; font-size: 0.79rem; color: var(--muted); padding-top: 24px; border-top: 1px solid var(--border-dim); }
+        .footer-bottom a { color: var(--muted); text-decoration: none; }
+        .footer-bottom a:hover { color: var(--blue-light); }
+        .heart { color: var(--blue); }
+
+        /* Animations */
+        @keyframes fadeUp { from { opacity: 0; transform: translateY(28px); } to { opacity: 1; transform: translateY(0); } }
+        .reveal { opacity: 0; transform: translateY(32px); transition: opacity 0.7s ease, transform 0.7s ease; }
+        .reveal.visible { opacity: 1; transform: translateY(0); }
+
+        /* Responsive */
+        @media (max-width: 960px) {
+            .extraction-split, .copilot-split, .kyc-split { grid-template-columns: 1fr; }
+        }
+        @media (max-width: 860px) {
+            .nav-links { display: none; }
+            .nav-links.open { display: flex; flex-direction: column; gap: 16px; position: fixed; top: 0; right: 0; bottom: 0; width: 270px; background: rgba(5,9,15,0.97); padding: 80px 32px 40px; border-left: 1px solid var(--border-dim); z-index: 200; backdrop-filter: blur(24px); }
+            .nav-links.open a { font-size: 1.05rem; }
+            .hamburger { display: flex; z-index: 300; }
+            .steps { flex-direction: column; }
+            .step { border-right: none; border-bottom: 1px solid var(--border-dim); }
+            .step:last-child { border-bottom: none; }
+            .qs-grid { grid-template-columns: 1fr; }
+            .cta-card { padding: 48px 28px; }
+            .footer-top { flex-direction: column; }
+            .stat-item { border-right: none; border-bottom: 1px solid var(--border-dim); }
+            .stat-item:last-child { border-bottom: none; }
+        }
+        @media (max-width: 520px) {
+            h1 { letter-spacing: -1.5px; }
+            .hero-buttons { flex-direction: column; align-items: stretch; }
+            .btn-primary, .btn-secondary { justify-content: center; }
+        }
+    </style>
 </head>
+
 <body>
-    <!-- Background Elements -->
-    <div class="ambient-glow glow-1"></div>
-    <div class="ambient-glow glow-2"></div>
 
-    <nav class="navbar">
-        <div class="container nav-content">
-            <div class="logo">
-                <span class="logo-icon">&#x2B22;</span>
-                <span class="logo-text">BaseTruth</span>
-            </div>
-            <div class="nav-links">
-                <a href="#features">Features</a>
-                <a href="#solutions">Solutions</a>
-                <a href="#forensics">Forensics</a>
-                <button class="btn btn-primary">Get API Access</button>
+<div class="bg-orbs">
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+    <div class="orb orb-3"></div>
+</div>
+
+<!-- NAV -->
+<nav id="navbar">
+    <a href="#hero" class="nav-logo">🛡️ Base<span>Truth</span></a>
+    <div class="nav-links" id="navLinks">
+        <a href="#screens">Platform</a>
+        <a href="#extraction">Extraction</a>
+        <a href="#forensics">Forensics</a>
+        <a href="#copilot">AI Copilot</a>
+        <a href="#kyc">Live KYC</a>
+        <a href="#industries">Industries</a>
+        <a href="https://github.com/maluskarhrishikesh-afk/BaseTruth" class="btn-nav">⭐ Star on GitHub</a>
+    </div>
+    <div class="hamburger" id="hamburger" onclick="toggleNav()">
+        <span></span><span></span><span></span>
+    </div>
+</nav>
+
+<!-- HERO -->
+<section id="hero">
+    <div class="badge">
+        <div class="badge-dot"></div> Free &amp; Open Source &middot; Runs fully on your machine
+    </div>
+
+    <h1>Does this document<br><span class="gradient-text">tell the truth?</span></h1>
+
+    <p class="hero-sub">
+        BaseTruth is the <strong style="color:#fff;">ground-truth engine for document integrity</strong> — AI-powered forensics, structured data extraction, live identity verification, and natural-language document intelligence. Every signal has a name, a score, and a reason.
+    </p>
+
+    <div class="hero-buttons">
+        <a href="#quickstart" class="btn-primary">🚀 Get Started Free</a>
+        <a href="https://github.com/maluskarhrishikesh-afk/BaseTruth" class="btn-secondary">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.44 9.8 8.21 11.39.6.11.82-.26.82-.58l-.01-2.24c-3.34.72-4.04-1.41-4.04-1.41-.55-1.39-1.34-1.76-1.34-1.76-1.09-.75.08-.73.08-.73 1.21.08 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.5 1 .11-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.12-.3-.54-1.52.12-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 3-.4c1.02.01 2.04.14 3 .4 2.28-1.55 3.29-1.23 3.29-1.23.66 1.66.24 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.63-5.49 5.92.43.37.81 1.1.81 2.22l-.01 3.29c0 .32.22.7.83.58C20.57 21.8 24 17.31 24 12c0-6.63-5.37-12-12-12z"/></svg>
+            View on GitHub
+        </a>
+    </div>
+
+    <div class="hero-scan-card">
+        <div class="scan-topbar">
+            <div class="scan-icon-wrap">📄</div>
+            <div>
+                <div class="scan-file-name">Payslip_Dec_2025.pdf</div>
+                <div class="scan-status-line">11-layer forensic scan complete</div>
             </div>
         </div>
-    </nav>
+        <div class="scan-body">
+            <div class="score-row">
+                <div>
+                    <div class="score-label">Truth Score</div>
+                    <div class="score-value">87<span style="font-size:1rem;color:var(--muted)">/100</span></div>
+                </div>
+                <div class="verdict-chip verdict-clean">✓ CLEAN</div>
+            </div>
+            <div class="score-bar-wrap"><div class="score-bar" id="heroBar"></div></div>
+            <div class="signal-list">
+                <div class="signal-row"><div class="signal-dot sig-clean"></div><span class="signal-name">PDF metadata consistent</span><span class="signal-badge sb-clean">PASS</span></div>
+                <div class="signal-row"><div class="signal-dot sig-clean"></div><span class="signal-name">Gross ≥ Net pay arithmetic</span><span class="signal-badge sb-clean">PASS</span></div>
+                <div class="signal-row"><div class="signal-dot sig-warn"></div><span class="signal-name">Producer: LibreOffice Writer</span><span class="signal-badge sb-warn">LOW RISK</span></div>
+                <div class="signal-row"><div class="signal-dot sig-clean"></div><span class="signal-name">UAN format valid (12 digits)</span><span class="signal-badge sb-clean">PASS</span></div>
+            </div>
+            <div class="scan-footer-row">
+                <span>🕐 Scanned in 1.4 s</span>
+                <span>Payroll pack · 9 signals</span>
+            </div>
+        </div>
+    </div>
+</section>
 
-    <header class="hero">
-        <div class="container hero-content">
-            <div class="hero-text">
-                <div class="badge">DOCUMENT INTELLIGENCE V3.0</div>
-                <h1>Truth at the core<br>of every <span>document</span>.</h1>
-                <p>BaseTruth harnesses local and cloud-based AI to provide pinpoint data extraction, identity verification, and deep spectral forensics. Process PAN cards, academic degrees, and enterprise documents with zero doubt.</p>
-                <div class="hero-actions">
-                    <button class="btn btn-primary btn-large">Start Extracting</button>
-                    <button class="btn btn-secondary btn-large">View Documentation</button>
+<!-- STATS -->
+<div class="stats-bar">
+    <div class="stat-item reveal"><div class="stat-number">11<span>+</span></div><div class="stat-label">Forensic detection layers</div></div>
+    <div class="stat-item reveal"><div class="stat-number">20<span>+</span></div><div class="stat-label">Document types supported</div></div>
+    <div class="stat-item reveal"><div class="stat-number">6</div><div class="stat-label">Industry validation packs</div></div>
+    <div class="stat-item reveal"><div class="stat-number">100<span>%</span></div><div class="stat-label">Explainable — no black boxes</div></div>
+    <div class="stat-item reveal"><div class="stat-number">0<span>$</span></div><div class="stat-label">Free and open source</div></div>
+</div>
+
+<!-- PLATFORM SCREENS -->
+<section id="screens" class="section-pad">
+    <div class="section-header reveal">
+        <div class="section-tag">The Platform</div>
+        <h2>Every screen built for<br><em>operators who cannot guess</em></h2>
+        <p class="section-sub">A complete operator UI with 14 purpose-built screens — from forensic scans to live KYC sessions to AI-powered document chat.</p>
+    </div>
+
+    <div class="screens-grid">
+        <div class="screen-card reveal">
+            <div class="screen-header">
+                <div class="screen-icon si-blue">🔍</div>
+                <div>
+                    <div class="screen-title">Forensic Scan</div>
+                    <div class="screen-subtitle">Instant tamper verdict on any document</div>
                 </div>
             </div>
-            <div class="hero-visual">
-                <div class="glass-card scanner-card">
-                    <div class="scanner-header">
-                        <div class="dot red"></div>
-                        <div class="dot yellow"></div>
-                        <div class="dot green"></div>
-                        <span class="doc-name">identity_verification.pdf</span>
+            <div class="screen-body">
+                <p>Upload any PDF or image and get a forensic verdict in seconds. Gemma4 provides a "Logical Detective" plain-English report alongside a 11-layer forensic breakdown with a named ML or heuristic score.</p>
+                <div class="screen-pills">
+                    <span class="pill">ELA analysis</span><span class="pill">EXIF inspector</span><span class="pill">ML scoring</span><span class="pill">Gemma4 visual clues</span>
+                </div>
+            </div>
+        </div>
+        <div class="screen-card reveal">
+            <div class="screen-header">
+                <div class="screen-icon si-em">📦</div>
+                <div>
+                    <div class="screen-title">Bulk Scan</div>
+                    <div class="screen-subtitle">Process an entire folder in parallel</div>
+                </div>
+            </div>
+            <div class="screen-body">
+                <p>Drop a folder of mixed documents. Gemma4 classifies all types in one batch call, then dispatches forensics and field extraction to isolated worker processes. Runtime is bounded by the slowest document, not the sum.</p>
+                <div class="screen-pills">
+                    <span class="pill">Batch classification</span><span class="pill">ProcessPoolExecutor</span><span class="pill">Auto entity linking</span>
+                </div>
+            </div>
+        </div>
+        <div class="screen-card reveal">
+            <div class="screen-header">
+                <div class="screen-icon si-vi">🧠</div>
+                <div>
+                    <div class="screen-title">Document Intelligence</div>
+                    <div class="screen-subtitle">Rich per-entity analysis dashboard</div>
+                </div>
+            </div>
+            <div class="screen-body">
+                <p>After approval on Review Scans, every document is available here with extracted fields, fraud signals that failed, cross-document comparisons, and full layered analysis evidence for audit review.</p>
+                <div class="screen-pills">
+                    <span class="pill">Extracted fields</span><span class="pill">Fraud signals</span><span class="pill">Cross-doc compare</span><span class="pill">HITL approved</span>
+                </div>
+            </div>
+        </div>
+        <div class="screen-card reveal">
+            <div class="screen-header">
+                <div class="screen-icon si-am">🧑‍💻</div>
+                <div>
+                    <div class="screen-title">Identity Verification</div>
+                    <div class="screen-subtitle">Aadhaar + PAN + Selfie in parallel</div>
+                </div>
+            </div>
+            <div class="screen-body">
+                <p>Upload all three ID documents simultaneously. ThreadPoolExecutor fires all three pipelines in parallel — QR decode, PAN extraction, face detection — and shows results under a single spinner.</p>
+                <div class="screen-pills">
+                    <span class="pill">Aadhaar QR</span><span class="pill">PAN OCR + Gemma4</span><span class="pill">ArcFace match</span><span class="pill">Parallel pipelines</span>
+                </div>
+            </div>
+        </div>
+        <div class="screen-card reveal">
+            <div class="screen-header">
+                <div class="screen-icon si-pk">🎥</div>
+                <div>
+                    <div class="screen-title">Video KYC</div>
+                    <div class="screen-subtitle">Remote liveness verification via WebSocket</div>
+                </div>
+            </div>
+            <div class="screen-body">
+                <p>Create a session and share a URL. The customer opens it on their phone — no app needed. Blink, turn-left, turn-right, and nod challenges run over a WebSocket with MediaPipe EAR blink detection.</p>
+                <div class="screen-pills">
+                    <span class="pill">WebSocket</span><span class="pill">MediaPipe EAR</span><span class="pill">InsightFace ArcFace</span><span class="pill">No app needed</span>
+                </div>
+            </div>
+        </div>
+        <div class="screen-card reveal">
+            <div class="screen-header">
+                <div class="screen-icon si-blue">💬</div>
+                <div>
+                    <div class="screen-title">BaseTruth AI Copilot</div>
+                    <div class="screen-subtitle">Natural language over your case data</div>
+                </div>
+            </div>
+            <div class="screen-body">
+                <p>Ask questions in plain English about scanned documents, entities, and extracted fields. Gemma4 translates intent into structured DB queries and returns grounded, citation-backed answers.</p>
+                <div class="screen-pills">
+                    <span class="pill">Gemma4 + Ollama</span><span class="pill">PostgreSQL</span><span class="pill">MinIO document links</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- DATA EXTRACTION -->
+<section id="extraction" class="section-pad">
+    <div class="section-header reveal">
+        <div class="section-tag">Smart Extraction</div>
+        <h2>Structured data out of<br><em>any document type</em></h2>
+        <p class="section-sub">A two-path pipeline that chooses the right tool for every document — PaddleOCR for scanned pages, embedded text for digital PDFs, Gemma4 for understanding both.</p>
+    </div>
+
+    <div class="extraction-split">
+        <div class="extraction-list reveal">
+            <div class="extr-item">
+                <div class="extr-num">01</div>
+                <div>
+                    <div class="extr-title">Detect document type automatically</div>
+                    <div class="extr-desc">PyMuPDF reads the embedded text layer. More than 200 characters → structured digital PDF. Fewer → scanned image. No configuration needed.</div>
+                </div>
+            </div>
+            <div class="extr-item">
+                <div class="extr-num">02A</div>
+                <div>
+                    <div class="extr-title">Digital PDF path — embedded text + image</div>
+                    <div class="extr-desc">For payslips, bank statements, and offer letters: embedded text gives exact values; the page image gives layout context. Both are sent to Gemma4 together.</div>
+                </div>
+            </div>
+            <div class="extr-item">
+                <div class="extr-num">02B</div>
+                <div>
+                    <div class="extr-title">Scanned path — PaddleOCR + coordinates</div>
+                    <div class="extr-desc">For marksheets, degrees, and identity documents: PaddleOCR runs at 3× zoom, extracts text with pixel-level bounding boxes, and passes coordinates to Gemma4 so column pairing is accurate.</div>
+                </div>
+            </div>
+            <div class="extr-item">
+                <div class="extr-num">03</div>
+                <div>
+                    <div class="extr-title">LLM extraction + validation + retry</div>
+                    <div class="extr-desc">Gemma4 returns structured JSON. A domain rule pack validates arithmetic, required fields, and format patterns. If confidence is LOW or validation fails, Gemma4 is retried once with a correction prompt.</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="code-window reveal">
+            <div class="code-window-bar">
+                <div class="cw-dot cw-red"></div>
+                <div class="cw-dot cw-yellow"></div>
+                <div class="cw-dot cw-green"></div>
+                <span class="cw-title">payslip_extraction.json</span>
+            </div>
+            <div class="code-body">
+                <div><span class="ck">"employee_name"</span>: <span class="cv">"Hrishikesh Maluskar"</span>,</div>
+                <div><span class="ck">"company_name"</span>: <span class="cv">"Infosys Ltd"</span>,</div>
+                <div><span class="ck">"pay_period"</span>: <span class="cv">"December 2025"</span>,</div>
+                <div><span class="ck">"basic_salary"</span>: <span class="cp">45000</span>,</div>
+                <div><span class="ck">"gross_salary"</span>: <span class="cp">68500</span>,</div>
+                <div><span class="ck">"net_salary"</span>: <span class="cp">58200</span>,</div>
+                <div><span class="ck">"uan_number"</span>: <span class="cv">"100987654321"</span>,</div>
+                <div><span class="ck">"allowances"</span>: {</div>
+                <div>&nbsp; <span class="ck">"hra"</span>: <span class="cp">12000</span>,</div>
+                <div>&nbsp; <span class="ck">"special_allowance"</span>: <span class="cp">8500</span>,</div>
+                <div>&nbsp; <span class="ck">"conveyance"</span>: <span class="cp">3000</span></div>
+                <div>},</div>
+                <div><span class="ck">"deductions"</span>: {</div>
+                <div>&nbsp; <span class="ck">"provident_fund"</span>: <span class="cp">5400</span>,</div>
+                <div>&nbsp; <span class="ck">"income_tax"</span>: <span class="cp">4900</span></div>
+                <div>},</div>
+                <div><span class="ck">"_extraction_source"</span>: <span class="cv">"gemma4"</span>,</div>
+                <div><span class="ck">"_confidence"</span>: <span class="cv">"HIGH"</span></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- FORENSIC LAYERS -->
+<section id="forensics" class="section-pad">
+    <div class="section-header reveal">
+        <div class="section-tag">Forensic Engine</div>
+        <h2>Eleven layers of scrutiny —<br><em>every document, every time</em></h2>
+        <p class="section-sub">Image forensics and PDF forensics each run 11 dedicated layers. Every layer emits a named signal with severity, score contribution, and plain-English explanation.</p>
+    </div>
+
+    <div class="layers-grid">
+        <div class="layer-card reveal"><span class="layer-badge badge-live">LIVE</span><div class="layer-num">Layer 01</div><div class="layer-icon">🔦</div><div class="layer-name">ELA — Error Level Analysis</div><div class="layer-desc">Detects copy-paste and region edits via JPEG compression residuals</div></div>
+        <div class="layer-card reveal"><span class="layer-badge badge-live">LIVE</span><div class="layer-num">Layer 02</div><div class="layer-icon">📷</div><div class="layer-name">EXIF Metadata</div><div class="layer-desc">Flags Photoshop, Stable Diffusion, GIMP, Canva, and AI-generation markers</div></div>
+        <div class="layer-card reveal"><span class="layer-badge badge-live">LIVE</span><div class="layer-num">Layer 03</div><div class="layer-icon">📊</div><div class="layer-name">Entropy Analysis</div><div class="layer-desc">Shannon entropy detects uniformly generated or synthetic documents</div></div>
+        <div class="layer-card reveal"><span class="layer-badge badge-live">LIVE</span><div class="layer-num">Layer 04</div><div class="layer-icon">🌫️</div><div class="layer-name">Noise Consistency</div><div class="layer-desc">Laplacian variance across image blocks catches region-level tampering</div></div>
+        <div class="layer-card reveal"><span class="layer-badge badge-live">LIVE</span><div class="layer-num">Layer 05</div><div class="layer-icon">🔢</div><div class="layer-name">DCT Coefficients</div><div class="layer-desc">JPEG DCT distribution exposes double-compression artefacts</div></div>
+        <div class="layer-card reveal"><span class="layer-badge badge-live">LIVE</span><div class="layer-num">Layer 06</div><div class="layer-icon">👯</div><div class="layer-name">Clone Detection</div><div class="layer-desc">Repeated blocks with pixel-shift matching reveal copy-paste regions</div></div>
+        <div class="layer-card reveal"><span class="layer-badge badge-live">LIVE</span><div class="layer-num">Layer 07</div><div class="layer-icon">🎨</div><div class="layer-name">Colour Anomaly</div><div class="layer-desc">Channel correlation and histogram analysis flags synthetic palettes</div></div>
+        <div class="layer-card reveal"><span class="layer-badge badge-live">LIVE</span><div class="layer-num">Layer 08</div><div class="layer-icon">📐</div><div class="layer-name">Edge Continuity</div><div class="layer-desc">Cut-paste boundaries show unnatural edge density breaks</div></div>
+        <div class="layer-card reveal"><span class="layer-badge badge-live">LIVE</span><div class="layer-num">Layer 09</div><div class="layer-icon">✨</div><div class="layer-name">Saturation Check</div><div class="layer-desc">AI-generated images show oversaturated colour distributions</div></div>
+        <div class="layer-card reveal"><span class="layer-badge badge-live">LIVE</span><div class="layer-num">Layer 10</div><div class="layer-icon">🔡</div><div class="layer-name">Font Uniformity</div><div class="layer-desc">Baseline alignment jitter flags cut-and-paste text replacement</div></div>
+        <div class="layer-card reveal"><span class="layer-badge badge-live">LIVE</span><div class="layer-num">Layer 11</div><div class="layer-icon">🤖</div><div class="layer-name">AI Artefact Detection</div><div class="layer-desc">Colour-blob patterns distinctive to AI image generators</div></div>
+    </div>
+</section>
+
+<!-- AI COPILOT -->
+<section id="copilot" class="section-pad">
+    <div class="section-header reveal">
+        <div class="section-tag">AI Copilot</div>
+        <h2>Ask questions about your<br><em>case data in plain English</em></h2>
+        <p class="section-sub">BaseTruth AI Copilot translates natural language into structured DB queries, pulls documents from MinIO, and returns grounded answers with citations.</p>
+    </div>
+
+    <div class="copilot-split">
+        <div class="copilot-chat-demo reveal">
+            <div class="chat-topbar">
+                <div class="chat-avatar">💬</div>
+                <div>
+                    <div class="chat-name">BaseTruth AI Copilot</div>
+                    <div class="chat-status">● Gemma4 · online</div>
+                </div>
+            </div>
+            <div class="chat-messages">
+                <div class="msg msg-user">Show me all entities with a suspicious payslip scan from the last 30 days.</div>
+                <div class="msg msg-ai">
+                    <div class="ai-label">AI Copilot</div>
+                    Found <strong style="color:#fbbf24;">3 entities</strong> with suspicious payslip scans in the past 30 days:<br><br>
+                    · <strong style="color:#fff;">Rahul Sharma</strong> — Truth score 61, Net exceeds Gross flag<br>
+                    · <strong style="color:#fff;">Priya Menon</strong> — Truth score 54, Photoshop producer detected<br>
+                    · <strong style="color:#fff;">Kiran Desai</strong> — Truth score 68, Metadata timestamp mismatch
+                </div>
+                <div class="msg msg-user">What is the face match score for Rahul Sharma's last identity check?</div>
+                <div class="msg msg-ai">
+                    <div class="ai-label">AI Copilot</div>
+                    Rahul Sharma's last identity check (<strong style="color:#fff;">BT-000142</strong>) was run on <strong style="color:#fff;">Apr 22, 2026</strong>.<br><br>
+                    Face match score: <strong style="color:#34d399;">0.81</strong> · Verdict: <strong style="color:#34d399;">MATCH</strong><br>
+                    Liveness: <strong style="color:#34d399;">PASSED</strong> (blink + turn_left)
+                </div>
+            </div>
+            <div class="chat-input-row">
+                <input class="chat-input-box" placeholder="Ask anything about your documents…" readonly />
+                <button class="chat-send-btn">Send</button>
+            </div>
+        </div>
+
+        <div class="copilot-points reveal">
+            <div class="cp-point">
+                <div class="cp-icon">🗄️</div>
+                <div>
+                    <div class="cp-title">PostgreSQL-grounded answers</div>
+                    <div class="cp-desc">Prompts and DB query rules live in <code style="color:var(--blue-light);font-size:0.82em;">qna_prompts.md</code> and are loaded on demand. The model always queries real data — no hallucinated figures.</div>
+                </div>
+            </div>
+            <div class="cp-point">
+                <div class="cp-icon">🖼️</div>
+                <div>
+                    <div class="cp-title">Document images from MinIO</div>
+                    <div class="cp-desc">When a question involves a specific document, the copilot retrieves the stored image from MinIO and passes it to Gemma4's vision API so it can reason about layout, handwriting, and stamps.</div>
+                </div>
+            </div>
+            <div class="cp-point">
+                <div class="cp-icon">💡</div>
+                <div>
+                    <div class="cp-title">Intent-aware chat history</div>
+                    <div class="cp-desc">Each conversation session stores a rolling context window so follow-up questions stay coherent. Previous entity context, document types, and filter values carry forward automatically.</div>
+                </div>
+            </div>
+            <div class="cp-point">
+                <div class="cp-icon">🔒</div>
+                <div>
+                    <div class="cp-title">Completely private</div>
+                    <div class="cp-desc">Gemma4 runs locally via Ollama. No query, document, or case detail ever leaves your machine or hits an external API.</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- LIVE KYC -->
+<section id="kyc" class="section-pad">
+    <div class="section-header reveal">
+        <div class="section-tag">Live Video KYC</div>
+        <h2>Remote liveness verification —<br><em>no app, no plugin required</em></h2>
+        <p class="section-sub">Create a session, share a URL. The customer opens it on their own device. Active liveness challenges run over a WebSocket with ArcFace face matching built in.</div>
+    </div>
+
+    <div class="kyc-split">
+        <div class="kyc-points reveal">
+            <div class="kyc-point">
+                <div class="kyc-pt-icon">🔗</div>
+                <div>
+                    <div class="kyc-pt-title">Share a secure URL</div>
+                    <div class="kyc-pt-desc">Operator clicks "Create KYC Session." A 30-minute session is created and a shareable link is returned. Send it by email or WhatsApp — no install required on the customer's side.</div>
+                </div>
+            </div>
+            <div class="kyc-point">
+                <div class="kyc-pt-icon">👁️</div>
+                <div>
+                    <div class="kyc-pt-title">Active liveness over WebSocket</div>
+                    <div class="kyc-pt-desc">The browser streams JPEG frames every 310 ms. Blink uses MediaPipe EAR (Eye Aspect Ratio). Turn-left and turn-right use nose relative position. Nod uses pitch range over 6+ frames.</div>
+                </div>
+            </div>
+            <div class="kyc-point">
+                <div class="kyc-pt-icon">🤝</div>
+                <div>
+                    <div class="kyc-pt-title">ArcFace identity match</div>
+                    <div class="kyc-pt-desc">If an ID document was uploaded at session creation, InsightFace extracts a 512-dimensional face embedding. After liveness passes, ArcFace cosine similarity is computed against the live frame. Threshold: 0.40.</div>
+                </div>
+            </div>
+            <div class="kyc-point">
+                <div class="kyc-pt-icon">📋</div>
+                <div>
+                    <div class="kyc-pt-title">PDF audit report on save</div>
+                    <div class="kyc-pt-desc">Operator clicks "Save to Database." A PDF is generated with the full verdict, liveness timeline, face match metrics, and PASS/FAIL box — stored in PostgreSQL and downloadable immediately.</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="kyc-demo reveal">
+            <div class="kyc-topbar">
+                <div class="live-dot"></div>
+                <div>
+                    <div class="kyc-title-text">Live Session — session_abc123</div>
+                    <div class="kyc-subtitle-text">Customer: Rahul Sharma · 3 challenges remaining</div>
+                </div>
+            </div>
+            <div class="kyc-body">
+                <div class="kyc-challenge-row kc-done">
+                    <div class="kc-icon">👁️</div>
+                    <div class="kc-label">Blink your eyes</div>
+                    <span class="kc-status kc-pass">✓ PASSED</span>
+                </div>
+                <div class="kyc-challenge-row kc-active">
+                    <div class="kc-icon">↩️</div>
+                    <div class="kc-label">Turn head LEFT</div>
+                    <span class="kc-status kc-inprog">● IN PROGRESS</span>
+                </div>
+                <div class="kyc-challenge-row kc-pending">
+                    <div class="kc-icon">↪️</div>
+                    <div class="kc-label">Turn head RIGHT</div>
+                    <span class="kc-status kc-wait">Waiting…</span>
+                </div>
+                <div class="kyc-challenge-row kc-pending">
+                    <div class="kc-icon">⬆️</div>
+                    <div class="kc-label">Nod your head</div>
+                    <span class="kc-status kc-wait">Waiting…</span>
+                </div>
+                <div class="kyc-score-row">
+                    <div>
+                        <div class="kyc-score-label">Face match score</div>
+                        <div style="font-size:0.7rem;color:var(--muted);margin-top:2px">vs uploaded Aadhaar card</div>
                     </div>
-                    <div class="scanner-body">
-                        <div class="scan-line"></div>
-                        <div class="data-row skeleton"></div>
-                        <div class="data-row skeleton short"></div>
-                        <div class="data-row highlight">
-                            <span class="label">Authenticity:</span>
-                            <span class="value valid">VERIFIED (99.8%)</span>
-                        </div>
-                        <div class="data-row highlight border-top">
-                            <span class="label">Spectral FFT:</span>
-                            <span class="value valid">CLEAN</span>
-                        </div>
-                    </div>
+                    <div class="kyc-score-val">0.87</div>
+                </div>
+                <div style="font-size:0.75rem;color:var(--muted);text-align:center;padding-top:2px">
+                    EAR-based blink · InsightFace ArcFace · WebSocket /kyc/ws/{id}
                 </div>
             </div>
         </div>
-    </header>
+    </div>
+</section>
 
-    <section id="features" class="features section">
-        <div class="container">
-            <div class="section-header">
-                <h2>Beyond Simple OCR</h2>
-                <p>A unified pipeline designed for precision, security, and velocity.</p>
+<!-- DOCUMENT INTELLIGENCE -->
+<section id="intelligence" class="section-pad">
+    <div class="section-header reveal">
+        <div class="section-tag">Document Intelligence</div>
+        <h2>From raw scan to<br><em>actionable intelligence</em></h2>
+        <p class="section-sub">Every approved document feeds a structured intelligence layer — extracted fields, fraud signals, cross-document comparisons, and full layered analysis for audit.</p>
+    </div>
+
+    <div class="intel-grid">
+        <div class="intel-card reveal">
+            <div class="intel-icon">🔬</div>
+            <div class="intel-title">Layered Analysis</div>
+            <div class="intel-desc">Every scan stores a complete 11-layer evidence JSON in <code style="color:var(--blue-light);font-size:0.85em;">scans.layered_analysis_json</code>. The Layered Analysis screen lets auditors drill into each forensic layer's raw output, matched signals, and score contributions.</div>
+        </div>
+        <div class="intel-card reveal">
+            <div class="intel-icon">📋</div>
+            <div class="intel-title">Structured Field Extraction</div>
+            <div class="intel-desc">All extracted fields are persisted in <code style="color:var(--blue-light);font-size:0.85em;">document_extractions</code> keyed by entity and file name. Payslips, bank statements, Form 16, offer letters, marksheets — each has a rich field schema surfaced here.</div>
+        </div>
+        <div class="intel-card reveal">
+            <div class="intel-icon">⚠️</div>
+            <div class="intel-title">Fraud Signal Review</div>
+            <div class="intel-desc">Only signals that <em>failed</em> their check are shown — no noise from passed checks. Each signal carries a name, severity, description, and score contribution so analysts know exactly where to look.</div>
+        </div>
+        <div class="intel-card reveal">
+            <div class="intel-icon">📊</div>
+            <div class="intel-title">Cross-Document Comparison</div>
+            <div class="intel-desc">Compare payslips across months — identity drift, net-pay drop spikes, account number changes, and period gaps are all detected and surfaced as named comparison signals with before/after values.</div>
+        </div>
+        <div class="intel-card reveal">
+            <div class="intel-icon">🔄</div>
+            <div class="intel-title">2-Level HITL Approval</div>
+            <div class="intel-desc">Scans land in Review Scans as pending after a Bulk Save. A first reviewer approves, then a second reviewer signs off. Only fully approved scans are promoted to Document Intelligence. No silent auto-promotion.</div>
+        </div>
+        <div class="intel-card reveal">
+            <div class="intel-icon">📄</div>
+            <div class="intel-title">Downloadable PDF Reports</div>
+            <div class="intel-desc">Every verified entity has a PDF audit report stored in PostgreSQL and retrievable via the REST API. The report contains the full verdict, evidence chain, extracted fields, and reviewer sign-offs.</div>
+        </div>
+    </div>
+</section>
+
+<!-- EVIDENCE OUTPUT -->
+<section id="evidence" class="section-pad">
+    <div class="section-header reveal">
+        <div class="section-tag">Evidence Output</div>
+        <h2>Every signal explained —<br><em>nothing hidden</em></h2>
+        <p class="section-sub">BaseTruth emits structured JSON, markdown reports, and PDF audit trails. Every finding is named, scored, and reasoned.</p>
+    </div>
+
+    <div class="demo-grid reveal">
+        <div class="demo-card">
+            <div class="demo-card-title">📊 Payslip verdict</div>
+            <div><span class="ck">"truth_score"</span>: <span class="cv">72</span>,</div>
+            <div><span class="ck">"verdict"</span>: <span class="cw">"SUSPICIOUS"</span>,</div>
+            <div><span class="ck">"signals"</span>: [{</div>
+            <div>&nbsp; <span class="ck">"name"</span>: <span class="cv">"net_exceeds_gross"</span>,</div>
+            <div>&nbsp; <span class="ck">"severity"</span>: <span class="cf">"HIGH"</span>,</div>
+            <div>&nbsp; <span class="ck">"score"</span>: <span class="cv">-28</span>,</div>
+            <div>&nbsp; <span class="ck">"reason"</span>: <span class="cv">"Net ₹58,400 > Gross ₹55,000"</span></div>
+            <div>}, {</div>
+            <div>&nbsp; <span class="ck">"name"</span>: <span class="cv">"editor_mismatch"</span>,</div>
+            <div>&nbsp; <span class="ck">"severity"</span>: <span class="cw">"MEDIUM"</span>,</div>
+            <div>&nbsp; <span class="ck">"reason"</span>: <span class="cv">"Producer: Photoshop CS6"</span></div>
+            <div>}]</div>
+        </div>
+
+        <div class="demo-card">
+            <div class="demo-card-title">🆔 Identity KYC result</div>
+            <div><span class="ck">"aadhaar_qr_decoded"</span>: <span class="cp">true</span>,</div>
+            <div><span class="ck">"pan_ocr_match"</span>: <span class="cp">true</span>,</div>
+            <div><span class="ck">"face_match_score"</span>: <span class="cp">0.94</span>,</div>
+            <div><span class="ck">"liveness_check"</span>: <span class="cp">"passed"</span>,</div>
+            <div><span class="ck">"challenges_completed"</span>: [</div>
+            <div>&nbsp; <span class="cp">"blink"</span>, <span class="cp">"turn_left"</span></div>
+            <div>],</div>
+            <div><span class="ck">"verdict"</span>: <span class="cp">"VERIFIED"</span>,</div>
+            <div><span class="cm">// all 3 pipelines ran in parallel</span></div>
+            <div><span class="ck">"elapsed_ms"</span>: <span class="cv">1180</span></div>
+        </div>
+
+        <div class="demo-card">
+            <div class="demo-card-title">🎓 Marksheet extraction</div>
+            <div><span class="ck">"document_type"</span>: <span class="cv">"hsc_marksheet"</span>,</div>
+            <div><span class="ck">"candidate_name"</span>: <span class="cv">"MALUSKAR HRISHIKESH"</span>,</div>
+            <div><span class="ck">"board"</span>: <span class="cv">"Maharashtra State Board"</span>,</div>
+            <div><span class="ck">"month_year"</span>: <span class="cv">"FEB-2001"</span>,</div>
+            <div><span class="ck">"subjects"</span>: [</div>
+            <div>&nbsp; { <span class="ck">"code"</span>: <span class="cv">"40"</span>, <span class="ck">"marks"</span>: <span class="cp">82</span> },</div>
+            <div>&nbsp; { <span class="ck">"code"</span>: <span class="cv">"54"</span>, <span class="ck">"marks"</span>: <span class="cp">90</span> }</div>
+            <div>],</div>
+            <div><span class="ck">"total"</span>: <span class="cp">504</span>,</div>
+            <div><span class="ck">"result"</span>: <span class="cp">"Distinction"</span></div>
+        </div>
+    </div>
+</section>
+
+<!-- DOCUMENT TYPES -->
+<section id="documents" class="section-pad">
+    <div class="section-header reveal">
+        <div class="section-tag">Document Support</div>
+        <h2>Every document type<br><em>an analyst encounters</em></h2>
+        <p class="section-sub">20+ document types across identity, payroll, education, financial, employment, and healthcare domains.</p>
+    </div>
+
+    <div class="doc-grid">
+        <div class="doc-card reveal"><div class="doc-emoji">💰</div><div class="doc-name">Payslip</div><div class="doc-industry">Payroll / HR</div></div>
+        <div class="doc-card reveal"><div class="doc-emoji">🏦</div><div class="doc-name">Bank Statement</div><div class="doc-industry">Banking / Lending</div></div>
+        <div class="doc-card reveal"><div class="doc-emoji">🪪</div><div class="doc-name">Aadhaar Card</div><div class="doc-industry">Identity / KYC</div></div>
+        <div class="doc-card reveal"><div class="doc-emoji">🪪</div><div class="doc-name">PAN Card</div><div class="doc-industry">Identity / KYC</div></div>
+        <div class="doc-card reveal"><div class="doc-emoji">🎓</div><div class="doc-name">Marksheet</div><div class="doc-industry">Education / BGV</div></div>
+        <div class="doc-card reveal"><div class="doc-emoji">📜</div><div class="doc-name">Degree Certificate</div><div class="doc-industry">Education / BGV</div></div>
+        <div class="doc-card reveal"><div class="doc-emoji">📝</div><div class="doc-name">Offer Letter</div><div class="doc-industry">Employment / BGV</div></div>
+        <div class="doc-card reveal"><div class="doc-emoji">📝</div><div class="doc-name">Experience Letter</div><div class="doc-industry">Employment / BGV</div></div>
+        <div class="doc-card reveal"><div class="doc-emoji">🚪</div><div class="doc-name">Relieving Letter</div><div class="doc-industry">Employment / BGV</div></div>
+        <div class="doc-card reveal"><div class="doc-emoji">📊</div><div class="doc-name">Form 16</div><div class="doc-industry">Tax / Compliance</div></div>
+        <div class="doc-card reveal"><div class="doc-emoji">🏠</div><div class="doc-name">Property Agreement</div><div class="doc-industry">Mortgage / Legal</div></div>
+        <div class="doc-card reveal"><div class="doc-emoji">🎁</div><div class="doc-name">Gift Letter</div><div class="doc-industry">Mortgage / Banking</div></div>
+        <div class="doc-card reveal"><div class="doc-emoji">🏥</div><div class="doc-name">Hospital Bill</div><div class="doc-industry">Healthcare / Insurance</div></div>
+        <div class="doc-card reveal"><div class="doc-emoji">🛡️</div><div class="doc-name">Insurance Claim</div><div class="doc-industry">Insurance</div></div>
+        <div class="doc-card reveal"><div class="doc-emoji">🧾</div><div class="doc-name">Invoice</div><div class="doc-industry">Finance / Audit</div></div>
+        <div class="doc-card reveal"><div class="doc-emoji">📸</div><div class="doc-name">Passport / Photo ID</div><div class="doc-industry">Identity / KYC</div></div>
+    </div>
+</section>
+
+<!-- INDUSTRIES -->
+<section id="industries" class="section-pad">
+    <div class="section-header reveal">
+        <div class="section-tag">Industries</div>
+        <h2>Built for teams that<br><em>cannot afford to be wrong</em></h2>
+        <p class="section-sub">Domain-specific validation packs ensure every check is calibrated to your industry's rules.</p>
+    </div>
+
+    <div class="industry-grid">
+        <div class="industry-card ic1 reveal">
+            <div class="industry-emoji">🏦</div>
+            <div class="industry-name">Banking &amp; Lending</div>
+            <div class="industry-desc">Catch fake salary slips, manipulated bank statements, and balance equation fraud in loan applications before disbursement.</div>
+            <div class="industry-tags"><span class="itag">Payslip verification</span><span class="itag">Balance arithmetic</span><span class="itag">Salary regularity</span></div>
+        </div>
+        <div class="industry-card ic2 reveal">
+            <div class="industry-emoji">🏢</div>
+            <div class="industry-name">HR &amp; Background Verification</div>
+            <div class="industry-desc">Validate employment documents, cross-check offer letters against payslips, and detect inflated CTC claims during background verification.</div>
+            <div class="industry-tags"><span class="itag">Cross-month comparison</span><span class="itag">Identity drift</span><span class="itag">UAN validation</span></div>
+        </div>
+        <div class="industry-card ic3 reveal">
+            <div class="industry-emoji">🛡️</div>
+            <div class="industry-name">Insurance</div>
+            <div class="industry-desc">Detect tampered hospital bills, forged claim documents, and inconsistencies between claim amounts and supporting evidence.</div>
+            <div class="industry-tags"><span class="itag">Hospital bill forensics</span><span class="itag">ELA image analysis</span><span class="itag">Provider field check</span></div>
+        </div>
+        <div class="industry-card ic4 reveal">
+            <div class="industry-emoji">🎓</div>
+            <div class="industry-name">Education Verification</div>
+            <div class="industry-desc">Authenticate marksheets, degrees, and certificates. Detect printed-total manipulation, roll number reuse, and AI-generated stamps.</div>
+            <div class="industry-tags"><span class="itag">SSC / HSC / BE marksheets</span><span class="itag">Degree certificates</span><span class="itag">Total arithmetic</span></div>
+        </div>
+        <div class="industry-card ic5 reveal">
+            <div class="industry-emoji">🏠</div>
+            <div class="industry-name">Mortgage &amp; Real Estate</div>
+            <div class="industry-desc">Full mortgage fraud module — PF/PT/TDS slab checks, HRA proportion rules, and cross-document reconciliation for home loan files.</div>
+            <div class="industry-tags"><span class="itag">Form 16 validation</span><span class="itag">Gift letter checks</span><span class="itag">CTC consistency</span></div>
+        </div>
+        <div class="industry-card ic6 reveal">
+            <div class="industry-emoji">🏥</div>
+            <div class="industry-name">Healthcare &amp; Compliance</div>
+            <div class="industry-desc">Verify patient and provider identity in claims, detect missing mandatory fields, and flag treatment date vs policy period inconsistencies.</div>
+            <div class="industry-tags"><span class="itag">Patient name check</span><span class="itag">Provider validation</span><span class="itag">Visit date check</span></div>
+        </div>
+    </div>
+</section>
+
+<!-- HOW IT WORKS -->
+<section id="how" class="section-pad">
+    <div class="section-header reveal">
+        <div class="section-tag">How It Works</div>
+        <h2>Upload. Analyse. Act —<br><em>in seconds</em></h2>
+        <p class="section-sub">BaseTruth turns a raw document into a structured, explainable verdict in three steps.</p>
+    </div>
+
+    <div class="steps reveal">
+        <div class="step">
+            <div class="step-number">01</div>
+            <div class="step-title">Upload the document</div>
+            <div class="step-desc">Drop a PDF, image, or folder of mixed documents into the operator UI or POST to the REST API. BaseTruth snapshots the file into an evidence workspace and assigns a BT-reference number.</div>
+        </div>
+        <div class="step">
+            <div class="step-number">02</div>
+            <div class="step-title">The pipeline fires</div>
+            <div class="step-desc">Eleven forensic layers run in parallel: OCR extraction, metadata analysis, arithmetic checks, image forensics, semantic validation, and domain-specific rules — simultaneously, not sequentially.</div>
+        </div>
+        <div class="step">
+            <div class="step-number">03</div>
+            <div class="step-title">Evidence, not scores</div>
+            <div class="step-desc">You get a truth score, a named verdict (CLEAN / SUSPICIOUS / FORGED), and a full explanation of every signal — in JSON, Markdown, and a downloadable PDF audit report. Your analyst knows exactly why.</div>
+        </div>
+    </div>
+</section>
+
+<!-- QUICK START -->
+<section id="quickstart" class="section-pad">
+    <div class="section-header reveal">
+        <div class="section-tag">Get Started</div>
+        <h2>Running in<br><em>under five minutes</em></h2>
+        <p class="section-sub">Docker Compose is the fastest path. Python virtualenv works too. Your data never leaves your machine.</p>
+    </div>
+
+    <div class="qs-grid">
+        <div class="reveal">
+            <div class="qs-step-label">
+                <div class="qs-num">1</div>
+                <div class="qs-title">Clone &amp; install</div>
             </div>
-            <div class="grid feature-grid">
-                <!-- Feature 1 -->
-                <div class="glass-card feature-card">
-                    <div class="feature-icon">&#x26A1;</div>
-                    <h3>Smart Extraction</h3>
-                    <p>Powered by Gemma4 and state-of-the-art layout engines to parse complex nested tables and handwritten text dynamically.</p>
-                </div>
-                <!-- Feature 2 -->
-                <div class="glass-card feature-card">
-                    <div class="feature-icon">&#x1F50D;</div>
-                    <h3>Deep Forensics</h3>
-                    <p>Detect AI generation artifacts using mathematical FFT spectral analysis. Spot color anomalies, spliced layers, and metadata tampering.</p>
-                </div>
-                <!-- Feature 3 -->
-                <div class="glass-card feature-card">
-                    <div class="feature-icon">&#x1F6E1;</div>
-                    <h3>Identity Persistence</h3>
-                    <p>Robust PostgreSQL-backed KYC verification ensuring applicant identities are correctly maintained as ground truth for all entity records.</p>
-                </div>
+            <div class="code-block">
+                <div><span class="cb-comment"># Get the code</span></div>
+                <div><span class="cb-cmd">git clone</span> https://github.com/<wbr>maluskarhrishikesh-afk/<wbr>BaseTruth</div>
+                <div><span class="cb-cmd">cd</span> BaseTruth</div>
+                <br>
+                <div><span class="cb-comment"># Create a virtual environment</span></div>
+                <div><span class="cb-cmd">python -m venv</span> .venv</div>
+                <div><span class="cb-cmd">.venv\Scripts\activate</span></div>
+                <br>
+                <div><span class="cb-comment"># Install all extras</span></div>
+                <div><span class="cb-cmd">pip install -e</span> <span class="cb-str">".[ui,api,pdf]"</span></div>
             </div>
         </div>
-    </section>
-
-    <section id="demo" class="demo section dark-section">
-        <div class="container">
-            <div class="demo-layout">
-                <div class="demo-info">
-                    <h2>Advanced Automation</h2>
-                    <p>Replace generic bounding boxes and rigid pipelines with adaptive AI. Watch BaseTruth intelligently locate precisely cropped signature strokes and structured degree data without manual intervention.</p>
-                    <ul class="check-list">
-                        <li>&#x2713; Dynamic Bounding Box Detection</li>
-                        <li>&#x2713; OpenCV Noise Reduction</li>
-                        <li>&#x2713; Full offline capabilities</li>
-                    </ul>
-                </div>
-                <div class="demo-code">
-                    <div class="code-window glass-card">
-                        <div class="code-header">
-                            <span class="tab active">extract_document_v3.py</span>
-                        </div>
-                        <pre><code>import basetruth
-                        
-# Initialize Document Extract pipeline
-engine = basetruth.DocumentIntelligence(model="gemma4")
-                        
-# Process Marksheet
-result = engine.extract(
-    "ssc_marksheet.pdf",
-    tasks=["grades", "signatures", "forensics_fft"]
-)
-                        
-print(result.authenticity_score) # 0.998
-print(result.extracted_data.cgpa) # 9.8</code></pre>
-                    </div>
-                </div>
+        <div class="reveal">
+            <div class="qs-step-label">
+                <div class="qs-num">2</div>
+                <div class="qs-title">Or use Docker Compose</div>
+            </div>
+            <div class="code-block">
+                <div><span class="cb-comment"># Start the full stack</span></div>
+                <div><span class="cb-comment"># (API + UI + PostgreSQL + MinIO)</span></div>
+                <div><span class="cb-cmd">docker compose up</span></div>
+                <br>
+                <div><span class="cb-comment"># Everything is ready at:</span></div>
+                <div style="color:#34d399">✓ UI &rarr; http://localhost:8501</div>
+                <div style="color:#34d399">✓ API &rarr; http://localhost:8000</div>
+                <div style="color:#34d399">✓ Docs &rarr; /api/docs</div>
+                <br>
+                <div><span class="cb-comment"># PostgreSQL + MinIO included</span></div>
             </div>
         </div>
-    </section>
-
-    <footer class="footer">
-        <div class="container footer-content">
-            <div class="footer-brand">
-                <div class="logo">
-                    <span class="logo-icon">&#x2B22;</span>
-                    <span class="logo-text">BaseTruth</span>
-                </div>
-                <p>The definitive Document Intelligence platform.</p>
+        <div class="reveal">
+            <div class="qs-step-label">
+                <div class="qs-num">3</div>
+                <div class="qs-title">Scan your first document</div>
             </div>
-            <div class="footer-links">
-                <a href="#">Privacy</a>
-                <a href="#">Terms</a>
-                <a href="#">GitHub Repository</a>
+            <div class="code-block">
+                <div><span class="cb-comment"># Scan a single document</span></div>
+                <div><span class="cb-cmd">python -m basetruth.cli scan</span> \</div>
+                <div>&nbsp; --input payslip.pdf</div>
+                <br>
+                <div><span class="cb-comment"># Run the full UI</span></div>
+                <div><span class="cb-cmd">streamlit run</span> \</div>
+                <div>&nbsp; src/basetruth/ui/app.py</div>
+                <br>
+                <div style="color:#34d399">✓ Report saved to artifacts/</div>
             </div>
         </div>
-    </footer>
+    </div>
+</section>
 
-    <!-- Scripts -->
-    <script src="js/script.js"></script>
+<!-- CTA -->
+<section id="cta">
+    <div class="cta-card reveal">
+        <div class="badge" style="margin: 0 auto 28px;">
+            <div class="badge-dot"></div> Free &amp; Open Source &middot; MIT Licensed
+        </div>
+        <h2>Stop guessing.<br><em>Start verifying.</em></h2>
+        <p>BaseTruth is completely free and open source. Every signal is named, every score is explained, every report is auditable. Download it once — yours forever.</p>
+        <div class="cta-buttons">
+            <a href="#quickstart" class="btn-primary">🚀 Get Started Free</a>
+            <a href="https://github.com/maluskarhrishikesh-afk/BaseTruth" class="btn-secondary">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.44 9.8 8.21 11.39.6.11.82-.26.82-.58l-.01-2.24c-3.34.72-4.04-1.41-4.04-1.41-.55-1.39-1.34-1.76-1.34-1.76-1.09-.75.08-.73.08-.73 1.21.08 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.5 1 .11-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.12-.3-.54-1.52.12-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 3-.4c1.02.01 2.04.14 3 .4 2.28-1.55 3.29-1.23 3.29-1.23.66 1.66.24 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.63-5.49 5.92.43.37.81 1.1.81 2.22l-.01 3.29c0 .32.22.7.83.58C20.57 21.8 24 17.31 24 12c0-6.63-5.37-12-12-12z"/></svg>
+                Star on GitHub
+            </a>
+        </div>
+    </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+    <div class="footer-top">
+        <div class="footer-brand">
+            <a href="#hero" class="nav-logo">🛡️ Base<span>Truth</span></a>
+            <p>The ground-truth engine for document integrity. Explainable fraud detection for banking, HR, insurance, healthcare, and compliance teams.</p>
+        </div>
+        <div class="footer-links">
+            <h4>Platform</h4>
+            <ul>
+                <li><a href="#screens">Forensic Scan</a></li>
+                <li><a href="#screens">Bulk Scan</a></li>
+                <li><a href="#kyc">Live Video KYC</a></li>
+                <li><a href="#copilot">AI Copilot</a></li>
+                <li><a href="#intelligence">Document Intelligence</a></li>
+            </ul>
+        </div>
+        <div class="footer-links">
+            <h4>Project</h4>
+            <ul>
+                <li><a href="https://github.com/maluskarhrishikesh-afk/BaseTruth">GitHub Repository</a></li>
+                <li><a href="https://github.com/maluskarhrishikesh-afk/BaseTruth/blob/main/docs/ARCHITECTURE.md">Architecture</a></li>
+                <li><a href="https://github.com/maluskarhrishikesh-afk/BaseTruth/blob/main/docs/FUNCTIONALITY.md">Functionality Guide</a></li>
+                <li><a href="https://github.com/maluskarhrishikesh-afk/BaseTruth/blob/main/docs/ROADMAP.md">Roadmap</a></li>
+                <li><a href="https://github.com/maluskarhrishikesh-afk/BaseTruth/blob/main/docs/TESTING.md">Testing Guide</a></li>
+            </ul>
+        </div>
+    </div>
+    <div class="footer-bottom">
+        <span>Built with <span class="heart">♥</span> &middot; Open Source &middot; MIT License</span>
+        <span>
+            <a href="https://github.com/maluskarhrishikesh-afk/BaseTruth">GitHub</a>
+            &nbsp;&middot;&nbsp;
+            <a href="https://github.com/maluskarhrishikesh-afk/BaseTruth/tree/main/docs">Docs</a>
+        </span>
+    </div>
+</footer>
+
+<script>
+    function toggleNav() {
+        const nav = document.getElementById('navLinks');
+        if (nav) nav.classList.toggle('open');
+    }
+
+    (function () {
+        const nav = document.getElementById('navLinks');
+        const hamb = document.getElementById('hamburger');
+
+        function syncNav() {
+            if (!nav || !hamb) return;
+            if (window.innerWidth <= 860) {
+                if (!nav.classList.contains('open')) nav.style.display = 'none';
+                hamb.style.display = 'flex';
+            } else {
+                nav.style.display = 'flex';
+                nav.classList.remove('open');
+                hamb.style.display = 'none';
+            }
+        }
+        window.addEventListener('resize', syncNav);
+
+        document.addEventListener('DOMContentLoaded', function () {
+            syncNav();
+
+            // Animate hero score bar on first view
+            const bar = document.getElementById('heroBar');
+            if (bar) {
+                const io = new IntersectionObserver(entries => {
+                    entries.forEach(e => {
+                        if (e.isIntersecting) { bar.style.width = '87%'; io.unobserve(e.target); }
+                    });
+                }, { threshold: 0.5 });
+                io.observe(bar);
+            }
+
+            // Scroll-reveal for .reveal elements
+            const rIO = new IntersectionObserver((entries, observer) => {
+                entries.forEach(entry => {
+                    if (entry.isIntersecting) {
+                        entry.target.classList.add('visible');
+                        observer.unobserve(entry.target);
+                    }
+                });
+            }, { threshold: 0.1, rootMargin: '0px 0px -40px 0px' });
+            document.querySelectorAll('.reveal').forEach(el => rIO.observe(el));
+
+            // Close mobile nav on link click
+            document.querySelectorAll('.nav-links a').forEach(link => {
+                link.addEventListener('click', () => {
+                    if (window.innerWidth <= 860 && nav) {
+                        nav.classList.remove('open');
+                        nav.style.display = 'none';
+                    }
+                });
+            });
+
+            // Navbar scroll opacity
+            const navbar = document.getElementById('navbar');
+            window.addEventListener('scroll', () => {
+                if (navbar) {
+                    navbar.style.background = window.scrollY > 60
+                        ? 'rgba(5,9,15,0.88)'
+                        : 'rgba(5,9,15,0.7)';
+                }
+            });
+        });
+    })();
+</script>
+
 </body>
 </html>
