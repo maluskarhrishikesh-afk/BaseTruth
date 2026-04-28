@@ -37,6 +37,7 @@ from typing import Any, Dict, Optional
 import requests
 import streamlit as st
 
+from basetruth.integrations.email_invite import KYCEmailSender
 from basetruth.ui.components import (
     _DB_IMPORTS_OK,
     _db_available_cached,
@@ -213,7 +214,7 @@ def _section_setup_and_schedule() -> None:
             "Entity / Case ref", placeholder="e.g. BT-000001", key="vkyc_entity_ref"
         )
         agent_name = st.text_input(
-            "Your name (agent)", placeholder="e.g. Priya Mehta", key="vkyc_agent_name"
+            "Your name (agent)", placeholder="e.g. Priya Mehta", key="vkyc_agent_name_input"
         )
 
     with st.expander("Challenge selection (optional)", expanded=False):
@@ -372,6 +373,7 @@ def _section_setup_and_schedule() -> None:
             "vkyc_ics_bytes":        ics_bytes,
             "vkyc_customer_name":    customer_name.strip(),
             "vkyc_customer_email":   customer_email.strip(),
+            # Store under vkyc_agent_name (different from widget key vkyc_agent_name_input)
             "vkyc_agent_name":       agent_name.strip() or "BaseTruth Agent",
             "vkyc_appt_date_str":    session_date.strftime("%d %b %Y"),
             "vkyc_appt_time_str":    session_time.strftime("%I:%M %p"),
@@ -475,6 +477,72 @@ def _section_share_panel() -> None:
     with st.expander("📋 Email invite text (copy & paste)", expanded=False):
         st.code(email_body, language="text")
 
+    # ── Direct email send (only shown when SMTP is configured) ───────────
+    # Instantiate the sender once to check if SMTP env vars are set.
+    # If not configured, we show an info note instead of a broken button.
+    _sender = KYCEmailSender()
+    if _sender.is_configured():
+        st.divider()
+        st.markdown("**Send invite directly to customer**")
+        st.caption(
+            "This will send the email with the session link and calendar invite "
+            "(.ics attachment) directly to the customer's inbox."
+        )
+        # Track whether the email has already been sent this session so the
+        # button changes to a success state and the operator can re-send if needed.
+        if st.session_state.get("vkyc_email_sent"):
+            st.success(
+                f"Invite already sent to **{cust_email or 'customer'}**. "
+                "Click below to send again if needed.",
+                icon="✅",
+            )
+        if cust_email:
+            if st.button(
+                "📧 Send Email Invite",
+                key="vkyc_send_email_btn",
+                use_container_width=True,
+                type="primary",
+            ):
+                with st.spinner(f"Sending invite to {cust_email}…"):
+                    ok, err = _sender.send_kyc_invite(
+                        to_email=cust_email,
+                        customer_name=cust_name,
+                        agent_name=agent_name,
+                        session_url=session_url,
+                        date_str=date_str,
+                        time_str=time_str,
+                        duration_min=duration_min,
+                        ics_bytes=ics_bytes,
+                    )
+                if ok:
+                    st.session_state["vkyc_email_sent"] = True
+                    st.success(
+                        f"Email invite sent to **{cust_email}** with the session link "
+                        "and calendar attachment.",
+                        icon="✅",
+                    )
+                else:
+                    st.error(f"Could not send email: {err}")
+        else:
+            st.info(
+                "Add the customer email in Step 1 to enable direct sending.",
+                icon="ℹ️",
+            )
+    else:
+        with st.expander("ℹ️ Enable direct email sending", expanded=False):
+            st.markdown(
+                "Set the following environment variables to send invites directly "
+                "from BaseTruth without opening your email client:\n\n"
+                "```\n"
+                "BT_SMTP_HOST=smtp.gmail.com\n"
+                "BT_SMTP_PORT=587\n"
+                "BT_SMTP_USER=you@gmail.com\n"
+                "BT_SMTP_PASSWORD=<app_password>\n"
+                "BT_EMAIL_FROM=BaseTruth KYC <you@gmail.com>\n"
+                "```\n\n"
+                "For Gmail, generate an App Password under **Security → App Passwords**."
+            )
+
 
 # ===========================================================================
 # Session-state reset helper
@@ -487,9 +555,10 @@ def _clear_session_state() -> None:
         "vkyc_ref_emb_b64", "vkyc_doc_filename", "vkyc_doc_bytes",
         "vkyc_saved_remote", "vkyc_saved_remote_ref",
         "vkyc_ics_bytes", "vkyc_customer_name", "vkyc_customer_email",
-        "vkyc_agent_name", "vkyc_appt_date_str", "vkyc_appt_time_str",
+        "vkyc_agent_name", "vkyc_agent_name_input",
+        "vkyc_appt_date_str", "vkyc_appt_time_str",
         "vkyc_duration_min", "vkyc_forced_ref", "vkyc_extra_identity",
-        "vkyc_challenges_used",
+        "vkyc_challenges_used", "vkyc_email_sent",
     ]:
         st.session_state.pop(k, None)
 
