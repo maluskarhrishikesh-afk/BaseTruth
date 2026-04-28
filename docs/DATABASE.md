@@ -53,30 +53,36 @@ This table stores the readable **fields** extracted from a document — things l
 - **Increment Letter:** employee name, company, previous salary, new salary, increment amount and percentage
 - **Bank Statement:** account holder, bank name, account number, IFSC, statement period, opening/closing balances
 - **Form 16:** employee name, PAN, employer name, financial year, gross salary, total tax deducted
-- **Aadhaar:** name, UID (masked), date of birth, address, gender
-- **PAN Card:** PAN number, full name, father's name, date of birth
+
+Identity Verification and Video KYC do **not** store their extracted Aadhaar, PAN, or address-proof payloads here. Those live in the dedicated biometric-check tables.
 
 **`source_screen` field tells you where the extraction came from:**
 - `scan_document` — full OCR pipeline on the Scan Document screen
 - `bulk_scan` — Gemma4 multimodal extraction after forensics in the Bulk Scan screen
-- `identity_verification` — Aadhaar/PAN fields captured during face matching
-
-**Identity Verification save behavior:**
-- If Aadhaar QR data is present, one `aadhaar` row is written
-- If PAN extraction data is present, one `pan_card` row is written
-- If both are present, the same save creates or updates two separate rows
-
-**Note:** For identity verification extractions, `scan_id` is empty (NULL) because there is no scan row for an identity check — only an identity_check row.
 
 ---
 
-### `identity_checks` — Results of face matching and Video KYC
+### `identity_checks` — Current Identity Verification result
 
-Stores the outcome every time someone's face is compared to their ID document, or a Video KYC session is completed.
+Stores the current saved Identity Verification outcome for one applicant.
 
-**What gets stored:** The check type (`face_match` or `video_kyc`), the verdict (`PASS`/`FAIL`), the cosine similarity score (how closely the two faces matched), whether liveness was detected (for Video KYC), and the generated PDF report.
+**What gets stored:** The face-match status and score, the structured Aadhaar payload, the structured PAN payload, MinIO object keys for the Aadhaar image, PAN image, selfie, PAN signature crop, the full evidence JSON, and the generated PDF-report object key.
 
-**Created when:** You click "Save Check" on the Identity Verification screen, or a Video KYC session completes.
+**Created when:** You click "Save to Database" on the Identity Verification screen.
+
+**Update rule:** One current row is kept per entity. Re-saving the same applicant updates the same row instead of creating repeated history entries.
+
+---
+
+### `video_kyc_checks` — Current Video KYC result
+
+Stores the current saved Video KYC outcome for one applicant.
+
+**What gets stored:** The liveness result, the live-face match score, the extracted identity-proof payload, the extracted address-proof payload, current-location data from the customer's browser, the resolved current address, the address-comparison result, the address-distance metric, MinIO object keys for the reference document, address proof, best live frame, and best challenge frames, the full evidence JSON, and the generated PDF-report object key.
+
+**Created when:** You click "Save to Database" on the Video KYC screen after a completed session or in-person verification.
+
+**Update rule:** One current row is kept per entity. Re-saving the same applicant updates the same row instead of creating repeated history entries.
 
 ---
 
@@ -105,7 +111,7 @@ The report goes through the same two-level human approval process as individual 
 ## Design Principles
 
 1. `entities` is the canonical applicant table.
-2. `scans`, `identity_checks`, `document_extractions`, and `entity_reports` use operational UPSERT behaviour so the UI shows one current record per natural entity-scoped key.
+2. `scans`, `document_extractions`, `identity_checks`, `video_kyc_checks`, and `entity_reports` use operational UPSERT behaviour so the UI shows one current record per natural entity-scoped key.
 3. Final reports (`entity_reports`) for a pending entity are refreshed in-place; once approved or rejected a new `BTR-XXXXXX` row is created so the audit trail is preserved.
 4. Deleting an entity cascades to all related rows across every table.
 
@@ -177,45 +183,86 @@ Stores the final result of every document uploaded and scanned by the system. Al
 ### `identity_checks`
 
 **What is it used for?**
-Stores the results of biometric checks like Face Matching (comparing a selfie to an ID) and Video KYC (live video verification). This tells you if a person successfully proved they are who they claim to be.
+Stores the current Identity Verification result for one entity. This tells you whether the Aadhaar face, PAN details, and selfie verification passed for the applicant.
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | SERIAL | Primary key |
 | `entity_id` | FK → `entities.id` | Nullable if no entity could be resolved |
-| `check_type` | VARCHAR(30) | `face_match` or `video_kyc` |
 | `status` | VARCHAR(20) | `pass`, `fail`, `inconclusive` |
 | `cosine_similarity` | FLOAT | Face-match score |
 | `display_score` | FLOAT | 0–100 presentation score |
 | `threshold` | FLOAT | Applied threshold |
 | `is_match` | BOOLEAN | Face-match result |
-| `liveness_state` / `liveness_passed` | VARCHAR / BOOLEAN | Video KYC fields |
-| `verdict` | VARCHAR(20) | `PASS` / `FAIL` |
-| `doc_filename` / `selfie_filename` | VARCHAR(500) | Source filenames |
+| `aadhar_dtls` | JSONB | Aadhaar QR payload |
+| `pan_dtls` | JSONB | PAN extraction payload |
+| `selfie_pic` | VARCHAR(500) | MinIO object key for the saved selfie |
+| `signature_pic` | VARCHAR(500) | MinIO object key for the PAN signature crop |
+| `aadhaar_pic` | VARCHAR(500) | MinIO object key for the Aadhaar source image |
+| `pan_pic` | VARCHAR(500) | MinIO object key for the PAN source image |
 | `report_json` | JSONB | Full result payload |
-| `pdf_report` | BYTEA | Optional PDF report bytes |
+| `pdf_report` | VARCHAR(500) | MinIO object key for the current PDF report |
 | `created_at` | TIMESTAMPTZ | Save timestamp |
+| `updated_at` | TIMESTAMPTZ | Last update timestamp |
 
 **Operational UPSERT key:**
-- `(entity_id, check_type)`
-- Re-saving Identity Verification for the same entity updates the current `face_match` row and replaces the current `face_match_report.pdf` object in MinIO.
+- `(entity_id)`
+- Re-saving Identity Verification for the same entity updates the current row and replaces the current `face_match_report.pdf` object in MinIO.
+
+---
+
+### `video_kyc_checks`
+
+**What is it used for?**
+Stores the current Video KYC result for one entity. This tells you whether the applicant passed liveness, matched the live face against the uploaded proof document, and matched the current location against the address proof.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | SERIAL | Primary key |
+| `entity_id` | FK → `entities.id` | Nullable if no entity could be resolved |
+| `status` | VARCHAR(20) | `pass`, `fail`, `inconclusive` |
+| `cosine_similarity` | FLOAT | Live-face match score |
+| `display_score` | FLOAT | 0–100 presentation score |
+| `threshold` | FLOAT | Applied threshold |
+| `is_match` | BOOLEAN | Live-face match result |
+| `liveness_state` | VARCHAR(50) | Final / latest liveness state |
+| `liveness_passed` | BOOLEAN | Liveness result |
+| `identity_dtls` | JSONB | Reference identity-proof payload |
+| `address_dtls` | JSONB | Address-proof payload |
+| `isAddressMatch` | VARCHAR(20) | `yes`, `no`, or `inconclusive` |
+| `kyc_comments` | VARCHAR(500) | System/operator note for mismatch or distance context |
+| `current_location_json` | JSONB | Browser latitude/longitude/accuracy/timestamp payload |
+| `current_address_text` | TEXT | Reverse-geocoded current address |
+| `address_distance_meters` | FLOAT | Distance between current location and proof address |
+| `video_kyc_pic` | VARCHAR(500) | MinIO object key for the best live frame |
+| `address_proof_pic` | VARCHAR(500) | MinIO object key for the address-proof upload |
+| `reference_doc_pic` | VARCHAR(500) | MinIO object key for the reference identity document |
+| `challenge_snapshots_json` | JSONB | Metadata for one best retained frame per completed challenge |
+| `report_json` | JSONB | Full Video KYC payload |
+| `pdf_report` | VARCHAR(500) | MinIO object key for the current PDF report |
+| `created_at` | TIMESTAMPTZ | Save timestamp |
+| `updated_at` | TIMESTAMPTZ | Last update timestamp |
+
+**Operational UPSERT key:**
+- `(entity_id)`
+- Re-saving Video KYC for the same entity updates the current row and replaces the current `video_kyc_report.pdf` object in MinIO.
 
 ---
 
 ### `document_extractions`
 
 **What is it used for?**
-Stores the rich extracted JSON for a scanned or verified document so operators and auditors can review the normalised document profile without re-parsing the source file. Populated from three sources: the Scan Document screen (OCR path), the Bulk Scan screen (Gemma4 AI extraction after forensics), and the Identity Verification screen (Aadhaar/PAN fields from face matching).
+Stores the rich extracted JSON for a scanned document so operators and auditors can review the normalised document profile without re-parsing the source file. Populated from two sources: the Scan Document screen (OCR path) and the Bulk Scan screen (Gemma4 AI extraction after forensics).
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | SERIAL | Primary key |
 | `entity_id` | FK → `entities.id` | Required |
-| `scan_id` | FK → `scans.id` | Nullable — NULL for identity_verification extractions |
+| `scan_id` | FK → `scans.id` | Nullable when a save path does not create a `scans` row |
 | `file_name` | VARCHAR(500) | Uploaded filename; per-entity UPSERT key |
 | `document_type` | VARCHAR(100) | Normalized document type (e.g. `payslip`, `aadhaar`) |
 | `extracted_data` | JSONB | Rich extracted JSON payload |
-| `source_screen` | VARCHAR(100) | `scan_document`, `bulk_scan`, or `identity_verification` |
+| `source_screen` | VARCHAR(100) | `scan_document` or `bulk_scan` |
 | `created_at` | TIMESTAMPTZ | Insert timestamp |
 
 **Operational UPSERT key:**
@@ -278,7 +325,7 @@ Stores the output of the cross-document consistency analysis that an analyst run
 
 ## Entity Report Generation Rules
 
-1. The Document Intelligence screen generates a final `entity_reports` row by reading the entity's `document_extractions` and `scans`.
+1. The Document Intelligence screen generates a final `entity_reports` row by reading the entity's `document_extractions`, `identity_checks`, `video_kyc_checks`, and `scans`.
 2. A pending (unapproved) report is refreshed in-place — no duplicate row is created.
 3. Once a report is approved or rejected, re-generation creates a new row with a new `BTR-XXXXXX` reference, preserving the audit trail of past decisions.
 4. The rendered PDF is uploaded to MinIO under the `BTR-reports/{entity_ref}/` prefix.
@@ -299,7 +346,7 @@ BTR-reports/{entity_ref}/
   {BTR-XXXXXX}.pdf
 ```
 
-`face_match_report.pdf` and `video_kyc_report.pdf` are the current identity PDFs under the entity prefix. Re-saving Identity Verification replaces the current object in-place.
+`face_match_report.pdf` and `video_kyc_report.pdf` are the current identity PDFs under the entity prefix. Their owning rows store those object keys in `identity_checks.pdf_report` and `video_kyc_checks.pdf_report`. Re-saving either flow replaces the current object in-place.
 
 Final verification reports (`BTR-XXXXXX.pdf`) are stored under the `BTR-reports/` prefix and are downloadable from the Document Intelligence and Reports screens.
 
@@ -307,8 +354,9 @@ Final verification reports (`BTR-XXXXXX.pdf`) are stored under the `BTR-reports/
 
 ## Reset Behaviour
 
-Database reset truncates all five tables in dependency order:
+Database reset truncates all six tables in dependency order:
 - `entity_reports`
+- `video_kyc_checks`
 - `document_extractions`
 - `identity_checks`
 - `scans`

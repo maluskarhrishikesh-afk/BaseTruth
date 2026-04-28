@@ -52,21 +52,29 @@ The following areas are high-priority and should always gain or keep unit covera
    - PAN validation and interpretation
 
 3. **Persistence and upsert logic**
-   - `save_identity_check()`
+   - `save_identity_verification_check()` / `save_video_kyc_check()`
    - `save_scan_to_db()`
-   - document extraction upsert rules
+   - one-row-per-entity upsert rules for `identity_checks` and `video_kyc_checks`
+   - document extraction upsert rules for Scan Document and Bulk Scan only
    - visible failure handling for DB/MinIO writes
 
-4. **Validation packs and scoring rules**
+4. **Schema and migration logic**
+   - split-table creation and backfill from legacy `identity_checks` rows
+   - removal of the `check_type` dependency
+   - PDF-report path migration to MinIO-key storage for identity flows
+
+5. **Validation packs and scoring rules**
    - arithmetic checks
    - required-field checks
    - fraud signal generation
    - ML/heuristic fallback behaviour
 
-5. **Routing and fallback logic**
+6. **Routing and fallback logic**
    - OCR/document-type routing
    - structured-vs-image branching
    - offline fallback paths when Ollama, DB, or MinIO are unavailable
+   - Video KYC geocoding fallback and address-comparison degradation to `inconclusive`
+   - best-frame selection for live capture and per-challenge snapshots
 
 ---
 
@@ -159,6 +167,7 @@ python tests/test_kyc_ws.py
 |---|---|
 | Pure logic change | Add or update focused unit tests for the touched function/module |
 | Store / DB persistence change | Add unit tests with fake sessions and validate success + failure paths |
+| DB schema / storage-contract change | Add migration/helper tests, upsert tests, and downstream-reader regression tests for the affected tables |
 | UI page behaviour change | Add unit tests for underlying helpers plus manual UI verification notes if needed |
 | API route change | Add unit tests for the route helper/service logic; add integration coverage only when routing itself is the risk |
 | OCR / model fallback change | Add deterministic tests around routing and fallback decisions; do not depend on live models in unit tests |
@@ -182,4 +191,5 @@ Before closing a change:
 
 - Video KYC has two test layers today: deterministic unit coverage for `kyc/liveness.py` and `kyc/session.py`, plus the live manual websocket script in `tests/test_kyc_ws.py`.
 - Store-layer tests should continue using fake SQLAlchemy-style sessions instead of live DB dependencies wherever possible.
+- The approved identity/video-KYC storage split must add regression coverage for: no Identity Verification writes to `document_extractions`, one current row per entity in both biometric tables, MinIO-key `pdf_report` storage, address-proof/location comparison handling, and best-frame-per-challenge retention.
 - If a future change introduces a new decision-heavy module without tests, add unit coverage in the same pull request instead of deferring it.

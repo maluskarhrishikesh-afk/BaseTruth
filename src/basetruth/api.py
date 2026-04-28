@@ -37,6 +37,10 @@ try:
         entity_ref:              str            = Field("", description="Entity / case reference ID.")
         challenges:              List[str]      = Field([], description="Liveness challenges to present.")
         reference_embedding_b64: Optional[str]  = Field(None, description="Base-64 ArcFace embedding from the reference ID document.")
+        # Address-proof fields — optional; supplied when the operator uploads an address proof
+        # document before starting the Video KYC session.
+        address_dtls:            Optional[Dict] = Field(None, description="Extracted fields from the address proof document (Aadhaar / Passport).")
+        reference_doc_filename:  Optional[str]  = Field(None, description="Original filename of the reference identity document.")
 
     class WebRTCOfferRequest(BaseModel):
         sdp:  str = Field(..., description="SDP offer string from RTCPeerConnection.createOffer().")
@@ -1119,6 +1123,8 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
             reference_embedding_b64=req.reference_embedding_b64,
             customer_name=req.customer_name,
             entity_ref=req.entity_ref,
+            address_dtls=req.address_dtls,
+            reference_doc_filename=req.reference_doc_filename or "",
         )
         _kyc_log.info(
             "KYC session created",

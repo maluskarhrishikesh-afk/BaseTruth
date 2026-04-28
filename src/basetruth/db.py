@@ -5,7 +5,8 @@ Tables
   entities              — one row per person/organisation being verified.
   scans                 — one row per document scan; stores forensic JSON + approval status.
   document_extractions  — structured fields extracted from scanned documents.
-  identity_checks       — face-match and Video KYC verification events.
+  identity_checks       — Identity Verification (face-match) results only.
+  video_kyc_checks      — Video KYC session results (separate workflow from face-match).
   entity_reports        — final cross-document verification reports.
 
 All public functions degrade gracefully (return None / empty list) when the
@@ -30,14 +31,13 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
-    LargeBinary,
     String,
     Text,
     UniqueConstraint,
     create_engine,
     text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Session, relationship, sessionmaker
 from sqlalchemy.sql import func
 
@@ -176,6 +176,8 @@ class Entity(Base):
     scans = relationship("Scan", back_populates="entity", cascade="all, delete-orphan")
     extracted_info = relationship("DocumentExtraction", back_populates="entity", cascade="all, delete-orphan")
     identity_checks = relationship("IdentityCheck", back_populates="entity", cascade="all, delete-orphan")
+    # Video KYC checks are stored separately from face-match Identity Verification results.
+    video_kyc_checks = relationship("VideoKYCCheck", back_populates="entity", cascade="all, delete-orphan")
     entity_reports = relationship(
         "EntityReport",
         back_populates="entity",
@@ -262,10 +264,15 @@ class DocumentExtraction(Base):
     scan = relationship("Scan", back_populates="extracted_info")
 
 class IdentityCheck(Base):
-    """One row per face-match or Video KYC verification event.
+    """One row per Identity Verification (face-match) event.
 
-    Stores the full result payload so analysts can review identity
-    verification history alongside document scans.
+    Stores the ArcFace result together with the Aadhaar QR and PAN
+    extraction data so the Final Report can summarise identity details
+    without needing to read from document_extractions.
+
+    check_type is kept as a nullable VARCHAR for backwards compatibility
+    with rows written before the Identity / Video-KYC split.  New rows
+    written by save_identity_verification_check() leave it NULL.
     """
 
     __tablename__ = "identity_checks"
@@ -274,31 +281,117 @@ class IdentityCheck(Base):
     entity_id = Column(
         Integer, ForeignKey("entities.id", ondelete="SET NULL"), nullable=True
     )
-    check_type = Column(String(30), nullable=False)       # 'face_match' | 'video_kyc'
+    # Legacy column kept for backward compat — new rows leave this NULL.
+    check_type = Column(String(30), nullable=True)         # 'face_match' | None
     status = Column(String(20), nullable=False)            # 'pass' | 'fail' | 'inconclusive'
 
-    # Face match fields
+    # ArcFace / face-match scores
     cosine_similarity = Column(Float, nullable=True)
-    display_score = Column(Float, nullable=True)           # 0-100 percentage
+    display_score = Column(Float, nullable=True)           # 0–100 percentage
     threshold = Column(Float, nullable=True)
     is_match = Column(Boolean, nullable=True)
-
-    # Video KYC liveness fields
-    liveness_state = Column(String(30), nullable=True)     # 'Center' | 'Turned Left' | 'Turned Right'
-    liveness_passed = Column(Boolean, nullable=True)
 
     # Overall verdict
     verdict = Column(String(20), default="")               # 'PASS' | 'FAIL'
 
-    # Audit trail
-    doc_filename = Column(String(500), default="")         # original ID document filename
-    selfie_filename = Column(String(500), default="")      # selfie filename (face_match only)
-    report_json = Column(JSONB, nullable=False)            # full result payload
-    pdf_report = Column(LargeBinary, nullable=True)        # generated PDF report
+    # Full result payload for explainability and re-display in the UI
+    report_json = Column(JSONB, nullable=False)
+
+    # MinIO object key for the rendered PDF (e.g. "identity-reports/BT-000001/face_match.pdf").
+    # VARCHAR(500) replaces the old LargeBinary column — PDF bytes live in MinIO, not the DB.
+    pdf_report = Column(String(500), nullable=True, default="")
+
+    # Aadhaar QR extracted fields stored as JSONB so the Final Report
+    # builder can read them without touching document_extractions.
+    aadhar_dtls = Column(JSONB, nullable=True)
+
+    # PAN card extracted fields (pan_number, full_name, father_name, etc.)
+    pan_dtls = Column(JSONB, nullable=True)
+
+    # MinIO object keys for each uploaded image — replaces the old selfie_filename
+    # text column for cross-document reports that need the actual image.
+    selfie_pic = Column(String(500), nullable=True, default="")     # selfie image key
+    aadhaar_pic = Column(String(500), nullable=True, default="")    # Aadhaar card image key
+    pan_pic = Column(String(500), nullable=True, default="")        # PAN card image key
+    signature_pic = Column(String(500), nullable=True, default="")  # extracted signature key
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
     entity = relationship("Entity", back_populates="identity_checks")
+
+
+class VideoKYCCheck(Base):
+    """One row per Video KYC verification session result.
+
+    Stores everything from the live video session — identity details,
+    address proof data, geolocation comparison, challenge snapshots,
+    and the PDF report MinIO key.  Completely separate from identity_checks
+    (face-match) so each workflow can evolve independently.
+    """
+
+    __tablename__ = "video_kyc_checks"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    entity_id = Column(
+        Integer, ForeignKey("entities.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # KYC outcome — 'pass' | 'fail' | 'inconclusive'
+    status = Column(String(20), nullable=False, default="inconclusive")
+
+    # ArcFace / face-match scores from the reference document vs live frame
+    cosine_similarity = Column(Float, nullable=True)
+    display_score = Column(Float, nullable=True)       # 0–100 percentage
+    threshold = Column(Float, nullable=True)
+    is_match = Column(Boolean, nullable=True)
+
+    # Liveness challenge result (EAR-based blink detection via MediaPipe)
+    liveness_state = Column(String(30), nullable=True)
+    liveness_passed = Column(Boolean, nullable=True)
+
+    # Identity document extracted fields (Aadhaar QR or Passport) stored as JSONB
+    identity_dtls = Column(JSONB, nullable=True)
+
+    # Address proof extracted fields (Aadhaar or Passport) stored as JSONB
+    address_dtls = Column(JSONB, nullable=True)
+
+    # MinIO object keys for uploaded images
+    video_kyc_pic = Column(String(500), nullable=True, default="")       # best live frame
+    address_proof_pic = Column(String(500), nullable=True, default="")   # address proof image
+    reference_doc_pic = Column(String(500), nullable=True, default="")   # reference ID document
+
+    # Address comparison result — 'match' | 'mismatch' | 'partial' | 'skipped'
+    isAddressMatch = Column(String(20), nullable=True, default="skipped")
+
+    # Free-text comments from the KYC officer or the system
+    kyc_comments = Column(String(500), nullable=True, default="")
+
+    # Geolocation captured from the user's browser during the session
+    current_location_json = Column(JSONB, nullable=True)   # {lat, lon, accuracy, captured_at}
+    current_address_text = Column(Text, nullable=True)     # reverse-geocoded address string
+    address_distance_meters = Column(Float, nullable=True) # metres between proof and live location
+
+    # Per-challenge snapshots: list of {challenge_name, frame_key (MinIO), ear_value}
+    challenge_snapshots_json = Column(JSONB, nullable=True)
+
+    # Full result payload stored for audit and re-display
+    report_json = Column(JSONB, nullable=True)
+
+    # MinIO object key for the rendered PDF report
+    pdf_report = Column(String(500), nullable=True, default="")
+
+    # 'PASS' | 'FAIL'
+    verdict = Column(String(20), nullable=True, default="")
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    entity = relationship("Entity", back_populates="video_kyc_checks")
 
 
 class EntityReport(Base):
@@ -490,6 +583,106 @@ def init_db() -> bool:
                 "ALTER TABLE entity_reports "
                 "ADD COLUMN IF NOT EXISTS report_minio_key VARCHAR(500) DEFAULT ''"
             ))
+
+            # ── video_kyc_checks table ──────────────────────────────────────────────
+            # Stores Video KYC session results separately from face-match identity checks.
+            # Created only if it does not already exist so running init_db() repeatedly is safe.
+            conn.execute(text(
+                "CREATE TABLE IF NOT EXISTS video_kyc_checks ("
+                "id SERIAL PRIMARY KEY, "
+                "entity_id INTEGER REFERENCES entities(id) ON DELETE SET NULL, "
+                "status VARCHAR(20) NOT NULL DEFAULT 'inconclusive', "
+                "cosine_similarity DOUBLE PRECISION, "
+                "display_score DOUBLE PRECISION, "
+                "threshold DOUBLE PRECISION, "
+                "is_match BOOLEAN, "
+                "liveness_state VARCHAR(30), "
+                "liveness_passed BOOLEAN, "
+                "identity_dtls JSONB, "
+                "address_dtls JSONB, "
+                "video_kyc_pic VARCHAR(500) DEFAULT '', "
+                "address_proof_pic VARCHAR(500) DEFAULT '', "
+                "reference_doc_pic VARCHAR(500) DEFAULT '', "
+                "\"isAddressMatch\" VARCHAR(20) DEFAULT 'skipped', "
+                "kyc_comments VARCHAR(500) DEFAULT '', "
+                "current_location_json JSONB, "
+                "current_address_text TEXT, "
+                "address_distance_meters DOUBLE PRECISION, "
+                "challenge_snapshots_json JSONB, "
+                "report_json JSONB, "
+                "pdf_report VARCHAR(500) DEFAULT '', "
+                "verdict VARCHAR(20) DEFAULT '', "
+                "created_at TIMESTAMPTZ DEFAULT NOW(), "
+                "updated_at TIMESTAMPTZ DEFAULT NOW()"
+                ")"
+            ))
+
+            # ── identity_checks new columns ────────────────────────────────────────
+            # These columns were added as part of the Identity / Video-KYC split.
+            # ADD COLUMN IF NOT EXISTS is idempotent — safe to run on every startup.
+            conn.execute(text(
+                "ALTER TABLE identity_checks "
+                "ADD COLUMN IF NOT EXISTS aadhar_dtls JSONB"
+            ))
+            conn.execute(text(
+                "ALTER TABLE identity_checks "
+                "ADD COLUMN IF NOT EXISTS pan_dtls JSONB"
+            ))
+            conn.execute(text(
+                "ALTER TABLE identity_checks "
+                "ADD COLUMN IF NOT EXISTS selfie_pic VARCHAR(500) DEFAULT ''"
+            ))
+            conn.execute(text(
+                "ALTER TABLE identity_checks "
+                "ADD COLUMN IF NOT EXISTS aadhaar_pic VARCHAR(500) DEFAULT ''"
+            ))
+            conn.execute(text(
+                "ALTER TABLE identity_checks "
+                "ADD COLUMN IF NOT EXISTS pan_pic VARCHAR(500) DEFAULT ''"
+            ))
+            conn.execute(text(
+                "ALTER TABLE identity_checks "
+                "ADD COLUMN IF NOT EXISTS signature_pic VARCHAR(500) DEFAULT ''"
+            ))
+            conn.execute(text(
+                "ALTER TABLE identity_checks "
+                "ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()"
+            ))
+            # Drop stale columns that no longer belong on identity_checks.
+            # liveness fields live in video_kyc_checks; filename columns are superseded
+            # by MinIO key columns (selfie_pic, aadhaar_pic, pan_pic, signature_pic).
+            for _col in ("liveness_state", "liveness_passed", "doc_filename", "selfie_filename"):
+                conn.execute(text(
+                    f"ALTER TABLE identity_checks DROP COLUMN IF EXISTS {_col}"
+                ))
+            # Make check_type nullable so new rows written by save_identity_verification_check
+            # can omit it (the column was NOT NULL before the split).
+            conn.execute(text(
+                "ALTER TABLE identity_checks "
+                "ALTER COLUMN check_type DROP NOT NULL"
+            ))
+            # Migrate pdf_report from BYTEA (LargeBinary) to VARCHAR(500) MinIO key.
+            # We rename the old binary column so existing data is not lost, then add
+            # the new string column.  The DO block is idempotent — it only renames
+            # when the column is still of type bytea.
+            conn.execute(text(
+                """
+                DO $$ BEGIN
+                  IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'identity_checks'
+                      AND column_name = 'pdf_report'
+                      AND data_type = 'bytea'
+                  ) THEN
+                    ALTER TABLE identity_checks
+                      RENAME COLUMN pdf_report TO pdf_report_bytes;
+                    ALTER TABLE identity_checks
+                      ADD COLUMN pdf_report VARCHAR(500) DEFAULT '';
+                  END IF;
+                END $$;
+                """
+            ))
+
         log.info("DB schema ready")
         return True
     except Exception as exc:

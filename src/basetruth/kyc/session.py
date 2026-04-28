@@ -49,6 +49,33 @@ class KYCSession:
     last_live_frame_bytes: Optional[bytes] = None
     result: Optional[Dict[str, Any]] = None
 
+    # ── identity & address document fields ───────────────────────────────
+    # Extracted fields from the reference identity document (Aadhaar QR / Passport)
+    identity_dtls: Optional[Dict[str, Any]] = None
+    # Extracted fields from the address proof document (Aadhaar / Passport)
+    address_dtls: Optional[Dict[str, Any]] = None
+    # Original filename of the reference identity document
+    reference_doc_filename: str = ""
+    # Original filename of the address proof document
+    address_proof_filename: str = ""
+
+    # ── geolocation & address comparison fields ──────────────────────────
+    # Raw GPS fix from the browser: {lat, lon, accuracy, captured_at}
+    current_location_json: Optional[Dict[str, Any]] = None
+    # Human-readable address derived from the GPS fix (reverse-geocoded)
+    current_address_text: str = ""
+    # Result of address comparison: 'match' | 'mismatch' | 'partial' | 'skipped'
+    address_match_result: str = ""
+    # Distance in metres between the address-proof location and the live GPS fix
+    address_distance_meters: Optional[float] = None
+
+    # ── liveness challenge snapshot archive ──────────────────────────────
+    # One entry per challenge: {challenge_name, frame_minio_key, ear_value}
+    challenge_snapshots: List[Dict[str, Any]] = field(default_factory=list)
+    # Best live frame (JPEG bytes) captured during the highest-confidence
+    # challenge frame — uploaded to MinIO as video_kyc_capture.jpg
+    best_live_frame_bytes: Optional[bytes] = None
+
     created_at: datetime = field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
@@ -108,6 +135,8 @@ class SessionStore:
         reference_embedding_b64: Optional[str] = None,
         customer_name: str = "",
         entity_ref: str = "",
+        address_dtls: Optional[Dict[str, Any]] = None,
+        reference_doc_filename: str = "",
     ) -> KYCSession:
         sid = secrets.token_urlsafe(16)
         session = KYCSession(
@@ -116,6 +145,8 @@ class SessionStore:
             entity_ref=entity_ref,
             challenges=challenges,
             reference_embedding_b64=reference_embedding_b64,
+            address_dtls=address_dtls,
+            reference_doc_filename=reference_doc_filename,
         )
         with self._lock:
             self._sessions[sid] = session

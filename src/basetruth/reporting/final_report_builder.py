@@ -84,22 +84,39 @@ def _to_float(val: Optional[str]) -> Optional[float]:
 
 # ── Identity summary extraction ─────────────────────────────────────────────
 
-def _extract_entity_summary(extractions: List[Dict[str, Any]]) -> Dict[str, str]:
-    """Extract canonical identity fields from Aadhaar and PAN document rows.
+def _extract_entity_summary(
+    extractions: List[Dict[str, Any]],
+    identity_check: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    """Extract canonical identity fields from Aadhaar and PAN sources.
 
-    We walk all extraction rows in order.  Aadhaar rows are preferred for DOB,
-    address, and Aadhaar number.  PAN rows are preferred for PAN number.
-    The candidate's full name is taken from whichever identity document provides
-    it first.
+    Primary source: document_extractions rows whose document_type is 'aadhaar'
+    or 'pan_card'.  These rows are created by the Bulk Scan and Scan Document
+    workflows.
+
+    Fallback source: the ``aadhar_dtls`` and ``pan_dtls`` JSONB columns on the
+    ``identity_checks`` row (written by save_identity_verification_check).
+    These replace the old ``document_extractions`` rows that the Identity
+    Verification screen used to write directly.
+
+    We walk all extraction rows first so that Bulk Scan / Scan Document data
+    takes precedence, then supplement any missing fields from the identity check.
+
+    Parameters
+    ----------
+    extractions:     List of document_extractions dicts.
+    identity_check:  Optional dict returned by get_entity_identity_checks().
+                     When supplied, its ``aadhar_dtls`` and ``pan_dtls`` are used
+                     to fill any fields still empty after reading extractions.
 
     Returns a dict with: full_name, dob, address, pan_number, aadhaar_number.
     Any field not found is left as an empty string.
     """
     summary: Dict[str, str] = {
-        "full_name":     "",
-        "dob":           "",
-        "address":       "",
-        "pan_number":    "",
+        "full_name":      "",
+        "dob":            "",
+        "address":        "",
+        "pan_number":     "",
         "aadhaar_number": "",
     }
 
@@ -132,6 +149,33 @@ def _extract_entity_summary(extractions: List[Dict[str, Any]]) -> Dict[str, str]
         if not summary["aadhaar_number"] and is_aadhaar:
             summary["aadhaar_number"] = _first(fields, _AADHAR_FIELDS) or ""
 
+    # ── Fallback: read from identity_checks.aadhar_dtls / pan_dtls ─────────
+    # When the Identity Verification screen saved data, it no longer writes to
+    # document_extractions.  Use the JSONB columns instead if any field is still
+    # missing after reading document_extractions rows.
+    if identity_check:
+        aadhar = identity_check.get("aadhar_dtls") or {}
+        pan    = identity_check.get("pan_dtls") or {}
+
+        if not summary["full_name"]:
+            summary["full_name"] = (
+                _first(aadhar, _NAME_FIELDS)
+                or _first(pan, _NAME_FIELDS)
+                or ""
+            )
+        if not summary["dob"]:
+            summary["dob"] = (
+                _first(aadhar, _DOB_FIELDS)
+                or _first(pan, _DOB_FIELDS)
+                or ""
+            )
+        if not summary["address"]:
+            summary["address"] = _first(aadhar, _ADDRESS_FIELDS) or ""
+        if not summary["pan_number"]:
+            summary["pan_number"] = _first(pan, _PAN_FIELDS) or ""
+        if not summary["aadhaar_number"]:
+            summary["aadhaar_number"] = _first(aadhar, _AADHAR_FIELDS) or ""
+
     return summary
 
 
@@ -158,13 +202,13 @@ def _find_candidate_photo_key(entity_ref: str) -> Optional[str]:
         return None
 
     # Option 1: selfie recorded during a face-match or Video KYC session.
+    # New rows store the MinIO key directly in selfie_pic.
     checks = get_entity_identity_checks(entity_ref)
     for chk in checks:
-        fname = chk.get("selfie_filename") or ""
-        if fname:
-            key = f"{entity_ref}/{fname}"
-            log.debug("_find_candidate_photo_key: using selfie from identity check", extra={"key": key})
-            return key
+        selfie_key = chk.get("selfie_pic") or ""
+        if selfie_key:
+            log.debug("_find_candidate_photo_key: using selfie_pic from identity check", extra={"key": selfie_key})
+            return selfie_key
 
     # Option 2: fall back to any image stored in the entity's MinIO folder.
     # Skip filenames that look like document scans, signatures, or stamps — we only
@@ -710,7 +754,18 @@ def build_final_report_json(
     )
 
     # ── Step 1: Extract canonical identity summary from Aadhaar/PAN rows ─────
-    entity_summary = _extract_entity_summary(extractions)
+    # Also read the identity_checks row so that Aadhaar/PAN data saved by the
+    # Identity Verification screen (stored in aadhar_dtls/pan_dtls JSONB) can
+    # supplement any missing fields.
+    identity_check: Optional[Dict[str, Any]] = None
+    try:
+        from basetruth.store import get_entity_identity_checks  # lazy import
+        chks = get_entity_identity_checks(entity_ref)
+        identity_check = chks[0] if chks else None
+    except Exception:
+        log.debug("build_final_report_json: could not load identity_check (non-fatal)", exc_info=True)
+
+    entity_summary = _extract_entity_summary(extractions, identity_check=identity_check)
     log.debug(
         "build_final_report_json: identity summary extracted",
         extra={"summary": entity_summary},

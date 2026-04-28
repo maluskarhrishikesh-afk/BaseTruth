@@ -77,16 +77,16 @@
 | Element | Action | Expected Result |
 |---|---|---|
 | "Run Identity Verification 🔍" button | Click | Runs deterministic checks for first-name/last-name match, DOB match, PAN format, and photo match; then shows annotated images, confidence score, and MATCH/MISMATCH verdict |
-| "💾 Save to Database" button | Click after a successful run | Saves the current face-match result to `identity_checks`; saves Aadhaar QR fields and PAN extracted fields as separate rows in `document_extractions` with their uploaded `file_name`; uploads the Aadhaar image + selfie + PAN image + PAN signature (if successfully cropped) to MinIO under the entity reference; stores the MinIO key of the signature image in the `pan_card` `document_extractions` row under `pan_signature_minio_key`; PDF report download becomes available |
+| "💾 Save to Database" button | Click after a successful run | Saves the current face-match result to `identity_checks`; stores Aadhaar QR fields in `aadhar_dtls` and PAN extracted fields in `pan_dtls`; uploads the Aadhaar image, selfie, PAN image, and PAN signature crop to MinIO under the entity reference; stores those MinIO object keys in `aadhaar_pic`, `selfie_pic`, `pan_pic`, and `signature_pic`; stores the PDF report MinIO key in `identity_checks.pdf_report`; no `document_extractions` rows are created; PDF report download becomes available |
 | | If save fails (DB error) | Red error message: "Result could not be saved to the database. Check the Logs screen." |
 | | If DB is offline | Warning: "Database is offline — connect PostgreSQL to save results." |
 | Previous checks table | Auto-renders after save / for linked entity | Shows all previous face-match records for the linked entity |
 
 **Stored evidence captured on save:**
-- Aadhaar QR extraction payload
-- PAN extraction payload, including Gemma4/OCR extraction source
-- Two `document_extractions` rows when both documents are available: one `aadhaar` row and one `pan_card` row, each keyed by the uploaded `file_name`
-- `pan_card` row includes `pan_signature_minio_key` pointing to the cropped signature image in MinIO (when signature extraction succeeds)
+- Aadhaar QR extraction payload in `identity_checks.aadhar_dtls`
+- PAN extraction payload, including Gemma4/OCR extraction source, in `identity_checks.pan_dtls`
+- Selfie, Aadhaar image, PAN image, and PAN signature MinIO keys in dedicated `identity_checks` columns
+- PDF report MinIO key in `identity_checks.pdf_report`
 - Exact first-name/last-name comparison result
 - DOB comparison result
 - PAN format and entity-type interpretation
@@ -96,11 +96,11 @@
 - Selfie upload authenticity checks
 
 **Upsert rule:**
-- Saving Identity Verification again for the same entity updates the current `face_match` record and replaces the current `face_match_report.pdf` object instead of creating a second current record.
+- Saving Identity Verification again for the same entity updates the current `identity_checks` row and replaces the current `face_match_report.pdf` object instead of creating a second current record.
 
 **Important rules that must NOT be broken:**
 - `_draw_face()` in `vision/face.py` must always be defined before it is called from `compare_faces()`.
-- `save_identity_check()` must always show an error (not silent failure) when it returns `None`.
+- Identity Verification and Video KYC save paths must always show an error (not silent failure) when persistence fails.
 - `init_db()` must be retried on each app load until it succeeds (not just first attempt).
 - The Identity Verification page must stay clean; heavy explainability content is accessible via the Review Scans screen, not inline here.
 
@@ -108,18 +108,19 @@
 
 ## 🎥 Video KYC
 
-**Purpose:** Create a remote identity verification session where the customer performs live liveness challenges on their own device.
+**Purpose:** Create a remote identity verification session where the customer performs live liveness challenges on their own device, while BaseTruth compares the live face and current location against uploaded proof documents.
 
 ### Tab 1 — Start KYC Session
 
 | Element | Action | Expected Result |
 |---|---|---|
 | Entity selector | Search/select | Links KYC session to an entity record |
-| "Upload ID Document" uploader | Upload | Extracts reference face embedding and stores in session state; shows "ID subject successfully extracted" |
-| "Create KYC Session" button | Click | Calls `POST /kyc/sessions`; shows shareable customer URL |
-| Customer URL | Copy/share | Customer opens URL on their phone; runs blink, turn left/right, nod challenges |
-| "Refresh" / poll | Click | Calls `GET /kyc/sessions/{id}`; shows live session status + liveness results |
-| "💾 Save to Database" button | Click after a completed KYC result | Saves the completed Video KYC result to `identity_checks`; uploads the uploaded reference ID document to MinIO; PDF report download appears |
+| "Upload Reference ID Document" uploader | Upload | Extracts the reference face embedding and stores identity-proof details in session state; shows "ID subject successfully extracted" |
+| "Upload Permanent Address Proof" uploader | Upload Aadhaar or Passport | Extracts the proof-address payload before session creation and stores it in session state |
+| "Create KYC Session" button | Click | Calls `POST /kyc/sessions`; creates an in-memory session carrying the identity-proof payload and address-proof payload; shows shareable customer URL |
+| Customer URL | Copy/share | Customer opens URL on their phone, grants camera and location permissions, and runs blink, turn left/right, nod challenges |
+| "Refresh" / poll | Click | Calls `GET /kyc/sessions/{id}`; shows live session status, liveness results, and whether current-location capture succeeded |
+| "💾 Save to Database" button | Click after a completed KYC result | Saves the completed Video KYC result to `video_kyc_checks`; uploads the reference ID document, address proof, best frontal live frame, and one best frame per completed challenge to MinIO; stores location/address comparison fields and the PDF report MinIO key; PDF report download appears |
 
 ### Tab 2 — Schedule Appointment
 
@@ -138,8 +139,8 @@
 | Element | Action | Expected Result |
 |---|---|---|
 | Camera capture + liveness UI | Real-time | Runs blink, turn, and nod challenges locally |
-| Face-match section | After liveness passes | Compares live face to uploaded reference ID |
-| "💾 Save to Database" button | Click after result is shown | Saves the in-person Video KYC result and uploads both the reference ID and captured live image to MinIO |
+| Face-match section | After liveness passes | Compares the best live face frame to the uploaded reference ID and evaluates current-address vs proof-address match when location data is available |
+| "💾 Save to Database" button | Click after result is shown | Saves the in-person Video KYC result to `video_kyc_checks` and uploads the reference ID, address proof, best live image, and best challenge frames to MinIO |
 
 ### Liveness Challenges
 
@@ -149,6 +150,11 @@
 | `turn_left` | Nose x-position relative to bbox | `nose_rel_x > 0.62` |
 | `turn_right` | Nose x-position relative to bbox | `nose_rel_x < 0.38` |
 | `nod` | Nose-to-eye pitch range | Range > 0.28 over ≥ 6 frames |
+
+**Important Video KYC storage rules:**
+- Allowed permanent address-proof documents are Aadhaar or Passport only.
+- The save path keeps one current `video_kyc_checks` row per entity.
+- BaseTruth retains the best frontal live frame plus one best frame per completed challenge, not every intermediate frame.
 
 ---
 
@@ -443,12 +449,12 @@ Section headers are **never** placed inline with their content. Each bullet poin
 
 | Element | Action | Expected Result |
 |---|---|---|
-| Metrics row | Auto-renders (cached) | Shows row counts for Entities, Scans, Document Extractions, Identity Checks, and Entity Reports |
+| Metrics row | Auto-renders (cached) | Shows row counts for Entities, Scans, Document Extractions, Identity Checks, Video KYC Checks, and Entity Reports |
 | "🔄 Refresh" button | Click | Clears the page's cached DB/MinIO data queries and reloads the latest counts / object list |
-| Table selector | Select | Loads up to 500 rows from the chosen table, including `identity_checks`, `document_extractions`, and `entity_reports` |
-| Data table | Auto-renders | Shows table columns in a wide dataframe. Large JSON fields are shortened for readability, and large binary fields like `identity_checks.pdf_report` are excluded from the cached table query so the page stays fast |
+| Table selector | Select | Loads up to 500 rows from the chosen table, including `identity_checks`, `video_kyc_checks`, `document_extractions`, and `entity_reports` |
+| Data table | Auto-renders | Shows table columns in a wide dataframe. Large JSON fields are shortened for readability. Binary report columns such as `scans.pdf_report` are excluded from the cached table query so the page stays fast, while MinIO-path fields such as `identity_checks.pdf_report` and `video_kyc_checks.pdf_report` remain visible as text |
 | Row selection | Click a row in the dataframe | Selects that row immediately and reruns the page |
-| Row inspector | After a row is selected | Shows the full selected row payload below the dataframe so JSON-heavy tables stay readable |
+| Row inspector | After a row is selected | Shows the full selected row payload below the dataframe so JSON-heavy tables stay readable, including `identity_checks` / `video_kyc_checks` JSON payloads and MinIO object keys |
 | Row Operations panel | Shown only when `BASETRUTH_ENABLE_DB_VIEWER_CRUD=true` | Lets developers create, edit, duplicate, or delete the selected row |
 | Delete confirmation | Type `DELETE` + click confirm | Deletes the selected row only after exact confirmation |
 

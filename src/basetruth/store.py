@@ -27,6 +27,7 @@ from basetruth.db import (
     EntityReport,
     IdentityCheck,
     Scan,
+    VideoKYCCheck,
     db_session,
 )
 from basetruth.logger import get_logger
@@ -1071,9 +1072,23 @@ def list_recent_scans(limit: int = 200) -> List[Dict[str, Any]]:
                         "id": s.id,
                         "source_name": s.source_name,
                         "document_type": s.document_type or "generic",
-                        "truth_score": s.truth_score,
-                        "risk_level": s.risk_level or "low",
-                        "verdict": s.verdict or "",
+                        # Derive a verdict summary from the layered_analysis_json.
+                        # The Scan model no longer has top-level truth_score/verdict columns.
+                        "truth_score": (
+                            (s.layered_analysis_json or {})
+                            .get("scan_summary", {})
+                            .get("ml_fraud_score")
+                        ),
+                        "risk_level": (
+                            (s.layered_analysis_json or {})
+                            .get("scan_summary", {})
+                            .get("risk_level", "low")
+                        ),
+                        "verdict": (
+                            (s.layered_analysis_json or {})
+                            .get("scan_summary", {})
+                            .get("forensic_verdict", "")
+                        ),
                         "generated_at": (
                             s.generated_at.isoformat() if s.generated_at else ""
                         ),
@@ -1522,13 +1537,11 @@ def get_entity_latest_pdf(entity_ref: str) -> tuple[Optional[bytes], Optional[st
 # ---------------------------------------------------------------------------
 
 
-def save_identity_check(
-    check_type: str,
+def save_identity_verification_check(
     result: Dict[str, Any],
     forced_entity_ref: Optional[str] = None,
     extra_identity: Optional[Dict[str, str]] = None,
     doc_filename: str = "",
-    selfie_filename: str = "",
     pdf_bytes: Optional[bytes] = None,
     doc_bytes: Optional[bytes] = None,
     selfie_bytes: Optional[bytes] = None,
@@ -1536,21 +1549,239 @@ def save_identity_check(
     pan_bytes: Optional[bytes] = None,
     pan_signature_bytes: Optional[bytes] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Persist a face-match or Video KYC result to the DB.
+    """Persist an Identity Verification (face-match) result to the DB.
+
+    Writes one row to ``identity_checks`` per entity (upsert).  Aadhaar QR
+    and PAN data are stored as JSONB columns on the identity_checks row itself
+    (``aadhar_dtls`` / ``pan_dtls``) so the Final Report builder can read them
+    without touching ``document_extractions``.
 
     Parameters
     ----------
-    check_type:          'face_match' or 'video_kyc'
-    result:              The result dict from compare_faces() or the KYC processor.
-    entity_ref:          Link to an existing entity (BT-XXXXXX). If None, unlinked.
-    doc_filename:        Original ID document filename.
-    selfie_filename:     Selfie filename (face_match only).
-    pdf_bytes:           Generated PDF report bytes.
-    pan_signature_bytes: JPEG bytes of the cropped PAN card signature strip. When
-                         provided, the image is uploaded to MinIO as
-                         ``{entity_ref}/pan_signature.jpg`` and its key is stored
-                         inside the ``pan_card`` ``document_extractions`` row as
-                         ``pan_signature_minio_key`` for downstream signature analysis.
+    result:              Full result dict from compare_faces(), including
+                         ``aadhaar_qr`` and ``pan_extraction`` sub-dicts.
+    forced_entity_ref:   Explicit entity to link to (skips auto-detect).
+    extra_identity:      Operator-supplied identity fields (first_name, pan_number …).
+    doc_filename:        Original Aadhaar card filename — used only for MinIO upload key.
+    pdf_bytes:           PDF report bytes — uploaded to MinIO, key stored in DB.
+    doc_bytes:           Aadhaar card image bytes — uploaded to MinIO.
+    selfie_bytes:        Selfie image bytes — uploaded to MinIO.
+    pan_filename:        PAN card filename.
+    pan_bytes:           PAN card image bytes — uploaded to MinIO.
+    pan_signature_bytes: Cropped PAN signature bytes — uploaded to MinIO.
+    """
+    try:
+        with db_session() as session:
+            entity = None
+
+            # Resolve entity: force-link first, then auto-detect / create
+            if forced_entity_ref:
+                entity = (
+                    session.query(Entity)
+                    .filter(Entity.entity_ref == forced_entity_ref)
+                    .first()
+                )
+            if entity is None and extra_identity:
+                entity = _find_or_create_entity(session, extra_identity)
+            if extra_identity and entity:
+                # Update entity fields with any operator-supplied overrides
+                for k, v in extra_identity.items():
+                    if v:
+                        setattr(entity, k, v)
+                entity.updated_at = datetime.now(timezone.utc)  # type: ignore[assignment]
+
+            entity_id = entity.id if entity else None
+            entity_ref = entity.entity_ref if entity else None
+
+            # Determine pass/fail from the face-match result
+            is_match = result.get("match", False)
+            status  = "pass" if is_match else "fail"
+            verdict = "PASS" if is_match else "FAIL"
+
+            # Extract Aadhaar QR and PAN data to store as JSONB on the row.
+            # These sub-dicts come from the identity.py save payload.
+            aadhaar_dtls = result.get("aadhaar_qr") or {}
+            pan_dtls     = result.get("pan_extraction") or {}
+            # Older payloads stored fields at the top level — keep backward compat
+            if not aadhaar_dtls:
+                aadhaar_dtls = {k: result.get(k) for k in
+                    ("uid", "aadhaar_number", "name", "dob", "address",
+                     "gender", "yob", "dist", "state", "qr_type")
+                    if result.get(k)}
+            if not pan_dtls:
+                pan_dtls = {k: result.get(k) for k in
+                    ("pan_number", "full_name", "father_name", "date_of_birth",
+                     "extraction_source", "engine")
+                    if result.get(k)}
+
+            # Strip layered_analysis from the result before storing in report_json.
+            # Full forensic layer detail is large and belongs on the scans table, not here.
+            clean_result = {k: v for k, v in result.items() if k != "layered_analysis"}
+
+            # Upsert: one row per entity for the Identity Verification workflow
+            row = None
+            if entity_id is not None:
+                # Look for an existing row — new rows have check_type NULL or 'face_match'
+                row = (
+                    session.query(IdentityCheck)
+                    .filter(
+                        IdentityCheck.entity_id == entity_id,
+                        IdentityCheck.check_type.in_(["face_match", None]),
+                    )
+                    .order_by(IdentityCheck.created_at.desc())
+                    .first()
+                )
+
+            if row is None:
+                row = IdentityCheck(
+                    entity_id=entity_id,
+                    check_type=None,           # new rows leave check_type NULL
+                    status=status,
+                    cosine_similarity=result.get("confidence") or result.get("cosine_similarity"),
+                    display_score=result.get("display_score"),
+                    threshold=result.get("threshold", 0.40),
+                    is_match=is_match,
+                    verdict=verdict,
+                    report_json=_json_ready(clean_result),
+                    pdf_report="",           # filled in after MinIO upload below
+                    aadhar_dtls=_json_ready(aadhaar_dtls) if aadhaar_dtls else None,
+                    pan_dtls=_json_ready(pan_dtls) if pan_dtls else None,
+                )
+                session.add(row)
+            else:
+                row.entity_id       = entity_id
+                row.status          = status
+                row.cosine_similarity = result.get("confidence") or result.get("cosine_similarity")
+                row.display_score   = result.get("display_score")
+                row.threshold       = result.get("threshold", 0.40)
+                row.is_match        = is_match
+                row.verdict         = verdict
+                row.report_json     = _json_ready(clean_result)
+                row.aadhar_dtls     = _json_ready(aadhaar_dtls) if aadhaar_dtls else row.aadhar_dtls
+                row.pan_dtls        = _json_ready(pan_dtls) if pan_dtls else row.pan_dtls
+                row.updated_at      = datetime.now(timezone.utc)  # type: ignore[assignment]
+
+            # Remove any stale duplicate rows for this entity
+            if entity_id is not None:
+                stale = (
+                    session.query(IdentityCheck)
+                    .filter(
+                        IdentityCheck.entity_id == entity_id,
+                        IdentityCheck.check_type.in_(["face_match", None]),
+                        IdentityCheck.id != row.id,
+                    )
+                    .all()
+                )
+                for s in stale:
+                    session.delete(s)
+
+            session.flush()
+
+            # ── Upload images to MinIO and store keys on the row ──────────────
+            if entity_ref:
+                # Upload the PDF and store the MinIO key as a string
+                if pdf_bytes:
+                    try:
+                        pdf_key = f"{entity_ref}/identity_check_report.pdf"
+                        # Delete any old report with the legacy check_type-based name
+                        for obj in (minio_list_entity_objects(entity_ref) or []):
+                            k = obj.get("key", "")
+                            if Path(k).name in ("face_match_report.pdf", "identity_check_report.pdf"):
+                                minio_delete_object(k)
+                        minio_upload(pdf_key, pdf_bytes, "application/pdf")
+                        row.pdf_report = pdf_key
+                        session.flush()
+                    except Exception:
+                        log.warning("save_identity_verification_check: PDF upload failed", exc_info=True)
+
+                # Upload Aadhaar card image and store MinIO key
+                if doc_bytes and doc_filename:
+                    try:
+                        aadh_key = f"{entity_ref}/{Path(doc_filename).name}"
+                        minio_upload(aadh_key, doc_bytes, "application/octet-stream")
+                        row.aadhaar_pic = aadh_key
+                        session.flush()
+                    except Exception:
+                        log.warning("save_identity_verification_check: Aadhaar upload failed", exc_info=True)
+
+                # Upload selfie image — stored under a fixed key per entity
+                if selfie_bytes:
+                    try:
+                        selfie_key = f"{entity_ref}/selfie.jpg"
+                        minio_upload(selfie_key, selfie_bytes, "application/octet-stream")
+                        row.selfie_pic = selfie_key
+                        session.flush()
+                    except Exception:
+                        log.warning("save_identity_verification_check: selfie upload failed", exc_info=True)
+
+                # Upload PAN card image and store MinIO key
+                if pan_bytes and pan_filename:
+                    try:
+                        pan_key = f"{entity_ref}/{Path(pan_filename).name}"
+                        minio_upload(pan_key, pan_bytes, "application/octet-stream")
+                        row.pan_pic = pan_key
+                        session.flush()
+                    except Exception:
+                        log.warning("save_identity_verification_check: PAN upload failed", exc_info=True)
+
+                # Upload PAN signature strip and store MinIO key in pan_dtls
+                if pan_signature_bytes:
+                    try:
+                        sig_key = f"{entity_ref}/pan_signature.jpg"
+                        minio_upload(sig_key, pan_signature_bytes, "image/jpeg")
+                        row.signature_pic = sig_key
+                        # Also embed the key in pan_dtls so the Document Intelligence
+                        # page can render the signature image without a separate lookup.
+                        if row.pan_dtls is not None:
+                            updated_pan = dict(row.pan_dtls)
+                            updated_pan["pan_signature_minio_key"] = sig_key
+                            row.pan_dtls = _json_ready(updated_pan)
+                        session.flush()
+                    except Exception:
+                        log.warning("save_identity_verification_check: signature upload failed", exc_info=True)
+
+            saved = {
+                "id": row.id,
+                "entity_ref": entity_ref,
+                "check_type": "face_match",
+                "status": status,
+                "verdict": verdict,
+            }
+            log.info(
+                "save_identity_verification_check: saved id=%s entity=%s verdict=%s",
+                row.id, entity_ref, verdict,
+            )
+            return saved
+    except Exception as exc:
+        log.error("save_identity_verification_check failed: %s", exc, exc_info=True)
+        return None
+
+
+def save_video_kyc_check(
+    result: Dict[str, Any],
+    forced_entity_ref: Optional[str] = None,
+    extra_identity: Optional[Dict[str, str]] = None,
+    doc_filename: str = "",
+    pdf_bytes: Optional[bytes] = None,
+    doc_bytes: Optional[bytes] = None,
+    selfie_bytes: Optional[bytes] = None,
+) -> Optional[Dict[str, Any]]:
+    """Persist a Video KYC session result to the DB.
+
+    Writes one row to ``video_kyc_checks`` per entity (upsert).
+    Identity and address proof fields are stored as JSONB columns
+    (``identity_dtls`` / ``address_dtls``) so they are available for
+    downstream review without touching ``document_extractions``.
+
+    Parameters
+    ----------
+    result:            Full KYC result dict (is_match, liveness_passed, etc.).
+    forced_entity_ref: Explicit entity to link to.
+    extra_identity:    Operator-supplied identity fields.
+    doc_filename:      Reference ID document filename.
+    pdf_bytes:         PDF report bytes — uploaded to MinIO, key stored in DB.
+    doc_bytes:         Reference document image bytes — uploaded to MinIO.
+    selfie_bytes:      Live frame / selfie bytes — uploaded to MinIO.
     """
     try:
         with db_session() as session:
@@ -1562,272 +1793,146 @@ def save_identity_check(
                     .filter(Entity.entity_ref == forced_entity_ref)
                     .first()
                 )
-
             if entity is None and extra_identity:
                 entity = _find_or_create_entity(session, extra_identity)
-
             if extra_identity and entity:
                 for k, v in extra_identity.items():
                     if v:
                         setattr(entity, k, v)
-                entity.updated_at = func.now()
+                entity.updated_at = datetime.now(timezone.utc)  # type: ignore[assignment]
 
-            entity_id = entity.id if entity else None
+            entity_id  = entity.id if entity else None
             entity_ref = entity.entity_ref if entity else None
 
-            # Determine status and verdict
-            if check_type == "face_match":
-                is_match = result.get("match", False)
-                status = "pass" if is_match else "fail"
-                verdict = "PASS" if is_match else "FAIL"
-            else:  # video_kyc
-                is_match = result.get("is_match", False)
-                liveness = result.get("liveness_passed", False)
-                if is_match and liveness:
-                    status = "pass"
-                    verdict = "PASS"
-                elif is_match or liveness:
-                    status = "inconclusive"
-                    verdict = "FAIL"
-                else:
-                    status = "fail"
-                    verdict = "FAIL"
+            # Determine KYC pass/fail from the result
+            is_match = result.get("is_match", result.get("match", False))
+            liveness = result.get("liveness_passed", False)
+            if is_match and liveness:
+                status  = "pass"
+                verdict = "PASS"
+            elif is_match or liveness:
+                status  = "inconclusive"
+                verdict = "FAIL"
+            else:
+                status  = "fail"
+                verdict = "FAIL"
 
+            # Upsert: one row per entity for the Video KYC workflow
             row = None
             if entity_id is not None:
                 row = (
-                    session.query(IdentityCheck)
-                    .filter(
-                        IdentityCheck.entity_id == entity_id,
-                        IdentityCheck.check_type == check_type,
-                    )
-                    .order_by(IdentityCheck.created_at.desc())
+                    session.query(VideoKYCCheck)
+                    .filter(VideoKYCCheck.entity_id == entity_id)
+                    .order_by(VideoKYCCheck.created_at.desc())
                     .first()
                 )
 
             if row is None:
-                row = IdentityCheck(
+                row = VideoKYCCheck(
                     entity_id=entity_id,
-                    check_type=check_type,
                     status=status,
-                    cosine_similarity=result.get("confidence") or result.get("cosine_similarity"),
+                    cosine_similarity=result.get("cosine_similarity") or result.get("confidence"),
                     display_score=result.get("display_score"),
                     threshold=result.get("threshold", 0.40),
                     is_match=is_match,
                     liveness_state=result.get("liveness_state"),
-                    liveness_passed=result.get("liveness_passed"),
+                    liveness_passed=liveness,
+                    identity_dtls=_json_ready(result.get("identity_dtls") or {}),
+                    address_dtls=_json_ready(result.get("address_dtls") or {}),
                     verdict=verdict,
-                    doc_filename=doc_filename,
-                    selfie_filename=selfie_filename,
-                    report_json=result,
-                    pdf_report=pdf_bytes,
+                    report_json=_json_ready(result),
+                    pdf_report="",
                 )
                 session.add(row)
             else:
-                row.entity_id = entity_id
-                row.status = status
-                row.cosine_similarity = result.get("confidence") or result.get("cosine_similarity")
-                row.display_score = result.get("display_score")
-                row.threshold = result.get("threshold", 0.40)
-                row.is_match = is_match
-                row.liveness_state = result.get("liveness_state")
-                row.liveness_passed = result.get("liveness_passed")
-                row.verdict = verdict
-                row.doc_filename = doc_filename
-                row.selfie_filename = selfie_filename
-                row.report_json = result
-                row.pdf_report = pdf_bytes
-                row.created_at = datetime.now(timezone.utc)
+                row.entity_id        = entity_id
+                row.status           = status
+                row.cosine_similarity= result.get("cosine_similarity") or result.get("confidence")
+                row.display_score    = result.get("display_score")
+                row.threshold        = result.get("threshold", 0.40)
+                row.is_match         = is_match
+                row.liveness_state   = result.get("liveness_state")
+                row.liveness_passed  = liveness
+                row.verdict          = verdict
+                row.report_json      = _json_ready(result)
+                row.updated_at       = datetime.now(timezone.utc)  # type: ignore[assignment]
+                # Preserve existing address/identity details unless new ones supplied
+                if result.get("identity_dtls"):
+                    row.identity_dtls = _json_ready(result["identity_dtls"])
+                if result.get("address_dtls"):
+                    row.address_dtls  = _json_ready(result["address_dtls"])
 
+            # Remove stale duplicate rows for this entity
             if entity_id is not None:
-                stale_rows = (
-                    session.query(IdentityCheck)
+                stale = (
+                    session.query(VideoKYCCheck)
                     .filter(
-                        IdentityCheck.entity_id == entity_id,
-                        IdentityCheck.check_type == check_type,
-                        IdentityCheck.id != row.id,
+                        VideoKYCCheck.entity_id == entity_id,
+                        VideoKYCCheck.id != row.id,
                     )
                     .all()
                 )
-                for stale_row in stale_rows:
-                    session.delete(stale_row)
+                for s in stale:
+                    session.delete(s)
+
             session.flush()
 
-            if check_type == "video_kyc":
-                layered_analysis = result.setdefault("layered_analysis", {})
-                upload_authenticity = layered_analysis.setdefault("upload_authenticity", {})
-                if doc_filename and doc_bytes and "reference_document" not in upload_authenticity:
-                    upload_authenticity["reference_document"] = analyse_upload_authenticity(
-                        doc_bytes,
-                        doc_filename,
-                        format_check=build_format_check(
-                            "Reference ID document was uploaded successfully for Video KYC verification.",
-                            True,
-                        ),
-                    )
-                if selfie_filename and selfie_bytes and "live_capture" not in upload_authenticity:
-                    upload_authenticity["live_capture"] = analyse_upload_authenticity(
-                        selfie_bytes,
-                        selfie_filename,
-                        format_check=build_format_check(
-                            "Live capture image was stored successfully for Video KYC verification.",
-                            True,
-                        ),
-                    )
-
-            # ── Save extracted identity fields to document_extractions ───
-            # The Identity Verification page stores Aadhaar fields under
-            # result['aadhaar_qr'] and PAN fields under result['pan_extraction'].
-            # Save both as separate rows so both documents are visible later.
-            if entity is not None and check_type == "face_match":
-                aadhaar_data = result.get("aadhaar_qr") or {}
-                pan_data = result.get("pan_extraction") or {}
-
-                # Older payloads stored these fields at the top level.
-                # Keep that fallback so old saves still work.
-                if not aadhaar_data:
-                    aadhaar_data = {
-                        key: result.get(key)
-                        for key in (
-                            "uid",
-                            "aadhaar_number",
-                            "name",
-                            "dob",
-                            "address",
-                            "gender",
-                            "yob",
-                            "dist",
-                            "state",
-                            "qr_type",
-                        )
-                        if result.get(key)
-                    }
-                if not pan_data:
-                    pan_data = {
-                        key: result.get(key)
-                        for key in (
-                            "pan_number",
-                            "full_name",
-                            "father_name",
-                            "date_of_birth",
-                            "extraction_source",
-                            "engine",
-                        )
-                        if result.get(key)
-                    }
-
-                try:
-                    if aadhaar_data:
-                        _upsert_identity_document_extraction(
-                            session,
-                            entity_id=entity.id,
-                            file_name=doc_filename,
-                            document_type="aadhaar",
-                            extracted_data=aadhaar_data,
-                        )
-                        log.info(
-                            "save_identity_check: DocumentExtraction saved for aadhaar",
-                            extra={"entity_id": entity.id, "doc_type": "aadhaar"},
-                        )
-                    if pan_data:
-                        # ── Upload signature to MinIO before writing the row ──
-                        # This allows us to store the MinIO key inside the
-                        # document_extractions row so downstream screens can
-                        # load the image directly without an additional lookup.
-                        if entity_ref and pan_signature_bytes:
-                            try:
-                                _sig_minio_key = f"{entity_ref}/pan_signature.jpg"
-                                minio_upload(_sig_minio_key, pan_signature_bytes, "image/jpeg")
-                                pan_data["pan_signature_minio_key"] = _sig_minio_key
-                                log.info(
-                                    "save_identity_check: PAN signature uploaded to MinIO",
-                                    extra={"entity_id": entity.id, "key": _sig_minio_key},
-                                )
-                            except Exception:
-                                log.warning(
-                                    "save_identity_check: PAN signature upload failed (non-fatal)",
-                                    exc_info=True,
-                                )
-                        _upsert_identity_document_extraction(
-                            session,
-                            entity_id=entity.id,
-                            file_name=pan_filename,
-                            document_type="pan_card",
-                            extracted_data=pan_data,
-                        )
-                        log.info(
-                            "save_identity_check: DocumentExtraction saved for pan_card",
-                            extra={"entity_id": entity.id, "doc_type": "pan_card"},
-                        )
-                    if aadhaar_data or pan_data:
+            # ── Upload images to MinIO and store keys on the row ──────────────
+            if entity_ref:
+                if pdf_bytes:
+                    try:
+                        pdf_key = f"{entity_ref}/video_kyc_report.pdf"
+                        # Clean up legacy named reports before uploading new one
+                        for obj in (minio_list_entity_objects(entity_ref) or []):
+                            k = obj.get("key", "")
+                            if Path(k).name == "video_kyc_report.pdf":
+                                minio_delete_object(k)
+                        minio_upload(pdf_key, pdf_bytes, "application/pdf")
+                        row.pdf_report = pdf_key
                         session.flush()
-                except Exception as ext_exc:
-                    log.warning(
-                        "save_identity_check: DocumentExtraction save failed (non-fatal)",
-                        extra={"error": str(ext_exc), "entity_id": entity.id},
-                    )
+                    except Exception:
+                        log.warning("save_video_kyc_check: PDF upload failed", exc_info=True)
+
+                if doc_bytes and doc_filename:
+                    try:
+                        doc_key = f"{entity_ref}/{Path(doc_filename).name}"
+                        minio_upload(doc_key, doc_bytes, "application/octet-stream")
+                        row.reference_doc_pic = doc_key
+                        session.flush()
+                    except Exception:
+                        log.warning("save_video_kyc_check: reference doc upload failed", exc_info=True)
+
+                if selfie_bytes:
+                    try:
+                        selfie_key = f"{entity_ref}/video_kyc_capture.jpg"
+                        minio_upload(selfie_key, selfie_bytes, "application/octet-stream")
+                        row.video_kyc_pic = selfie_key
+                        session.flush()
+                    except Exception:
+                        log.warning("save_video_kyc_check: live frame upload failed", exc_info=True)
 
             saved = {
                 "id": row.id,
                 "entity_ref": entity_ref,
-                "check_type": check_type,
+                "check_type": "video_kyc",
                 "status": status,
                 "verdict": verdict,
             }
-
-            # Upload PDF to MinIO
-            if pdf_bytes and entity_ref:
-                try:
-                    legacy_objects = minio_list_entity_objects(entity_ref)
-                    for obj in legacy_objects:
-                        key = obj.get("key", "")
-                        filename = Path(key).name
-                        if filename == f"{check_type}_report.pdf" or filename.endswith(f"_{check_type}_report.pdf"):
-                            minio_delete_object(key)
-                except Exception:
-                    log.warning("save_identity_check: legacy report cleanup failed", exc_info=True)
-                minio_key = f"{entity_ref}/{check_type}_report.pdf"
-                minio_upload(minio_key, pdf_bytes, "application/pdf")
-
-            if entity_ref and doc_bytes and doc_filename:
-                try:
-                    minio_upload(
-                        f"{entity_ref}/{Path(doc_filename).name}",
-                        doc_bytes,
-                        "application/octet-stream",
-                    )
-                except Exception:
-                    log.warning("save_identity_check: source document upload failed", exc_info=True)
-
-            if entity_ref and selfie_bytes and selfie_filename:
-                try:
-                    minio_upload(
-                        f"{entity_ref}/{Path(selfie_filename).name}",
-                        selfie_bytes,
-                        "application/octet-stream",
-                    )
-                except Exception:
-                    log.warning("save_identity_check: selfie upload failed", exc_info=True)
-
-            if entity_ref and pan_bytes and pan_filename:
-                try:
-                    minio_upload(
-                        f"{entity_ref}/{Path(pan_filename).name}",
-                        pan_bytes,
-                        "application/octet-stream",
-                    )
-                except Exception:
-                    log.warning("save_identity_check: pan document upload failed", exc_info=True)
-
-            log.info("save_identity_check: saved %s check id=%s for entity=%s", check_type, row.id, entity_ref)
+            log.info(
+                "save_video_kyc_check: saved id=%s entity=%s verdict=%s",
+                row.id, entity_ref, verdict,
+            )
             return saved
     except Exception as exc:
-        log.error("save_identity_check failed: %s", exc, exc_info=True)
+        log.error("save_video_kyc_check failed: %s", exc, exc_info=True)
         return None
 
 
-def get_entity_identity_checks(entity_ref: str) -> List[Dict[str, Any]]:
-    """Return all identity checks for an entity (most-recent first), without PDF bytes."""
+def get_entity_video_kyc_checks(entity_ref: str) -> List[Dict[str, Any]]:
+    """Return the latest Video KYC check row for an entity as a list of dicts.
+
+    Returns an empty list when no row exists or the DB is unavailable.
+    """
     try:
         with db_session() as session:
             entity = (
@@ -1838,30 +1943,141 @@ def get_entity_identity_checks(entity_ref: str) -> List[Dict[str, Any]]:
             if not entity:
                 return []
             checks = (
-                session.query(IdentityCheck)
-                .filter(IdentityCheck.entity_id == entity.id)
-                .order_by(IdentityCheck.created_at.desc())
+                session.query(VideoKYCCheck)
+                .filter(VideoKYCCheck.entity_id == entity.id)
+                .order_by(VideoKYCCheck.created_at.desc())
+                .limit(1)
                 .all()
             )
-            latest_by_type: Dict[str, IdentityCheck] = {}
-            for check in checks:
-                if check.check_type not in latest_by_type:
-                    latest_by_type[check.check_type] = check
             return [
                 {
                     "id": c.id,
-                    "check_type": c.check_type,
+                    "check_type": "video_kyc",
                     "status": c.status,
                     "cosine_similarity": c.cosine_similarity,
                     "display_score": c.display_score,
                     "is_match": c.is_match,
                     "liveness_state": c.liveness_state,
                     "liveness_passed": c.liveness_passed,
-                    "verdict": c.verdict,
-                    "doc_filename": c.doc_filename or "",
-                    "selfie_filename": c.selfie_filename or "",
+                    "verdict": c.verdict or "",
+                    "identity_dtls": c.identity_dtls or {},
+                    "address_dtls": c.address_dtls or {},
+                    "video_kyc_pic": c.video_kyc_pic or "",
+                    "address_proof_pic": c.address_proof_pic or "",
+                    "reference_doc_pic": c.reference_doc_pic or "",
+                    "isAddressMatch": c.isAddressMatch or "skipped",
+                    "kyc_comments": c.kyc_comments or "",
+                    "current_location_json": c.current_location_json or {},
+                    "current_address_text": c.current_address_text or "",
+                    "address_distance_meters": c.address_distance_meters,
                     "report_json": c.report_json or {},
-                    "has_pdf": c.pdf_report is not None and len(c.pdf_report) > 0,
+                    "pdf_report": c.pdf_report or "",
+                    "created_at": c.created_at.isoformat() if c.created_at else "",
+                }
+                for c in checks
+            ]
+    except Exception as exc:
+        log.warning("get_entity_video_kyc_checks failed: %s", exc)
+        return []
+
+
+def save_identity_check(
+    check_type: str,
+    result: Dict[str, Any],
+    forced_entity_ref: Optional[str] = None,
+    extra_identity: Optional[Dict[str, str]] = None,
+    doc_filename: str = "",
+    pdf_bytes: Optional[bytes] = None,
+    doc_bytes: Optional[bytes] = None,
+    selfie_bytes: Optional[bytes] = None,
+    pan_filename: str = "",
+    pan_bytes: Optional[bytes] = None,
+    pan_signature_bytes: Optional[bytes] = None,
+) -> Optional[Dict[str, Any]]:
+    """Backward-compatible shim that routes to the correct specialised save function.
+
+    - check_type == 'face_match' → save_identity_verification_check()
+    - check_type == 'video_kyc'  → save_video_kyc_check()
+
+    This function is kept so existing call sites in identity.py and video_kyc.py
+    do not need to be changed immediately.  New code should call the specialised
+    functions directly.
+    """
+    if check_type == "video_kyc":
+        return save_video_kyc_check(
+            result=result,
+            forced_entity_ref=forced_entity_ref,
+            extra_identity=extra_identity,
+            doc_filename=doc_filename,
+            pdf_bytes=pdf_bytes,
+            doc_bytes=doc_bytes,
+            selfie_bytes=selfie_bytes,
+        )
+    # Default to identity verification (face_match) path
+    return save_identity_verification_check(
+        result=result,
+        forced_entity_ref=forced_entity_ref,
+        extra_identity=extra_identity,
+        doc_filename=doc_filename,
+        pdf_bytes=pdf_bytes,
+        doc_bytes=doc_bytes,
+        selfie_bytes=selfie_bytes,
+        pan_filename=pan_filename,
+        pan_bytes=pan_bytes,
+        pan_signature_bytes=pan_signature_bytes,
+    )
+
+
+def get_entity_identity_checks(entity_ref: str) -> List[Dict[str, Any]]:
+    """Return the latest Identity Verification check for an entity as a list.
+
+    Only rows that belong to the Identity Verification workflow are returned
+    (check_type == 'face_match' or NULL).  Video KYC rows live in
+    ``video_kyc_checks`` and are fetched via get_entity_video_kyc_checks().
+    """
+    try:
+        with db_session() as session:
+            entity = (
+                session.query(Entity)
+                .filter(Entity.entity_ref == entity_ref)
+                .first()
+            )
+            if not entity:
+                return []
+            # Only include Identity Verification rows (face_match or NULL check_type)
+            checks = (
+                session.query(IdentityCheck)
+                .filter(
+                    IdentityCheck.entity_id == entity.id,
+                    IdentityCheck.check_type.in_(["face_match", None]),
+                )
+                .order_by(IdentityCheck.created_at.desc())
+                .all()
+            )
+            # Deduplicate: keep only the most-recent row (there should only be one)
+            latest_by_type: Dict[str, IdentityCheck] = {}
+            for check in checks:
+                key = check.check_type or "face_match"
+                if key not in latest_by_type:
+                    latest_by_type[key] = check
+            return [
+                {
+                    "id": c.id,
+                    "check_type": c.check_type or "face_match",
+                    "status": c.status,
+                    "cosine_similarity": c.cosine_similarity,
+                    "display_score": c.display_score,
+                    "is_match": c.is_match,
+                    "verdict": c.verdict or "",
+                    "report_json": c.report_json or {},
+                    "aadhar_dtls": c.aadhar_dtls or {},
+                    "pan_dtls": c.pan_dtls or {},
+                    "selfie_pic": c.selfie_pic or "",
+                    "aadhaar_pic": c.aadhaar_pic or "",
+                    "pan_pic": c.pan_pic or "",
+                    "signature_pic": c.signature_pic or "",
+                    "pdf_report": c.pdf_report or "",
+                    "has_pdf": bool(c.pdf_report),
                     "created_at": c.created_at.isoformat() if c.created_at else "",
                 }
                 for c in latest_by_type.values()
@@ -1871,7 +2087,7 @@ def get_entity_identity_checks(entity_ref: str) -> List[Dict[str, Any]]:
         return []
 
 
-_DB_VIEWER_TABLES = {"entities", "scans", "document_extractions", "identity_checks", "entity_reports"}
+_DB_VIEWER_TABLES = {"entities", "scans", "document_extractions", "identity_checks", "entity_reports", "video_kyc_checks"}
 
 
 def db_table_counts() -> Dict[str, int]:
@@ -1882,6 +2098,7 @@ def db_table_counts() -> Dict[str, int]:
         "document_extractions",
         "identity_checks",
         "entity_reports",
+        "video_kyc_checks",
     )
     counts: Dict[str, int] = {}
     try:
@@ -1935,10 +2152,23 @@ def db_table_rows(table: str, limit: int = 500) -> tuple[List[Dict[str, Any]], i
                 rows_raw = session.execute(
                     text(
                         "SELECT id, entity_id, check_type, status, cosine_similarity, "
-                        "display_score, threshold, is_match, liveness_state, "
-                        "liveness_passed, verdict, doc_filename, selfie_filename, "
-                        "report_json, created_at "
+                        "display_score, threshold, is_match, verdict, "
+                        "selfie_pic, aadhaar_pic, pan_pic, signature_pic, "
+                        "pdf_report, aadhar_dtls, pan_dtls, report_json, created_at "
                         "FROM identity_checks ORDER BY created_at DESC LIMIT :lim"
+                    ),
+                    {"lim": limit},
+                ).mappings().all()
+            elif table == "video_kyc_checks":
+                rows_raw = session.execute(
+                    text(
+                        "SELECT id, entity_id, status, cosine_similarity, "
+                        "display_score, threshold, is_match, liveness_state, "
+                        "liveness_passed, verdict, video_kyc_pic, address_proof_pic, "
+                        "reference_doc_pic, isAddressMatch, kyc_comments, "
+                        "current_address_text, address_distance_meters, "
+                        "identity_dtls, address_dtls, pdf_report, created_at "
+                        "FROM video_kyc_checks ORDER BY created_at DESC LIMIT :lim"
                     ),
                     {"lim": limit},
                 ).mappings().all()
@@ -1976,7 +2206,8 @@ def reset_db() -> bool:
         with db_session() as session:
             session.execute(
                 text(
-                    "TRUNCATE TABLE entity_reports, document_extractions, identity_checks, scans, entities "
+                    "TRUNCATE TABLE entity_reports, document_extractions, "
+                    "identity_checks, video_kyc_checks, scans, entities "
                     "RESTART IDENTITY CASCADE"
                 )
             )
@@ -1995,6 +2226,7 @@ _TRUNCATABLE_TABLES = frozenset({
     "document_extractions",
     "identity_checks",
     "entity_reports",
+    "video_kyc_checks",
 })
 
 
@@ -2038,6 +2270,7 @@ _DB_VIEWER_CRUD_TABLES: frozenset = frozenset({
     "document_extractions",
     "identity_checks",
     "entity_reports",
+    "video_kyc_checks",
 })
 
 # Per-table metadata that drives form generation in database.py.
@@ -2099,26 +2332,63 @@ _DB_VIEWER_TABLE_META: dict = {
         "fk": {"entity_id": "entities", "scan_id": "scans"},
         "json_cols": {"extracted_data"},
     },
+    # identity_checks stores Identity Verification (face-match) results only.
+    # check_type is nullable for new rows; old rows may have 'face_match'.
     "identity_checks": {
         "pk": "id",
-        "readonly": {"id", "created_at"},
+        "readonly": {"id", "created_at", "updated_at"},
         "editable": [
             {"name": "entity_id",         "label": "Entity",               "ui": "fk",    "fk_table": "entities", "nullable": True},
-            {"name": "check_type",        "label": "Check Type",           "ui": "select","choices": ["face_match", "video_kyc"]},
+            {"name": "check_type",        "label": "Check Type",           "ui": "select","choices": ["face_match", ""], "nullable": True},
             {"name": "status",            "label": "Status",               "ui": "select","choices": ["pass", "fail", "inconclusive"]},
             {"name": "cosine_similarity", "label": "Cosine Similarity",    "ui": "float", "nullable": True},
             {"name": "display_score",     "label": "Display Score (0–100)","ui": "float", "nullable": True},
             {"name": "threshold",         "label": "Threshold",            "ui": "float", "nullable": True},
             {"name": "is_match",          "label": "Is Match",             "ui": "bool",  "nullable": True},
-            {"name": "liveness_state",    "label": "Liveness State",       "ui": "text"},
-            {"name": "liveness_passed",   "label": "Liveness Passed",      "ui": "bool",  "nullable": True},
             {"name": "verdict",           "label": "Verdict",              "ui": "select","choices": ["PASS", "FAIL", ""]},
-            {"name": "doc_filename",      "label": "Doc Filename",         "ui": "text"},
-            {"name": "selfie_filename",   "label": "Selfie Filename",      "ui": "text"},
+            {"name": "selfie_pic",        "label": "Selfie MinIO Key",     "ui": "text"},
+            {"name": "aadhaar_pic",       "label": "Aadhaar MinIO Key",    "ui": "text"},
+            {"name": "pan_pic",           "label": "PAN MinIO Key",        "ui": "text"},
+            {"name": "signature_pic",     "label": "Signature MinIO Key",  "ui": "text"},
+            {"name": "pdf_report",        "label": "PDF MinIO Key",        "ui": "text"},
+            {"name": "aadhar_dtls",       "label": "Aadhaar Details (JSON)","ui": "json", "nullable": True},
+            {"name": "pan_dtls",          "label": "PAN Details (JSON)",   "ui": "json", "nullable": True},
             {"name": "report_json",       "label": "Report JSON",          "ui": "json"},
         ],
         "fk": {"entity_id": "entities"},
-        "json_cols": {"report_json"},
+        "json_cols": {"report_json", "aadhar_dtls", "pan_dtls"},
+    },
+    # video_kyc_checks stores Video KYC session results only.
+    "video_kyc_checks": {
+        "pk": "id",
+        "readonly": {"id", "created_at", "updated_at"},
+        "editable": [
+            {"name": "entity_id",               "label": "Entity",                     "ui": "fk",    "fk_table": "entities", "nullable": True},
+            {"name": "status",                  "label": "Status",                     "ui": "select","choices": ["pass", "fail", "inconclusive"]},
+            {"name": "cosine_similarity",        "label": "Cosine Similarity",          "ui": "float", "nullable": True},
+            {"name": "display_score",            "label": "Display Score (0–100)",      "ui": "float", "nullable": True},
+            {"name": "threshold",               "label": "Threshold",                  "ui": "float", "nullable": True},
+            {"name": "is_match",                "label": "Is Match",                   "ui": "bool",  "nullable": True},
+            {"name": "liveness_state",           "label": "Liveness State",             "ui": "text"},
+            {"name": "liveness_passed",          "label": "Liveness Passed",            "ui": "bool",  "nullable": True},
+            {"name": "verdict",                 "label": "Verdict",                    "ui": "select","choices": ["PASS", "FAIL", ""]},
+            {"name": "video_kyc_pic",           "label": "Live Frame MinIO Key",       "ui": "text"},
+            {"name": "address_proof_pic",       "label": "Address Proof MinIO Key",    "ui": "text"},
+            {"name": "reference_doc_pic",       "label": "Ref Doc MinIO Key",          "ui": "text"},
+            {"name": "isAddressMatch",          "label": "Address Match",              "ui": "select","choices": ["match", "mismatch", "skipped", ""], "nullable": True},
+            {"name": "kyc_comments",            "label": "KYC Comments",               "ui": "textarea"},
+            {"name": "current_address_text",    "label": "Current Address (live)",     "ui": "textarea"},
+            {"name": "address_distance_meters", "label": "Address Distance (meters)",  "ui": "float", "nullable": True},
+            {"name": "pdf_report",              "label": "PDF MinIO Key",              "ui": "text"},
+            {"name": "identity_dtls",           "label": "Identity Details (JSON)",    "ui": "json", "nullable": True},
+            {"name": "address_dtls",            "label": "Address Details (JSON)",     "ui": "json", "nullable": True},
+            {"name": "current_location_json",   "label": "GPS Location (JSON)",        "ui": "json", "nullable": True},
+            {"name": "challenge_snapshots_json","label": "Challenge Snapshots (JSON)",  "ui": "json", "nullable": True},
+            {"name": "report_json",             "label": "Report JSON",                "ui": "json"},
+        ],
+        "fk": {"entity_id": "entities"},
+        "json_cols": {"report_json", "identity_dtls", "address_dtls",
+                      "current_location_json", "challenge_snapshots_json"},
     },
     "entity_reports": {
         "pk": "id",

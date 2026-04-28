@@ -2835,8 +2835,6 @@ Records shows every **applicant (entity)** in the database and all the documents
                     "Verdict": c["verdict"],
                     "Score": f"{c['display_score']:.1f}%" if c.get("display_score") else "-",
                     "Match": "Yes" if c.get("is_match") else "No",
-                    "Liveness": ("Pass" if c.get("liveness_passed") else "Fail") if c["check_type"] == "video_kyc" else "-",
-                    "Document": c.get("doc_filename", ""),
                 }
                 for c in id_checks
             ])
@@ -3649,7 +3647,6 @@ def _page_identity_verification() -> None:
                         forced_entity_ref=forced_ref,
                         extra_identity=extra_identity,
                         doc_filename=aadhaar_file.name,
-                        selfie_filename=selfie_name,
                         pdf_bytes=pdf_bytes,
                     )
                     if saved:
@@ -3682,7 +3679,6 @@ def _page_identity_verification() -> None:
                             "Verdict": c["verdict"],
                             "Score": f"{c['display_score']:.1f}%" if c["display_score"] else "-",
                             "Match": "Yes" if c["is_match"] else "No",
-                            "Document": c["doc_filename"],
                         } for c in face_checks])
                         st.dataframe(df, hide_index=True, use_container_width=True)
                     else:

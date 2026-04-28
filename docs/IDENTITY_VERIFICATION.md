@@ -41,7 +41,7 @@ The primary identity verification flow mandates **three document inputs**:
    - **PAN Format & Entity Type** — Regex validation plus entity-type decoding from the 4th PAN character.
 5. **Face Match** — ArcFace cosine similarity between the face on the Aadhaar card and the selfie (threshold > 0.40).
 6. **Auto-fill Entity Form** — Extracted PAN name is used as a fallback when Aadhaar QR name is unavailable. PAN number and masked Aadhaar UID are pre-populated in the "Applicant Details" form, while father's name and DOB remain visible for operator review. The operator only needs to enter phone and email manually.
-7. **Persistence** — Results are stored in the `identity_checks` database table, linked to the entity. The same save also writes document fields into `document_extractions` as separate rows for Aadhaar and PAN when those payloads are available. In parallel, the save flow upserts section-level evidence into `layered_analysis_entries` for:
+7. **Persistence** — Identity Verification saves one current row per entity in the `identity_checks` database table. The row stores structured Aadhaar and PAN payloads, similarity outcomes, MinIO object keys for the Aadhaar image, PAN image, selfie, PAN signature crop, and the generated PDF report. Identity Verification does **not** write Aadhaar or PAN payloads into `document_extractions`. In parallel, the save flow upserts section-level evidence into `layered_analysis_entries` for:
    - `Identity Verification` / `Aadhaar`
    - `Identity Verification` / `PAN Card`
    - `Identity Verification` / `Photo Upload`
@@ -72,7 +72,9 @@ Customer's browser ──WS /kyc/ws/{session_id}──► FastAPI server
 **Step-by-step:**
 
 1. **Create session** — Operator clicks "Create Secure KYC Session" on the Video KYC page.
-   - Optionally uploads the customer's ID document; the system extracts a face embedding (ArcFace/InsightFace) to use as a reference for later matching.
+   - Uploads the customer's reference identity document; the system extracts a face embedding (ArcFace/InsightFace) to use as a reference for later matching.
+   - Uploads a permanent address-proof document. Allowed address-proof documents are Aadhaar or Passport.
+   - The backend extracts the address-proof payload before session creation and stores it in the in-memory KYC session.
    - `POST /kyc/sessions` is called on the FastAPI server; a 30-minute session is created.
    - A shareable URL like `http://your-server:8000/kyc/<session_id>` is returned.
 
@@ -96,12 +98,20 @@ Customer's browser ──WS /kyc/ws/{session_id}──► FastAPI server
 
    - After each challenge passes, the server advances to the next one and sends a progress update.
 
-4. **Face match (optional)** — Once all liveness challenges pass:
-   - If a reference embedding was provided in step 1, **ArcFace cosine similarity** is computed between the live face and the reference embedding.
+4. **Current-location capture** — During the customer flow:
+   - The browser requests geolocation permission.
+   - Latitude, longitude, accuracy, and timestamp are sent to the backend and stored in the in-memory session.
+   - The backend uses the latest reliable reverse-geocoding provider available in the deployment environment to derive a human-readable current address.
+   - If reverse geocoding is unavailable, the raw coordinates are still preserved and the address comparison is marked `inconclusive`.
+
+5. **Face match and evidence retention** — Once all liveness challenges pass:
+   - BaseTruth keeps the best frontal live frame and one best frame per completed challenge.
+   - If a reference embedding was provided in step 1, **ArcFace cosine similarity** is computed between the best live face frame and the reference embedding.
    - Threshold: similarity > 0.40 → PASS.
    - If no reference was provided, the session completes as a liveness-only check.
+   - The backend also compares the current address against the extracted address-proof payload and calculates an address-distance metric when both sides can be normalized.
 
-5. **Result** — Server sends a `{"type":"result","passed":true/false,...}` message via WebSocket.
+6. **Result** — Server sends a `{"type":"result","passed":true/false,...}` message via WebSocket.
    - Browser shows a full-screen PASS ✅ or FAIL ❌ card.
    - Operator dashboard polls `GET /kyc/sessions/{session_id}` for the outcome.
 
@@ -132,27 +142,37 @@ On Python 3.13+, `insightface` cannot be installed (native extension build fails
 
 ## Data Persistence
 
-All identity verification results are now persisted in the `identity_checks` PostgreSQL table:
+Identity Verification results are persisted in `identity_checks`:
 
 | Field | Description |
 | --- | --- |
-| `check_type` | `face_match` or `video_kyc` |
 | `entity_id` | Links to the `entities` table |
-| `cosine_similarity` | Raw ArcFace similarity score |
-| `is_match` | Boolean match result |
-| `liveness_passed` | Liveness check result (Video KYC) |
-| `verdict` | Overall PASS/FAIL |
-| `report_json` | Full result payload |
-| `pdf_report` | Generated PDF audit report |
+| `status` | `pass`, `fail`, or `inconclusive` |
+| `cosine_similarity` / `display_score` / `threshold` / `is_match` | Face-match decision fields |
+| `aadhar_dtls` | Aadhaar QR payload |
+| `pan_dtls` | PAN extraction payload |
+| `selfie_pic` / `aadhaar_pic` / `pan_pic` / `signature_pic` | MinIO object keys for the saved images |
+| `report_json` | Full identity-verification payload |
+| `pdf_report` | MinIO object key for the generated PDF report |
 
-The same save also writes structured document fields to `document_extractions`:
+Video KYC results are persisted in `video_kyc_checks`:
 
-| Document Type | Stored Fields |
+| Field | Description |
 | --- | --- |
-| `aadhaar` | name, UID, DOB/YOB, gender, district, state, QR type |
-| `pan_card` | PAN number, full name, father's name, DOB, extraction source, engine |
+| `entity_id` | Links to the `entities` table |
+| `status` | `pass`, `fail`, or `inconclusive` |
+| `cosine_similarity` / `display_score` / `threshold` / `is_match` | Live-face match decision fields |
+| `liveness_state` / `liveness_passed` | Liveness result |
+| `identity_dtls` | Reference identity-proof payload |
+| `address_dtls` | Permanent address-proof payload |
+| `current_location_json` / `current_address_text` | Browser geolocation payload and resolved current address |
+| `isAddressMatch` / `address_distance_meters` / `kyc_comments` | Address-comparison result fields |
+| `video_kyc_pic` / `address_proof_pic` / `reference_doc_pic` | MinIO object keys for the retained proof images |
+| `challenge_snapshots_json` | Metadata for one best retained frame per completed challenge |
+| `report_json` | Full Video KYC payload |
+| `pdf_report` | MinIO object key for the generated PDF report |
 
-Both rows use `source_screen = 'identity_verification'` and `scan_id = NULL` because Identity Verification does not create a scan row.
+`document_extractions` is reserved for Scan Document and Bulk Scan. Identity Verification and Video KYC do not create rows there.
 
 Results are viewable in **Document Intelligence** under the selected entity, alongside document scan history.
 The same verification event also updates `layered_analysis_entries`, which is the dedicated source used by the **Layered Analysis** screen to show extracted fields, deterministic checks, model metrics, and raw evidence for audit review.
@@ -167,6 +187,8 @@ Both face match and Video KYC results generate a professional PDF report contain
 - Liveness detection results (Video KYC only)
 - Summary table of all checks
 - Disclaimer noting offline AI processing
+
+The rendered PDF files are uploaded to MinIO. The owning DB row stores the current object key in `identity_checks.pdf_report` or `video_kyc_checks.pdf_report`.
 
 ## Why Not External APIs?
 
@@ -184,6 +206,6 @@ Many competitive products rely on AWS Rekognition or Azure Face API. BaseTruth u
 | `src/basetruth/kyc/liveness.py` | Per-frame feature extraction and challenge pass/fail logic |
 | `src/basetruth/api.py` | REST + WebSocket endpoints (`POST /kyc/sessions`, `WS /kyc/ws/{id}`, etc.) |
 | `src/basetruth/ui/pages/video_kyc.py` | Streamlit operator UI (create session, schedule, in-person verify) |
-| `src/basetruth/db.py` | `IdentityCheck` ORM model |
-| `src/basetruth/store.py` | `save_identity_check()`, `get_entity_identity_checks()` |
+| `src/basetruth/db.py` | `IdentityCheck` and `VideoKYCCheck` ORM models |
+| `src/basetruth/store.py` | identity/video-KYC persistence helpers and `get_entity_identity_checks()` compatibility reads |
 | `src/basetruth/reporting/pdf.py` | `render_identity_check_pdf()` |

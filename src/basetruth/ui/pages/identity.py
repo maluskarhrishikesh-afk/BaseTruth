@@ -2101,7 +2101,6 @@ def _page_identity_verification() -> None:
                                 forced_entity_ref=_s_forced_ref,
                                 extra_identity=_s_extra_identity,
                                 doc_filename=_s_doc_name,
-                                selfie_filename=_s_selfie_name,
                                 pdf_bytes=pdf_bytes,
                                 doc_bytes=_s_doc_bytes,
                                 selfie_bytes=_s_selfie_bytes,
@@ -2156,7 +2155,6 @@ def _page_identity_verification() -> None:
                                             else "-"
                                         ),
                                         "Match": "Yes" if c["is_match"] else "No",
-                                        "Document": c["doc_filename"],
                                     }
                                     for c in face_checks
                                 ]

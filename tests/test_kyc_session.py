@@ -86,3 +86,41 @@ def test_session_store_cleanup_expired_removes_only_non_terminal_sessions() -> N
     assert store.get(expired_waiting.session_id) is None
     assert store.get(expired_completed.session_id) is expired_completed
     assert store.get(active.session_id) is active
+
+
+def test_kyc_session_new_fields_have_correct_defaults() -> None:
+    """All new Phase-4 fields added to KYCSession must have sane defaults."""
+    session = KYCSession(
+        session_id="session-new",
+        customer_name="Test",
+        entity_ref="BT-000010",
+        challenges=["blink"],
+        reference_embedding_b64=None,
+    )
+
+    # New address / identity fields must default to falsy values
+    assert session.identity_dtls is None
+    assert session.address_dtls is None
+    assert session.reference_doc_filename == ""
+    assert session.address_proof_filename == ""
+    assert session.current_location_json is None
+    assert session.current_address_text == ""
+    assert session.address_match_result == ""
+    assert session.address_distance_meters is None
+    assert session.challenge_snapshots == []
+    assert session.best_live_frame_bytes is None
+
+
+def test_session_store_create_passes_address_dtls_to_session() -> None:
+    """SessionStore.create must forward address_dtls and reference_doc_filename."""
+    store = SessionStore()
+    session = store.create(
+        challenges=["blink"],
+        customer_name="Test",
+        entity_ref="BT-000011",
+        address_dtls={"address": "Pune", "pin": "411001"},
+        reference_doc_filename="aadhaar.pdf",
+    )
+
+    assert session.address_dtls == {"address": "Pune", "pin": "411001"}
+    assert session.reference_doc_filename == "aadhaar.pdf"

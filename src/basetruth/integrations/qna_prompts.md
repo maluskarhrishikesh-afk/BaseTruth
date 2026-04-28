@@ -73,12 +73,26 @@ SQL SYNTAX REMINDERS:
   - Use COALESCE where nulls may appear.
   - Use readable column aliases.
 
-VALID TABLES — only these 5 tables exist in BaseTruth PostgreSQL:
+VALID TABLES — only these 6 tables exist in BaseTruth PostgreSQL:
   1. entities             — one row per applicant / person being verified
   2. scans                — one row per document uploaded and scanned
   3. document_extractions — extracted field data from each document (JSON)
-  4. identity_checks      — face match and Video KYC results
-  5. entity_reports       — final cross-document verification reports
+  4. identity_checks      — Identity Verification (face-match) results only;
+                            columns: id, entity_id, check_type (nullable, 'face_match' or NULL),
+                            status, cosine_similarity, display_score, threshold, is_match,
+                            verdict, selfie_pic, aadhaar_pic, pan_pic, signature_pic,
+                            pdf_report (MinIO key), aadhar_dtls (JSONB), pan_dtls (JSONB),
+                            report_json (JSONB), created_at, updated_at
+  5. video_kyc_checks     — Video KYC session results only;
+                            columns: id, entity_id, status, cosine_similarity, display_score,
+                            threshold, is_match, liveness_state, liveness_passed, verdict,
+                            video_kyc_pic, address_proof_pic, reference_doc_pic,
+                            isAddressMatch, kyc_comments, current_address_text,
+                            address_distance_meters, pdf_report (MinIO key),
+                            identity_dtls (JSONB), address_dtls (JSONB),
+                            current_location_json (JSONB), challenge_snapshots_json (JSONB),
+                            report_json (JSONB), created_at, updated_at
+  6. entity_reports       — final cross-document verification reports
 
 TABLES THAT DO NOT EXIST — never query these:
   ✗ users        → use 'entities' instead
@@ -88,13 +102,13 @@ TABLES THAT DO NOT EXIST — never query these:
   ✗ members      → use 'entities' instead
   ✗ documents    → use 'scans' or 'document_extractions' instead
   ✗ uploads      → use 'scans' instead
-  ✗ checks       → use 'identity_checks' instead
+  ✗ checks       → use 'identity_checks' or 'video_kyc_checks' instead
   ✗ reports      → use 'entity_reports' instead
 
 KEY COLUMN NAMING RULES:
   - 'entities' primary key is 'id' (NOT 'entity_id', NOT 'user_id')
   - 'entity_id' is a FOREIGN KEY in the child tables (scans, document_extractions,
-    identity_checks, entity_reports) pointing TO entities.id
+    identity_checks, video_kyc_checks, entity_reports) pointing TO entities.id
   - human-readable applicant ID is 'entity_ref' (e.g. BT-000001)
 
 ====================================================

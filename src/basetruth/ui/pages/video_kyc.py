@@ -789,7 +789,6 @@ def _tab_conduct() -> None:
                         forced_entity_ref=forced_ref,
                         extra_identity=extra_identity,
                         doc_filename=doc_file.name if doc_file else "",
-                        selfie_filename="video_kyc_capture.jpg",
                         pdf_bytes=vkyc_pdf,
                         doc_bytes=doc_file.getvalue() if doc_file else None,
                         selfie_bytes=camera_bytes,

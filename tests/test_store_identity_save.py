@@ -86,14 +86,26 @@ def test_save_identity_check_persists_aadhaar_demographics(monkeypatch) -> None:
     assert saved is not None
     assert saved["entity_ref"] == "BT-000007"
 
-    aadhaar_rows = [
+    # Aadhaar data is now stored in identity_checks.aadhar_dtls (JSONB),
+    # NOT in document_extractions.  Verify that exactly one IdentityCheck
+    # row was added with the correct aadhar_dtls payload.
+    identity_rows = [
+        obj for obj in fake_session.added if isinstance(obj, IdentityCheck)
+    ]
+    assert len(identity_rows) == 1, "Expected exactly one IdentityCheck row"
+    row = identity_rows[0]
+    assert row.aadhar_dtls is not None, "aadhar_dtls must be populated"
+    assert row.aadhar_dtls["gender"] == "M"
+    assert row.aadhar_dtls["dist"] == "Pune"
+    assert row.aadhar_dtls["state"] == "Maharashtra"
+
+    # No DocumentExtraction rows should be written by the identity verification path
+    aadhaar_doc_rows = [
         obj
         for obj in fake_session.added
         if isinstance(obj, DocumentExtraction) and obj.document_type == "aadhaar"
     ]
-
-    assert len(aadhaar_rows) == 1
-    assert aadhaar_rows[0].source_screen == "identity_verification"
-    assert aadhaar_rows[0].extracted_data["gender"] == "M"
-    assert aadhaar_rows[0].extracted_data["dist"] == "Pune"
-    assert aadhaar_rows[0].extracted_data["state"] == "Maharashtra"
+    assert len(aadhaar_doc_rows) == 0, (
+        "Identity verification must NOT write to document_extractions; "
+        "Aadhaar data belongs in identity_checks.aadhar_dtls"
+    )
