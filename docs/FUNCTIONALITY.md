@@ -164,6 +164,50 @@
 - The save path keeps one current `video_kyc_checks` row per entity.
 - BaseTruth retains the best frontal live frame plus one best frame per completed challenge, not every intermediate frame.
 
+### Customer-Facing KYC Page (`GET /kyc/{session_id}`)
+
+The customer opens this URL on their phone or PC. The page is a self-contained 4-step wizard that communicates with the BaseTruth API entirely from the browser.
+
+#### Step 1 — Upload ID
+- Customer taps the upload zone and selects a photo of their **Aadhaar card (front)** or **PAN card**.
+- The image is posted to `POST /kyc/sessions/{id}/upload-id` (multipart form).
+- The server extracts the face embedding from the ID photo and stores it as the face-match reference for the liveness step.
+- If no face is detected the server returns HTTP 400 and the customer is prompted to try a clearer photo.
+
+#### Step 2 — Upload Address Proof
+- Customer uploads the **back side of their Aadhaar card** or the **address page of their Passport**.
+- The image is posted to `POST /kyc/sessions/{id}/upload-address`.
+- The server runs OCR (pytesseract) to extract raw address text; OCR failure is non-fatal and silently skipped.
+- The customer may skip this step; doing so sets `address_match_result = "skipped"` for the session.
+
+#### Step 3 — Share GPS Location
+- Customer taps "Share My Location"; the browser calls `navigator.geolocation.getCurrentPosition()`.
+- Coordinates are posted to `POST /kyc/sessions/{id}/location` as JSON `{"lat", "lon", "accuracy"}`.
+- The server reverse-geocodes the point via Nominatim and stores the human-readable address in the session.
+- If address text was extracted in Step 2 the server immediately runs `compare_addresses()` (Jaccard + PIN + state) and, if forward geocoding of the proof address succeeds, `calculate_distance()`.
+- The 500 m rule: if GPS distance between live point and proof-address GPS point is ≤ 500 m the result is upgraded to `"match"` regardless of text overlap.
+- The customer may skip this step; doing so leaves `address_match_result = "skipped"`.
+
+#### Step 4 — Liveness Challenge
+- The browser opens a WebSocket to `/kyc/ws/{session_id}` and starts the camera.
+- Frames are captured at ~3 fps and sent as base64 JPEG via `{type: "frame", data: "..."}` messages.
+- The server drives the challenge sequence and sends `{type: "status", ...}` messages to update the UI.
+- On completion the server sends `{type: "result", passed, display_score, address_match_result, current_address_text, address_distance_meters}`.
+
+#### Result Screen
+- Shows a green **Identity Verified** card (pass) or red **Verification Failed** card (fail).
+- Address check summary is displayed below the main result if address or location data is available.
+
+**HTTP endpoints backing the wizard:**
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/kyc/sessions/{id}/upload-id` | POST | Accept ID photo; extract + store face embedding |
+| `/kyc/sessions/{id}/upload-address` | POST | Accept address proof photo; run OCR; store text |
+| `/kyc/sessions/{id}/location` | POST | Accept GPS coordinates; reverse-geocode; compare addresses |
+| `/kyc/{id}` | GET | Serve the HTML wizard page |
+| `/kyc/ws/{id}` | WebSocket | Stream liveness frames + challenges; return final result |
+
 ---
 
 ## 🔍 Scan Document

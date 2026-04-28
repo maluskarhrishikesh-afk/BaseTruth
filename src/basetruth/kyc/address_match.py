@@ -281,3 +281,46 @@ def reverse_geocode(lat: float, lon: float) -> Optional[str]:
     except Exception as exc:  # network failure, timeout, JSON error, etc.
         log.warning("reverse_geocode failed (non-fatal): %s", exc)
         return None
+
+
+def geocode_address(address_text: str) -> Optional[tuple]:
+    """Forward-geocode a free-text address string to a (lat, lon) tuple.
+
+    Used to calculate the GPS distance between the customer's live location
+    and the registered address on their proof document.  The result lets us
+    apply the 500 m physical-proximity rule on top of pure text comparison.
+
+    Nominatim (OpenStreetMap) is queried with no API key.  Results for
+    Indian addresses (district / taluka specifics) have variable success
+    rates, so the caller must always treat None as a graceful skip and fall
+    back to text-only comparison.
+
+    Returns a (lat, lon) tuple on success, or None on any failure.  Never
+    raises — all exceptions are caught and logged at DEBUG level.
+    """
+    if not address_text or len(address_text.strip()) < 5:
+        return None
+    try:
+        import json as _json  # noqa: PLC0415
+        import urllib.parse  # noqa: PLC0415
+        import urllib.request  # noqa: PLC0415
+
+        # Build a Nominatim search URL with a 1-result limit for speed
+        params = urllib.parse.urlencode(
+            {"q": address_text, "format": "json", "limit": "1"}
+        )
+        url = f"https://nominatim.openstreetmap.org/search?{params}"
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "BaseTruth/1.0 (identity verification platform)"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = _json.loads(resp.read().decode())
+        if data:
+            lat = float(data[0]["lat"])
+            lon = float(data[0]["lon"])
+            log.debug("geocode_address: '%s…' → (%.4f, %.4f)", address_text[:40], lat, lon)
+            return lat, lon
+    except Exception as exc:  # network, timeout, JSON, key error — all non-fatal
+        log.debug("geocode_address failed (non-critical): %s", exc)
+    return None

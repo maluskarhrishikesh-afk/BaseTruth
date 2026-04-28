@@ -85,6 +85,12 @@ try:
         scans:     int = Field(..., description="Total document scans stored.")
         high_risk: int = Field(..., description="Scans flagged as high risk.")
 
+    class LocationData(BaseModel):
+        """GPS coordinates sent by the customer browser in Step 3 of the KYC wizard."""
+        lat:      float = Field(..., description="Latitude in decimal degrees.")
+        lon:      float = Field(..., description="Longitude in decimal degrees.")
+        accuracy: float = Field(0.0, description="Accuracy radius in metres reported by the browser.")
+
 except ImportError:
     _FASTAPI_AVAILABLE = False
 
@@ -110,11 +116,53 @@ _KYC_PAGE_HTML = r"""<!DOCTYPE html>
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
   background:#0f172a;color:#e2e8f0;min-height:100vh;
   display:flex;flex-direction:column;align-items:center;padding:1rem 0.75rem}
-.logo{margin:1.2rem 0 0.8rem;font-size:1.35rem;font-weight:800;
+.logo{margin:1.2rem 0 0.5rem;font-size:1.35rem;font-weight:800;
   background:linear-gradient(135deg,#6366f1,#8b5cf6);
   -webkit-background-clip:text;-webkit-text-fill-color:transparent}
 .card{background:#1e293b;border:1px solid #334155;border-radius:16px;
   padding:1.4rem 1.25rem;width:100%;max-width:460px;margin-bottom:0.75rem}
+/* ── Step indicator ──────────────────────────────────────────────── */
+.step-bar{display:flex;align-items:center;justify-content:center;
+  gap:.2rem;width:100%;max-width:460px;margin:.4rem 0 .65rem;
+  padding:.6rem .75rem;background:#1e293b;border:1px solid #334155;border-radius:12px}
+.s-item{display:flex;flex-direction:column;align-items:center;flex:1;gap:.15rem}
+.s-num{width:22px;height:22px;border-radius:50%;display:flex;align-items:center;
+  justify-content:center;font-size:.7rem;font-weight:800;
+  background:#0f172a;color:#475569;border:1.5px solid #334155;transition:all .25s}
+.s-lbl{font-size:.58rem;color:#475569;font-weight:600;letter-spacing:.03em;
+  white-space:nowrap;transition:color .25s}
+.s-sep{color:#334155;font-size:.75rem;flex-shrink:0;margin-bottom:.85rem}
+.s-item.active .s-num{background:rgba(99,102,241,.2);color:#818cf8;border-color:#6366f1}
+.s-item.active .s-lbl{color:#818cf8}
+.s-item.done .s-num{background:rgba(34,197,94,.15);color:#4ade80;border-color:#4ade80}
+.s-item.done .s-lbl{color:#4ade80}
+/* ── Upload zone ─────────────────────────────────────────────────── */
+.uz{border:2px dashed #334155;border-radius:12px;padding:1.4rem;text-align:center;
+  cursor:pointer;transition:border-color .2s,background .2s;min-height:110px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:.55rem;position:relative;margin:.7rem 0}
+.uz:hover{border-color:#6366f1;background:rgba(99,102,241,.04)}
+.uz.has-file{border-color:#4ade80;background:rgba(34,197,94,.04)}
+.uz-icon{font-size:1.7rem;opacity:.65}
+.uz-lbl{font-size:.82rem;color:#64748b;line-height:1.5}
+.thumb{width:100%;max-height:130px;object-fit:contain;border-radius:8px;
+  display:none;border:1px solid #334155;margin-top:.4rem}
+/* ── Buttons ─────────────────────────────────────────────────────── */
+.btn{display:block;width:100%;padding:.8rem;
+  background:linear-gradient(135deg,#4f46e5,#6366f1);color:#fff;
+  border:none;border-radius:10px;font-size:1rem;font-weight:700;
+  cursor:pointer;margin-top:.75rem;transition:opacity .2s}
+.btn:hover{opacity:.88}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn-skip{background:transparent;border:1px solid #334155;color:#64748b;
+  font-weight:500;font-size:.82rem;padding:.55rem;margin-top:.35rem}
+.btn-skip:hover{border-color:#4f46e5;color:#818cf8;opacity:1}
+.btn-loc{background:linear-gradient(135deg,#0ea5e9,#0284c7)}
+/* ── Location result ─────────────────────────────────────────────── */
+.loc-box{background:#0f172a;border:1px solid #334155;border-radius:10px;
+  padding:.7rem 1rem;margin-top:.65rem;font-size:.82rem;color:#94a3b8;line-height:1.6}
+.loc-addr{color:#e2e8f0;font-weight:600;margin-bottom:.25rem}
+/* ── Camera / liveness ───────────────────────────────────────────── */
 .video-wrap{position:relative;width:100%;border-radius:12px;overflow:hidden;
   background:#000;aspect-ratio:4/3}
 video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
@@ -129,92 +177,161 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
 .ch-card{background:linear-gradient(135deg,rgba(99,102,241,.14),rgba(139,92,246,.09));
   border:1px solid rgba(99,102,241,.38);border-radius:12px;
   padding:.9rem 1.1rem;margin-top:.9rem;text-align:center}
-.ch-label{font-size:1.15rem;font-weight:800;color:#c4b5fd;margin-bottom:.35rem;
-  letter-spacing:.04em}
+.ch-label{font-size:1.15rem;font-weight:800;color:#c4b5fd;margin-bottom:.35rem;letter-spacing:.04em}
 .ch-inst{font-size:.84rem;color:#94a3b8;line-height:1.55}
 .prog-wrap{background:#0f172a;border-radius:99px;height:7px;margin-top:.7rem;overflow:hidden}
-.prog-fill{height:100%;border-radius:99px;background:linear-gradient(90deg,#6366f1,#8b5cf6);
-  transition:width .35s ease}
+.prog-fill{height:100%;border-radius:99px;
+  background:linear-gradient(90deg,#6366f1,#8b5cf6);transition:width .35s ease}
 .dots{display:flex;gap:.45rem;justify-content:center;margin-top:.65rem}
-.dot{width:10px;height:10px;border-radius:50%;border:2px solid #475569;background:transparent;transition:all .2s}
+.dot{width:10px;height:10px;border-radius:50%;border:2px solid #475569;
+  background:transparent;transition:all .2s}
 .dot.active{border-color:#6366f1;background:#6366f1}
 .dot.done{border-color:#4ade80;background:#4ade80}
-.fb{text-align:center;font-size:.88rem;margin-top:.65rem;min-height:1.2em;
-  color:#94a3b8;transition:color .25s}
-.fb.pass{color:#4ade80}.fb.fail{color:#f87171}
-.btn{display:block;width:100%;padding:.82rem;
-  background:linear-gradient(135deg,#4f46e5,#6366f1);color:#fff;
-  border:none;border-radius:10px;font-size:1rem;font-weight:700;
-  cursor:pointer;margin-top:.9rem;transition:opacity .2s}
-.btn:hover{opacity:.88}.btn:disabled{opacity:.45;cursor:not-allowed}
+.fb{text-align:center;font-size:.88rem;margin-top:.6rem;min-height:1.2em;
+  color:#94a3b8;transition:color .2s}
+.fb.pass{color:#4ade80}
+.fb.fail{color:#f87171}
+/* ── Result ──────────────────────────────────────────────────────── */
 .res-card{border-radius:12px;padding:1.4rem;text-align:center;margin-top:.4rem}
 .res-pass{background:rgba(34,197,94,.09);border:1px solid rgba(34,197,94,.38)}
 .res-fail{background:rgba(239,68,68,.09);border:1px solid rgba(239,68,68,.38)}
 .res-icon{font-size:2.8rem;margin-bottom:.6rem}
 .res-title{font-size:1.3rem;font-weight:800;margin-bottom:.45rem}
-.res-pass .res-title{color:#4ade80}.res-fail .res-title{color:#f87171}
+.res-pass .res-title{color:#4ade80}
+.res-fail .res-title{color:#f87171}
 .res-det{font-size:.84rem;color:#94a3b8;line-height:1.55}
-.sec-note{font-size:.72rem;color:#475569;text-align:center;margin-top:.5rem;padding-bottom:1.5rem}
-.info-row{font-size:.78rem;color:#64748b;text-align:center;
-  background:#0f172a;border-radius:8px;padding:.55rem;margin:.5rem 0}
-#s-idle,#s-verify,#s-result{display:none}
-#s-idle.on,#s-verify.on,#s-result.on{display:block}
+.addr-row{background:#0f172a;border-radius:8px;padding:.5rem .75rem;
+  margin-top:.65rem;font-size:.78rem;color:#64748b;text-align:left;line-height:1.7}
+.addr-row strong{color:#94a3b8}
+.sec-note{font-size:.72rem;color:#475569;text-align:center;
+  margin-top:.5rem;padding-bottom:1.5rem}
 </style>
 </head>
 <body>
 <div class="logo">🛡️ BaseTruth KYC</div>
 
-<!-- IDLE -->
-<div id="s-idle" class="card on">
-  <h2 style="font-size:1.15rem;font-weight:700;margin-bottom:.45rem">Video Identity Verification</h2>
-  <p style="font-size:.85rem;color:#94a3b8;line-height:1.6;margin-bottom:.9rem">
-    You have been asked to complete a quick AI-powered identity check.<br>
-    This takes about <strong style="color:#e2e8f0">30–60 seconds</strong> and runs entirely
-    on our secure server. No data is shared with third parties.
-  </p>
-  <p style="font-size:.85rem;color:#94a3b8;line-height:1.6">
-    <strong style="color:#c4b5fd">Prepare:</strong><br>
-    · Good lighting — face a window or bright light source<br>
-    · Position your face inside the oval guide when prompted<br>
-    · Follow on-screen prompts carefully
-  </p>
-  <div class="info-row" id="cust-info"></div>
-  <button class="btn" id="btn-start">Start Verification</button>
+<!-- Step indicator — hidden until the wizard starts -->
+<div class="step-bar" id="step-bar" style="display:none">
+  <div class="s-item" id="st1"><div class="s-num">1</div><div class="s-lbl">Upload ID</div></div>
+  <div class="s-sep">›</div>
+  <div class="s-item" id="st2"><div class="s-num">2</div><div class="s-lbl">Address</div></div>
+  <div class="s-sep">›</div>
+  <div class="s-item" id="st3"><div class="s-num">3</div><div class="s-lbl">Location</div></div>
+  <div class="s-sep">›</div>
+  <div class="s-item" id="st4"><div class="s-num">4</div><div class="s-lbl">Verify</div></div>
 </div>
 
-<!-- VERIFY -->
-<div id="s-verify" class="card">
+<!-- IDLE: welcome screen -->
+<div id="s-idle" class="card">
+  <h2 style="font-size:1.15rem;font-weight:700;margin-bottom:.45rem">Video Identity Verification</h2>
+  <p style="font-size:.85rem;color:#94a3b8;line-height:1.6;margin-bottom:.85rem">
+    You have been asked to complete an AI-powered identity check.
+    This takes about <strong style="color:#e2e8f0">1–2 minutes</strong> and runs fully in your browser.
+  </p>
+  <p style="font-size:.85rem;color:#94a3b8;line-height:1.65;margin-bottom:.9rem">
+    <strong style="color:#c4b5fd">You will need:</strong><br>
+    · Aadhaar card (front) <em>or</em> PAN card<br>
+    · Aadhaar card (back) <em>or</em> Passport for address verification<br>
+    · Camera permission for the face liveness check<br>
+    · Location permission for address verification
+  </p>
+  <div id="cust-info" style="display:none;background:rgba(99,102,241,.1);border:1px solid rgba(99,102,241,.3);
+    border-radius:8px;padding:.5rem .75rem;font-size:.84rem;color:#c4b5fd;margin-bottom:.75rem"></div>
+  <button class="btn" id="btn-start">Begin Verification</button>
+</div>
+
+<!-- STEP 1: Upload ID document -->
+<div id="s-1" class="card" style="display:none">
+  <h3 style="font-size:1rem;font-weight:700;margin-bottom:.4rem">Step 1 · Upload Your ID</h3>
+  <p style="font-size:.83rem;color:#94a3b8;line-height:1.55;margin-bottom:.1rem">
+    Upload a clear, well-lit photo of your
+    <strong style="color:#e2e8f0">Aadhaar card (front)</strong> or
+    <strong style="color:#e2e8f0">PAN card</strong>.
+    The face photo on the ID will be used to verify your identity.
+  </p>
+  <div class="uz" id="uz1">
+    <input type="file" id="f-id" accept="image/jpeg,image/png,image/webp" style="display:none">
+    <div class="uz-icon">🪪</div>
+    <div class="uz-lbl" id="uz1-lbl">Tap to select photo</div>
+    <img id="prev1" class="thumb" alt="ID preview">
+  </div>
+  <div class="fb" id="fb1"></div>
+  <button class="btn" id="btn1-next" disabled>Continue →</button>
+</div>
+
+<!-- STEP 2: Upload address proof -->
+<div id="s-2" class="card" style="display:none">
+  <h3 style="font-size:1rem;font-weight:700;margin-bottom:.4rem">Step 2 · Address Proof</h3>
+  <p style="font-size:.83rem;color:#94a3b8;line-height:1.55;margin-bottom:.1rem">
+    Upload the <strong style="color:#e2e8f0">back side of your Aadhaar card</strong> or
+    the <strong style="color:#e2e8f0">address page of your Passport</strong>.
+    We will verify your registered address against your live location.
+  </p>
+  <div class="uz" id="uz2">
+    <input type="file" id="f-addr" accept="image/jpeg,image/png,image/webp" style="display:none">
+    <div class="uz-icon">📄</div>
+    <div class="uz-lbl" id="uz2-lbl">Tap to select photo</div>
+    <img id="prev2" class="thumb" alt="Address proof preview">
+  </div>
+  <div class="fb" id="fb2"></div>
+  <button class="btn" id="btn2-next" disabled>Continue →</button>
+  <button class="btn btn-skip" id="btn2-skip">Skip — proceed without address verification</button>
+</div>
+
+<!-- STEP 3: Share live GPS location -->
+<div id="s-3" class="card" style="display:none">
+  <h3 style="font-size:1rem;font-weight:700;margin-bottom:.4rem">Step 3 · Share Your Location</h3>
+  <p style="font-size:.83rem;color:#94a3b8;line-height:1.55;margin-bottom:.75rem">
+    Allow location access so we can verify your current address is within range
+    of your registered address on the proof document.
+    Your coordinates are processed securely and not stored after verification.
+  </p>
+  <button class="btn btn-loc" id="btn-loc">📍  Share My Location</button>
+  <div class="loc-box" id="loc-box" style="display:none">
+    <div class="loc-addr" id="loc-addr"></div>
+    <div id="loc-match" style="font-size:.78rem;margin-top:.2rem"></div>
+  </div>
+  <div class="fb" id="fb3"></div>
+  <button class="btn" id="btn3-next" style="display:none">Continue to Verification →</button>
+  <button class="btn btn-skip" id="btn3-skip">Skip — proceed without location check</button>
+</div>
+
+<!-- STEP 4: Liveness challenge -->
+<div id="s-4" class="card" style="display:none">
   <div class="video-wrap">
     <video id="vid" autoplay muted playsinline></video>
     <div class="oval"></div>
     <div class="badge b-idle" id="face-badge">Searching…</div>
   </div>
-  <div class="ch-card" id="ch-card">
+  <div class="ch-card">
     <div class="ch-label" id="ch-label">Please wait…</div>
-    <div class="ch-inst" id="ch-inst">Preparing your session.</div>
+    <div class="ch-inst"  id="ch-inst">Starting camera…</div>
     <div class="prog-wrap"><div class="prog-fill" id="prog-fill" style="width:0%"></div></div>
     <div class="dots" id="dots"></div>
   </div>
-  <div class="fb" id="fb-msg"></div>
+  <div class="fb" id="fb4"></div>
 </div>
 
-<!-- RESULT -->
-<div id="s-result" class="card">
+<!-- RESULT screen -->
+<div id="s-result" class="card" style="display:none">
   <div class="res-card" id="res-inner">
-    <div class="res-icon" id="res-icon">⏳</div>
+    <div class="res-icon"  id="res-icon">⏳</div>
     <div class="res-title" id="res-title">Processing…</div>
-    <div class="res-det" id="res-det"></div>
+    <div class="res-det"   id="res-det"></div>
   </div>
+  <div class="addr-row" id="addr-summary" style="display:none"></div>
 </div>
 
-<p class="sec-note">🔒 Video processed on BaseTruth secure servers. Not shared externally.</p>
+<p class="sec-note">🔒 All data is processed on BaseTruth secure servers and is not shared externally.</p>
 
 <script>
+// Session constants injected server-side at request time
 const SESSION_ID       = '__SESSION_ID__';
 const TOTAL_CHALLENGES = __CHALLENGES_COUNT__;
 const CUSTOMER_NAME    = '__CUSTOMER_NAME__';
 const CHALLENGES       = __CHALLENGES_JSON__;
 
+// Human-readable labels and instructions for each challenge type
 const LABELS = {
   blink:      'CLOSE YOUR EYES',
   turn_left:  'TURN YOUR HEAD LEFT',
@@ -223,77 +340,249 @@ const LABELS = {
 };
 const INSTR = {
   blink:      'Slowly close both eyes completely, then open them again',
-  turn_left:  'Slowly turn your head to YOUR left (left ear toward camera)',
-  turn_right: 'Slowly turn your head to YOUR right (right ear toward camera)',
-  nod:        'Slowly nod your head down and then back up to center',
+  turn_left:  'Slowly turn your head to YOUR left',
+  turn_right: 'Slowly turn your head to YOUR right',
+  nod:        'Slowly nod your head down then back up to center',
 };
 
-let ws = null, stream = null, captureTimer = null, done = 0;
-let resultShown = false;  // guard: don't overwrite a result already displayed
+let ws=null, stream=null, captureTimer=null, resultShown=false;
 
-const sIdle   = document.getElementById('s-idle');
-const sVerify = document.getElementById('s-verify');
-const sResult = document.getElementById('s-result');
-const vid     = document.getElementById('vid');
-const badge   = document.getElementById('face-badge');
-const chLabel = document.getElementById('ch-label');
-const chInst  = document.getElementById('ch-inst');
-const prog    = document.getElementById('prog-fill');
-const dots    = document.getElementById('dots');
-const fb      = document.getElementById('fb-msg');
-
-const ci = document.getElementById('cust-info');
-if (CUSTOMER_NAME) ci.textContent = 'Session prepared for: ' + CUSTOMER_NAME;
-else ci.style.display = 'none';
-
-for (let i = 0; i < TOTAL_CHALLENGES; i++) {
-  const d = document.createElement('div');
-  d.className = 'dot'; d.id = 'dot' + i; dots.appendChild(d);
+// ── Screen manager ────────────────────────────────────────────────────────
+function show(id){
+  ['s-idle','s-1','s-2','s-3','s-4','s-result'].forEach(s=>{
+    const el=document.getElementById(s);
+    if(el) el.style.display = s===id ? 'block' : 'none';
+  });
 }
 
-function show(name){
-  [sIdle,sVerify,sResult].forEach(s=>s.classList.remove('on'));
-  if(name==='idle')   sIdle.classList.add('on');
-  if(name==='verify') sVerify.classList.add('on');
-  if(name==='result') sResult.classList.add('on');
+// Update step bar: mark steps < n as done, step n as active, rest default
+function setStep(n){
+  const bar=document.getElementById('step-bar');
+  if(bar) bar.style.display='flex';
+  [1,2,3,4].forEach(i=>{
+    const el=document.getElementById('st'+i);
+    if(!el) return;
+    el.className='s-item'+(i===n?' active':i<n?' done':'');
+  });
 }
 
-document.getElementById('btn-start').addEventListener('click', async ()=>{
-  const btn = document.getElementById('btn-start');
-  btn.disabled = true; btn.textContent = 'Opening camera…';
-  try {
-    stream = await navigator.mediaDevices.getUserMedia(
-      {video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}},audio:false});
-    vid.srcObject = stream;
-    await vid.play();
-  } catch(e){
-    alert('Camera access denied. Please allow camera access and reload the page.');
-    btn.disabled = false; btn.textContent = 'Start Verification'; return;
+// Show feedback message with optional CSS class (pass, fail, or '')
+function setFb(id,msg,cls){
+  const el=document.getElementById(id);
+  if(!el) return;
+  el.textContent=msg;
+  el.className='fb'+(cls?' '+cls:'');
+}
+
+// ── Customer name banner ──────────────────────────────────────────────────
+if(CUSTOMER_NAME){
+  const ci=document.getElementById('cust-info');
+  ci.textContent='Session prepared for: '+CUSTOMER_NAME;
+  ci.style.display='block';
+}
+
+// ── Idle → Step 1 ─────────────────────────────────────────────────────────
+document.getElementById('btn-start').onclick=()=>{ show('s-1'); setStep(1); };
+
+// ── Step 1: Upload ID document ────────────────────────────────────────────
+const uz1=document.getElementById('uz1');
+const fId=document.getElementById('f-id');
+uz1.onclick=()=>fId.click();
+
+fId.onchange=e=>{
+  const file=e.target.files[0]; if(!file) return;
+  const r=new FileReader();
+  r.onload=ev=>{
+    // Show thumbnail and enable Continue button once file is selected
+    const img=document.getElementById('prev1');
+    img.src=ev.target.result; img.style.display='block';
+    document.getElementById('uz1-lbl').textContent=file.name;
+    uz1.classList.add('has-file');
+    document.getElementById('btn1-next').disabled=false;
+    setFb('fb1','','');
+  };
+  r.readAsDataURL(file);
+};
+
+document.getElementById('btn1-next').onclick=async()=>{
+  const file=fId.files[0]; if(!file) return;
+  const btn=document.getElementById('btn1-next');
+  btn.disabled=true; btn.textContent='Processing…';
+  setFb('fb1','⏳ Extracting face from ID…','');
+
+  const fd=new FormData(); fd.append('file',file);
+  try{
+    const resp=await fetch(`/kyc/sessions/${SESSION_ID}/upload-id`,{method:'POST',body:fd});
+    const data=await resp.json();
+    if(resp.ok && data.face_found){
+      setFb('fb1','✓ ID processed — face extracted successfully','pass');
+      setTimeout(()=>{ show('s-2'); setStep(2); },700);
+    } else {
+      const msg=data.detail||data.message||'Could not extract face. Try a clearer, well-lit photo.';
+      setFb('fb1','✗ '+msg,'fail');
+      btn.disabled=false; btn.textContent='Try Again';
+    }
+  } catch{
+    setFb('fb1','✗ Upload failed. Please check your connection and try again.','fail');
+    btn.disabled=false; btn.textContent='Continue →';
   }
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(`${proto}//${location.host}/kyc/ws/${SESSION_ID}`);
-  ws.onopen = ()=>{ show('verify'); startCapture(); };
-  ws.onmessage = e=>{ try{ handle(JSON.parse(e.data)); }catch(_){} };
-  ws.onerror = ()=>{ if(!resultShown) showResult(false,0,'Connection error — could not reach the server. Please try again.'); };
-  ws.onclose = e=>{ if(!resultShown && e.code!==1000 && done<TOTAL_CHALLENGES) showResult(false,0,'Session disconnected.'); stopCapture(); };
-});
+};
 
+// ── Step 2: Upload address proof ──────────────────────────────────────────
+const uz2=document.getElementById('uz2');
+const fAddr=document.getElementById('f-addr');
+uz2.onclick=()=>fAddr.click();
+
+fAddr.onchange=e=>{
+  const file=e.target.files[0]; if(!file) return;
+  const r=new FileReader();
+  r.onload=ev=>{
+    const img=document.getElementById('prev2');
+    img.src=ev.target.result; img.style.display='block';
+    document.getElementById('uz2-lbl').textContent=file.name;
+    uz2.classList.add('has-file');
+    document.getElementById('btn2-next').disabled=false;
+    setFb('fb2','','');
+  };
+  r.readAsDataURL(file);
+};
+
+document.getElementById('btn2-next').onclick=async()=>{
+  const file=fAddr.files[0]; if(!file) return;
+  const btn=document.getElementById('btn2-next');
+  btn.disabled=true; btn.textContent='Processing…';
+  setFb('fb2','⏳ Extracting address from document…','');
+
+  const fd=new FormData(); fd.append('file',file);
+  try{
+    const resp=await fetch(`/kyc/sessions/${SESSION_ID}/upload-address`,{method:'POST',body:fd});
+    const data=await resp.json();
+    if(resp.ok){
+      setFb('fb2','✓ Address proof uploaded','pass');
+      setTimeout(()=>{ show('s-3'); setStep(3); },700);
+    } else {
+      const msg=data.detail||data.message||'Could not process document. Try a clearer photo.';
+      setFb('fb2','✗ '+msg,'fail');
+      btn.disabled=false; btn.textContent='Try Again';
+    }
+  } catch{
+    setFb('fb2','✗ Upload failed. Please check your connection and try again.','fail');
+    btn.disabled=false; btn.textContent='Continue →';
+  }
+};
+
+document.getElementById('btn2-skip').onclick=()=>{ show('s-3'); setStep(3); };
+
+// ── Step 3: Share GPS location ────────────────────────────────────────────
+document.getElementById('btn-loc').onclick=()=>{
+  if(!navigator.geolocation){
+    setFb('fb3','Location is not supported by your browser.','fail');
+    document.getElementById('btn3-next').style.display='block';
+    return;
+  }
+  const btn=document.getElementById('btn-loc');
+  btn.disabled=true; btn.textContent='Getting location…';
+  setFb('fb3','⏳ Requesting GPS coordinates…','');
+
+  navigator.geolocation.getCurrentPosition(async pos=>{
+    const {latitude:lat,longitude:lon,accuracy}=pos.coords;
+    try{
+      const resp=await fetch(`/kyc/sessions/${SESSION_ID}/location`,{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({lat,lon,accuracy}),
+      });
+      const data=await resp.json();
+      if(resp.ok){
+        // Show reverse-geocoded address to the user
+        const box=document.getElementById('loc-box');
+        box.style.display='block';
+        document.getElementById('loc-addr').textContent=data.address||`${lat.toFixed(4)}°N, ${lon.toFixed(4)}°E`;
+        // Show comparison result if address text was available
+        const matchEl=document.getElementById('loc-match');
+        if(data.comparison){
+          const r=data.comparison.result;
+          matchEl.textContent = r==='match'   ? '✓ Address matches your proof document' :
+                                r==='partial' ? '~ Partial address match' :
+                                r==='mismatch'? '✗ Address does not match proof document' : '';
+          matchEl.style.color = r==='match'?'#4ade80':r==='partial'?'#facc15':'#f87171';
+          if(data.comparison.distance_m!=null){
+            matchEl.textContent += ` (${Math.round(data.comparison.distance_m)} m)`;
+          }
+        }
+        setFb('fb3','✓ Location captured','pass');
+      } else {
+        setFb('fb3','⚠ Location saved but address lookup failed.','');
+      }
+    } catch{
+      setFb('fb3','⚠ Could not reach server. Proceeding without location.','');
+    }
+    document.getElementById('btn3-next').style.display='block';
+  },
+  err=>{
+    // Geolocation error codes: 1=denied, 2=unavailable, 3=timeout
+    const msgs={1:'Location access denied.',2:'Location unavailable.',3:'Location request timed out.'};
+    setFb('fb3',(msgs[err.code]||'Location error.')+' You may skip this step.','');
+    const btn=document.getElementById('btn-loc');
+    btn.disabled=false; btn.textContent='📍  Try Again';
+    document.getElementById('btn3-next').style.display='block';
+  },
+  {timeout:15000,maximumAge:0});
+};
+
+document.getElementById('btn3-next').onclick=()=>{ startLiveness(); };
+document.getElementById('btn3-skip').onclick=()=>{ startLiveness(); };
+
+// ── Step 4: Liveness — open WebSocket, start camera, run challenges ───────
+async function startLiveness(){
+  show('s-4'); setStep(4);
+
+  // Build dot indicators for each challenge
+  const dotsEl=document.getElementById('dots');
+  dotsEl.innerHTML='';
+  for(let i=0;i<TOTAL_CHALLENGES;i++){
+    const d=document.createElement('div');
+    d.className='dot'; d.id='dot'+i; dotsEl.appendChild(d);
+  }
+
+  // Start the camera stream
+  try{
+    stream=await navigator.mediaDevices.getUserMedia(
+      {video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}},audio:false});
+    const vid=document.getElementById('vid');
+    vid.srcObject=stream; await vid.play();
+  } catch{
+    document.getElementById('ch-label').textContent='Camera Access Denied';
+    document.getElementById('ch-inst').textContent='Please allow camera access and reload the page.';
+    return;
+  }
+
+  // Open WebSocket — the server drives the challenge sequence from here
+  const proto=location.protocol==='https:'?'wss:':'ws:';
+  ws=new WebSocket(`${proto}//${location.host}/kyc/ws/${SESSION_ID}`);
+  ws.onopen=()=>{ startCapture(); };
+  ws.onmessage=e=>{ try{ handle(JSON.parse(e.data)); } catch{} };
+  ws.onerror=()=>{ if(!resultShown) showResult(false,0,'Connection error.'); };
+  ws.onclose=e=>{ if(!resultShown && e.code!==1000) showResult(false,0,'Session disconnected.'); stopCapture(); };
+}
+
+// Capture a JPEG frame every ~310 ms and send it to the server as base64
 function startCapture(){
-  const canvas = document.createElement('canvas');
-  const ctx = canvas.getContext('2d');
-  captureTimer = setInterval(()=>{
-    if(!ws || ws.readyState!==1) return;
-    if(!vid.videoWidth) return;
-    canvas.width  = 640;
-    canvas.height = Math.round(640 * vid.videoHeight / vid.videoWidth);
-    // Draw un-mirrored (raw camera data) — CSS mirrors the preview only
+  const canvas=document.createElement('canvas');
+  const ctx=canvas.getContext('2d');
+  const vid=document.getElementById('vid');
+  captureTimer=setInterval(()=>{
+    if(!ws||ws.readyState!==1||!vid.videoWidth) return;
+    // Resize to 640 px wide to keep payload manageable
+    canvas.width=640;
+    canvas.height=Math.round(640*vid.videoHeight/vid.videoWidth);
     ctx.drawImage(vid,0,0,canvas.width,canvas.height);
     canvas.toBlob(blob=>{
       if(!blob) return;
-      const fr = new FileReader();
-      fr.onloadend = ()=>{
-        const b64 = fr.result.split(',')[1];
-        if(ws && ws.readyState===1) ws.send(JSON.stringify({type:'frame',data:b64}));
+      const fr=new FileReader();
+      fr.onloadend=()=>{
+        const b64=fr.result.split(',')[1];
+        if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'frame',data:b64}));
       };
       fr.readAsDataURL(blob);
     },'image/jpeg',0.82);
@@ -305,60 +594,88 @@ function stopCapture(){
   if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
 }
 
+// Route incoming WebSocket messages from the server
 function handle(msg){
-  if(msg.type==='status')      updateUI(msg);
-  else if(msg.type==='result'){ stopCapture(); if(ws)ws.close(1000); showResult(msg.passed,msg.display_score||0,msg.message||''); }
+  if(msg.type==='status')       updateLivenessUI(msg);
+  else if(msg.type==='result'){ stopCapture(); if(ws) ws.close(1000); showResult(msg.passed,msg.display_score||0,msg.message||'',msg); }
   else if(msg.type==='error'){  stopCapture(); showResult(false,0,msg.message||'Verification failed.'); }
+  // Ignore nudge/unknown messages — server sends nudges when waiting for the next frame
 }
 
-function updateUI(msg){
-  if(msg.face_detected){ badge.className='badge b-ok'; badge.textContent='✓ Face detected'; }
-  else{                   badge.className='badge b-warn'; badge.textContent='Center your face'; }
+// Update the liveness challenge UI with the latest server-side status
+function updateLivenessUI(msg){
+  const badge=document.getElementById('face-badge');
+  if(msg.face_detected){badge.className='badge b-ok';badge.textContent='✓ Face detected';}
+  else{badge.className='badge b-warn';badge.textContent='Centre your face';}
+
   if(msg.challenge){
-    chLabel.textContent = LABELS[msg.challenge] || msg.challenge.toUpperCase();
-    chInst.textContent  = INSTR[msg.challenge]  || '';
+    document.getElementById('ch-label').textContent=LABELS[msg.challenge]||msg.challenge.toUpperCase();
+    document.getElementById('ch-inst').textContent=INSTR[msg.challenge]||'';
   }
-  done = msg.challenges_completed||0;
-  const total = msg.total_challenges || TOTAL_CHALLENGES;
-  prog.style.width = total>0 ? (done/total*100)+'%' : '0%';
+
+  // Update progress bar and dots
+  const done=msg.challenges_completed||0;
+  const total=msg.total_challenges||TOTAL_CHALLENGES;
+  document.getElementById('prog-fill').style.width=total>0?(done/total*100)+'%':'0%';
   for(let i=0;i<total;i++){
     const d=document.getElementById('dot'+i);
-    if(!d) continue;
-    d.className = i<done ? 'dot done' : (i===done ? 'dot active' : 'dot');
+    if(d) d.className='dot'+(i<done?' done':i===done?' active':'');
   }
+
   if(msg.feedback){
-    fb.textContent  = msg.feedback;
-    fb.className    = 'fb' + (msg.challenge_just_passed ? ' pass' : '');
+    const fb4=document.getElementById('fb4');
+    fb4.textContent=msg.feedback;
+    fb4.className='fb'+(msg.challenge_just_passed?' pass':'');
   }
 }
 
-function showResult(passed,score,message){
-  resultShown = true;  // prevent onclose from re-showing
-  show('result');
-  const inner = document.getElementById('res-inner');
-  const icon  = document.getElementById('res-icon');
-  const title = document.getElementById('res-title');
-  const det   = document.getElementById('res-det');
+// Build and show the final result screen
+function showResult(passed,score,message,fullResult){
+  resultShown=true;
+  show('s-result');
+  const inner=document.getElementById('res-inner');
+  const icon=document.getElementById('res-icon');
+  const title=document.getElementById('res-title');
+  const det=document.getElementById('res-det');
+
   if(passed){
-    inner.className = 'res-card res-pass';
-    icon.textContent = '✅';
-    title.textContent = 'Identity Verified';
-    det.innerHTML = 'Your identity has been successfully verified by BaseTruth AI.<br>'
-      + '<span style="color:#4ade80">Match score: '+(score).toFixed(1)+'%</span><br><br>'
-      + 'You may close this window.';
+    inner.className='res-card res-pass';
+    icon.textContent='✅';
+    title.textContent='Identity Verified';
+    det.innerHTML='Your identity has been successfully verified.<br>'
+      +'<span style="color:#4ade80">Face match score: '+(score).toFixed(1)+'%</span><br><br>'
+      +'You may now close this window.';
   } else {
-    inner.className = 'res-card res-fail';
-    icon.textContent = '❌';
-    title.textContent = 'Verification Failed';
-    det.innerHTML = (message || 'Verification could not be completed.')
-      + '<br><br>Please contact the agent for assistance.';
+    inner.className='res-card res-fail';
+    icon.textContent='❌';
+    title.textContent='Verification Failed';
+    det.innerHTML=(message||'Verification could not be completed.')
+      +'<br><br>Please contact your agent for assistance.';
+  }
+
+  // Show address summary panel if the server returned address check fields
+  if(fullResult&&(fullResult.address_match_result||fullResult.current_address_text)){
+    const sumEl=document.getElementById('addr-summary');
+    sumEl.style.display='block';
+    const r=fullResult.address_match_result;
+    const addr=fullResult.current_address_text||'';
+    const dist=fullResult.address_distance_meters;
+    let html='<strong>Address check:</strong> ';
+    html += r==='match'   ? '<span style="color:#4ade80">✓ Match</span>' :
+            r==='partial' ? '<span style="color:#facc15">~ Partial match</span>' :
+            r==='mismatch'? '<span style="color:#f87171">✗ Mismatch</span>' :
+                            '<span style="color:#64748b">Skipped</span>';
+    if(dist!=null) html+=` <span style="color:#64748b">(${Math.round(dist)} m)</span>`;
+    if(addr) html+=`<br><span style="color:#64748b">Live address: ${addr.substring(0,120)}</span>`;
+    sumEl.innerHTML=html;
   }
 }
 
-window.addEventListener('beforeunload',()=>{ stopCapture(); if(ws)ws.close(); });
+window.addEventListener('beforeunload',()=>{ stopCapture(); if(ws) ws.close(); });
 </script>
 </body>
-</html>"""
+</html>
+"""
 
 
 # ── API long description (Markdown — rendered in the Swagger info block) ─────────
@@ -1066,7 +1383,12 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
         }
 
     def _finish_session(session: Any, face: Any) -> Dict[str, Any]:
-        """Called once all liveness challenges pass — runs the face-match check."""
+        """Called once all liveness challenges pass — runs the face-match check.
+
+        Builds the final result dict that is sent back to the customer browser
+        and stored in session.result.  Attaches address comparison fields so
+        the customer result screen can display the address verification outcome.
+        """
         if session.reference_embedding_b64:
             try:
                 match = run_face_match(face, session.reference_embedding_b64)
@@ -1082,18 +1404,26 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
                 }
             session.status = "completed" if match["passed"] else "failed"
             session.result = match
-            return {"type": "result", **match}
-        # No reference embedding → liveness-only session
-        result = {
-            "passed": True,
-            "match_score": 1.0,
-            "display_score": 100.0,
-            "cosine_similarity": 1.0,
-            "message": "Liveness checks passed (no ID reference provided).",
-        }
-        session.status = "completed"
-        session.result = result
-        return {"type": "result", **result}
+            result = {"type": "result", **match}
+        else:
+            # No reference embedding → liveness-only session
+            result = {
+                "passed": True,
+                "match_score": 1.0,
+                "display_score": 100.0,
+                "cosine_similarity": 1.0,
+                "message": "Liveness checks passed (no ID reference provided).",
+            }
+            session.status = "completed"
+            session.result = result
+            result = {"type": "result", **result}
+
+        # Attach address verification fields so the result screen can display them
+        result["address_match_result"] = session.address_match_result or "skipped"
+        result["address_distance_meters"] = session.address_distance_meters
+        result["current_address_text"] = session.current_address_text
+
+        return result
 
     @app.post(
         "/kyc/sessions",
@@ -1176,6 +1506,249 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
         html = html.replace("__CUSTOMER_NAME__", session.customer_name or "")
         html = html.replace("__CHALLENGES_JSON__", _json.dumps(session.challenges))
         return _HTMLResponse(html)
+
+    # ── KYC Step helpers — called from the new HTTP endpoints ────────────────
+
+    def _extract_face_from_image_bytes(image_bytes: bytes) -> Optional[str]:
+        """Detect the largest face in the uploaded ID document image and extract
+        its embedding so it can be used as the face-match reference during liveness.
+
+        Tries InsightFace first (buffalo_l); falls back to MediaPipe when InsightFace
+        is unavailable (Python 3.13+) or raises unexpectedly.
+
+        Returns the normed embedding as a base64-encoded float32 byte string,
+        or None when no face is found or the image cannot be decoded.
+        """
+        import base64 as _b64  # noqa: PLC0415
+
+        nparr = _np.frombuffer(image_bytes, _np.uint8)
+        img = _cv2.imdecode(nparr, _cv2.IMREAD_COLOR)
+        if img is None:
+            _kyc_log.warning("_extract_face_from_image_bytes: cv2 could not decode image")
+            return None
+
+        # Try InsightFace first; fall back to MediaPipe on ImportError or error
+        try:
+            face_app = get_face_analyzer()
+            with _kyc_face_lock:
+                faces = face_app.get(img)
+        except ImportError:
+            faces = get_mediapipe_faces(img)
+        except Exception as exc:
+            _kyc_log.warning("InsightFace failed for ID image, using MediaPipe: %s", exc)
+            faces = get_mediapipe_faces(img)
+
+        if not faces:
+            _kyc_log.debug("_extract_face_from_image_bytes: no face found in uploaded ID")
+            return None
+
+        # Pick the largest face by bounding-box area (most prominent face on the ID)
+        def _area(f: Any) -> float:
+            bb = f.bbox
+            return float((bb[2] - bb[0]) * (bb[3] - bb[1]))
+
+        face = max(faces, key=_area)
+        emb = getattr(face, "normed_embedding", None)
+        if emb is None:
+            return None
+        return _b64.b64encode(emb.astype("float32").tobytes()).decode()
+
+    def _extract_address_text(image_bytes: bytes) -> str:
+        """OCR an address-proof document image and return the raw text.
+
+        Tries pytesseract (Tesseract wrapper) — returns an empty string if
+        pytesseract or Tesseract is not installed.  Failure is non-critical:
+        the address comparison will fall back to GPS-only when no text is
+        available.
+        """
+        try:
+            import io as _io  # noqa: PLC0415
+
+            import pytesseract  # noqa: PLC0415
+            from PIL import Image as _PILImg  # noqa: PLC0415
+
+            img = _PILImg.open(_io.BytesIO(image_bytes))
+            text = pytesseract.image_to_string(img, lang="eng")
+            extracted = text.strip()
+            _kyc_log.debug("_extract_address_text: extracted %d chars via OCR", len(extracted))
+            return extracted
+        except Exception as exc:
+            _kyc_log.debug("_extract_address_text: OCR unavailable or failed (non-critical): %s", exc)
+            return ""
+
+    @app.post(
+        "/kyc/sessions/{session_id}/upload-id",
+        tags=["Video KYC"],
+        summary="Upload Customer ID Document",
+        responses={
+            404: {"description": "Session not found or expired"},
+            400: {"description": "No face found in the uploaded image"},
+        },
+    )
+    async def kyc_upload_id(session_id: str, file: UploadFile) -> Dict[str, Any]:
+        """Receive the customer's ID document photo (Step 1 of the KYC wizard).
+
+        Extracts the face from the photo and stores the embedding as the
+        face-match reference for the subsequent liveness check.  Overwrites
+        any reference embedding the operator pre-seeded at session creation.
+
+        Returns ``{"face_found": true}`` on success or raises HTTP 400 when
+        no face can be detected.
+        """
+        session = _kyc_store.get(session_id)
+        if not session or session.is_expired():
+            raise HTTPException(status_code=404, detail="Session not found or expired.")
+
+        image_bytes = await file.read()
+        emb_b64 = await _asyncio.get_event_loop().run_in_executor(
+            None, _extract_face_from_image_bytes, image_bytes
+        )
+
+        if emb_b64 is None:
+            _kyc_log.warning(
+                "kyc_upload_id: no face found in uploaded ID",
+                extra={"session_id": session_id, "doc_filename": file.filename},
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "No face found in the uploaded image. "
+                    "Please use a clear, well-lit photo of your Aadhaar or PAN card."
+                ),
+            )
+
+        # Replace the reference embedding with the one extracted from the customer's ID
+        session.reference_embedding_b64 = emb_b64
+        # Store filename for audit trail
+        session.reference_doc_filename = file.filename or "uploaded_id"
+        _kyc_log.info(
+            "kyc_upload_id: face embedding stored",
+            extra={"session_id": session_id, "doc_filename": file.filename},
+        )
+        return {"face_found": True}
+
+    @app.post(
+        "/kyc/sessions/{session_id}/upload-address",
+        tags=["Video KYC"],
+        summary="Upload Address Proof Document",
+        responses={
+            404: {"description": "Session not found or expired"},
+        },
+    )
+    async def kyc_upload_address(session_id: str, file: UploadFile) -> Dict[str, Any]:
+        """Receive the customer's address proof photo (Step 2 of the KYC wizard).
+
+        Runs OCR to extract the raw text from the document and stores it in the
+        session for later address comparison once the customer shares their GPS
+        location in Step 3.  OCR failure is non-critical — the address step is
+        still marked as received so the wizard can continue.
+
+        Returns ``{"address_extracted": bool, "hint": "..."}`` where
+        ``address_extracted`` is True when OCR produced non-empty text.
+        """
+        session = _kyc_store.get(session_id)
+        if not session or session.is_expired():
+            raise HTTPException(status_code=404, detail="Session not found or expired.")
+
+        image_bytes = await file.read()
+        address_text = await _asyncio.get_event_loop().run_in_executor(
+            None, _extract_address_text, image_bytes
+        )
+
+        # Store whatever we extracted; empty string is valid (OCR not available)
+        session.address_dtls = {
+            "raw_text": address_text,
+            "filename": file.filename or "address_proof",
+        }
+        session.address_proof_filename = file.filename or "address_proof"
+        _kyc_log.info(
+            "kyc_upload_address: address proof stored",
+            extra={
+                "session_id": session_id,
+                "doc_filename": file.filename,
+                "text_len": len(address_text),
+            },
+        )
+        return {
+            "address_extracted": bool(address_text),
+            "hint": "Address text extracted." if address_text else "OCR unavailable — address will be compared via GPS only.",
+        }
+
+    @app.post(
+        "/kyc/sessions/{session_id}/location",
+        tags=["Video KYC"],
+        summary="Submit Customer GPS Location",
+        responses={
+            404: {"description": "Session not found or expired"},
+        },
+    )
+    def kyc_save_location(session_id: str, data: LocationData) -> Dict[str, Any]:
+        """Receive the customer's GPS coordinates (Step 3 of the KYC wizard).
+
+        Reverse-geocodes the coordinates to get a human-readable address, then
+        compares it against the address extracted from the proof document (if
+        available) using Jaccard token overlap and PIN code matching.  If the
+        proof address can also be forward-geocoded, the physical distance in
+        metres is computed via the Haversine formula.
+
+        All geocoding calls degrade gracefully — a network failure here never
+        blocks the wizard from proceeding to the liveness step.
+
+        Returns a JSON object with keys:
+          - ``address``: human-readable string of the current location, or empty
+          - ``comparison``: address comparison result dict, or null when skipped
+        """
+        from basetruth.kyc.address_match import (  # noqa: PLC0415
+            calculate_distance,
+            compare_addresses,
+            geocode_address,
+            reverse_geocode,
+        )
+
+        session = _kyc_store.get(session_id)
+        if not session or session.is_expired():
+            raise HTTPException(status_code=404, detail="Session not found or expired.")
+
+        # Persist the raw GPS coordinates for audit trail
+        session.current_location_json = {
+            "lat": data.lat,
+            "lon": data.lon,
+            "accuracy": data.accuracy,
+        }
+
+        # Reverse-geocode to a readable address string (may return None on failure)
+        live_addr: str = reverse_geocode(data.lat, data.lon) or ""
+        session.current_address_text = live_addr
+
+        comparison: Optional[Dict[str, Any]] = None
+        proof_text: str = (session.address_dtls or {}).get("raw_text", "")
+
+        if proof_text and live_addr:
+            # Text-based comparison: Jaccard + PIN + state signals
+            comparison = compare_addresses(proof_text, live_addr)
+            session.address_match_result = comparison["result"]
+
+            # Try to enrich with physical GPS distance via forward geocoding
+            proof_gps = geocode_address(proof_text)
+            if proof_gps:
+                dist_m = calculate_distance(data.lat, data.lon, proof_gps[0], proof_gps[1])
+                session.address_distance_meters = dist_m
+                comparison["distance_m"] = dist_m
+                # 500 m rule: if close enough, override text-only mismatch → match
+                if dist_m <= 500:
+                    session.address_match_result = "match"
+                    comparison["result"] = "match"
+
+        _kyc_log.info(
+            "kyc_save_location: location stored",
+            extra={
+                "session_id": session_id,
+                "lat": data.lat,
+                "lon": data.lon,
+                "address_match": session.address_match_result,
+            },
+        )
+        return {"address": live_addr, "comparison": comparison}
 
     # ── ML Feature Extraction WebSocket ─────────────────────────────────────
 

@@ -11,6 +11,7 @@ import pytest
 from basetruth.kyc.address_match import (
     calculate_distance,
     compare_addresses,
+    geocode_address,
     normalize_address,
     reverse_geocode,
 )
@@ -161,4 +162,95 @@ def test_reverse_geocode_returns_none_on_bad_json(monkeypatch) -> None:
     monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: _FakeResponse())
 
     result = reverse_geocode(18.5204, 73.8567)
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# geocode_address — forward geocoding, must degrade gracefully
+# ---------------------------------------------------------------------------
+
+def test_geocode_address_returns_none_on_network_failure(monkeypatch) -> None:
+    """geocode_address must return None (not raise) when the network is unreachable."""
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: (_ for _ in ()).throw(OSError("network down")))
+
+    result = geocode_address("Pune, Maharashtra, India")
+    assert result is None
+
+
+def test_geocode_address_returns_none_for_empty_input() -> None:
+    """geocode_address must return None immediately for empty or whitespace input."""
+    assert geocode_address("") is None
+    assert geocode_address("   ") is None
+
+
+def test_geocode_address_returns_none_for_short_input() -> None:
+    """geocode_address skips inputs shorter than 5 chars to avoid pointless requests."""
+    assert geocode_address("ab") is None
+
+
+def test_geocode_address_returns_lat_lon_tuple(monkeypatch) -> None:
+    """geocode_address returns a (float, float) tuple when the API succeeds."""
+    import urllib.request
+
+    class _FakeResponse:
+        def read(self):
+            import json
+            return json.dumps([{"lat": "18.5204", "lon": "73.8567"}]).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: _FakeResponse())
+
+    result = geocode_address("Shivaji Nagar, Pune, Maharashtra")
+    assert result is not None
+    lat, lon = result
+    assert isinstance(lat, float)
+    assert isinstance(lon, float)
+    assert lat == pytest.approx(18.5204)
+    assert lon == pytest.approx(73.8567)
+
+
+def test_geocode_address_returns_none_on_empty_api_response(monkeypatch) -> None:
+    """geocode_address returns None when Nominatim returns an empty result list."""
+    import urllib.request
+
+    class _FakeResponse:
+        def read(self):
+            return b"[]"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: _FakeResponse())
+
+    result = geocode_address("Atlantis, Fictional City")
+    assert result is None
+
+
+def test_geocode_address_returns_none_on_bad_json(monkeypatch) -> None:
+    """geocode_address returns None if the API returns malformed JSON."""
+    import urllib.request
+
+    class _FakeResponse:
+        def read(self):
+            return b"{{invalid json}}"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: _FakeResponse())
+
+    result = geocode_address("Some address, City, Country")
     assert result is None
