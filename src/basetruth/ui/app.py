@@ -2831,7 +2831,7 @@ Records shows every **applicant (entity)** in the database and all the documents
             id_df = pd.DataFrame([
                 {
                     "Date": c["created_at"][:19] if c.get("created_at") else "-",
-                    "Type": c["check_type"].replace("_", " ").title(),
+                    "Type": "Face Match",
                     "Verdict": c["verdict"],
                     "Score": f"{c['display_score']:.1f}%" if c.get("display_score") else "-",
                     "Match": "Yes" if c.get("is_match") else "No",
@@ -3671,7 +3671,8 @@ def _page_identity_verification() -> None:
                     st.divider()
                     st.subheader(f"Previous Identity Checks for {selected_entity_ref}")
                     checks = get_entity_identity_checks(selected_entity_ref)
-                    face_checks = [c for c in checks if c["check_type"] == "face_match"]
+                    # All rows from get_entity_identity_checks are face-match records
+                    face_checks = checks
                     if face_checks:
                         import pandas as pd
                         df = pd.DataFrame([{

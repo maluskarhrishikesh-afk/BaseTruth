@@ -2137,9 +2137,8 @@ def _page_identity_verification() -> None:
                     st.divider()
                     st.subheader(f"Previous Identity Checks for {_display_ref}")
                     checks = get_entity_identity_checks(_display_ref)
-                    face_checks = [
-                        c for c in checks if c["check_type"] == "face_match"
-                    ]
+                    # All rows from get_entity_identity_checks are face-match records
+                    face_checks = checks
                     if face_checks:
                         try:
                             import pandas as pd  # noqa: PLC0415

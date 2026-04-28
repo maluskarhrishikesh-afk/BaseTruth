@@ -37,6 +37,7 @@ try:
         first_level_reject_entity_report,
         get_all_entities_with_scans,
         get_entity_identity_checks,
+        get_entity_video_kyc_checks,
         get_entity_latest_pdf,
         get_entity_scans,
         get_entity_document_information,
@@ -102,6 +103,9 @@ except Exception:  # noqa: BLE001
         return []
 
     def get_entity_identity_checks(ref: str) -> list:  # type: ignore[misc]
+        return []
+
+    def get_entity_video_kyc_checks(ref: str) -> list:  # type: ignore[misc]
         return []
 
     def get_entity_latest_pdf(ref: str) -> tuple:  # type: ignore[misc]

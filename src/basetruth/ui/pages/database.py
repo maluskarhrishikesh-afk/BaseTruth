@@ -90,7 +90,6 @@ _TABLE_SCHEMA: dict[str, list[tuple[str, str, str]]] = {
     "identity_checks": [
         ("id", "SERIAL", "Primary key"),
         ("entity_id", "FK → entities.id", "Linked entity — nullable"),
-        ("check_type", "VARCHAR(30), nullable", "NULL for new rows; 'face_match' for legacy rows"),
         ("status", "VARCHAR(20)", "pass | fail | inconclusive"),
         ("cosine_similarity", "FLOAT", "ArcFace face-match cosine similarity score"),
         ("display_score", "FLOAT", "0–100 display score derived from cosine_similarity"),
@@ -368,7 +367,7 @@ def _render_crud_panel(table: str, rows: list, selected_row: "dict | None") -> N
     if selected_row is not None:
         # Build a compact one-line summary of the selected row
         _id = selected_row.get("id", "?")
-        _hint_keys = ["entity_ref", "source_name", "file_name", "report_ref", "check_type"]
+        _hint_keys = ["entity_ref", "source_name", "file_name", "report_ref"]
         _hint = next(
             (f"{k}={selected_row[k]!r}" for k in _hint_keys if selected_row.get(k)),
             "",

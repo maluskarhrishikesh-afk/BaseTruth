@@ -4,49 +4,69 @@
 "entity_id":1
 "check_type":NULL
 "status":"pass"
-"cosine_similarity":0.6321391463279724
-"display_score":75.4759430885315
+"cosine_similarity":0.6699966192245483
+"display_score":77.99977461496988
 "threshold":0.4
 "is_match":true
-"liveness_state":NULL
-"liveness_passed":NULL
 "verdict":"PASS"
-"doc_filename":"IMG_20260422_151404.jpg"
-"selfie_filename":"Photograph-Passport.jpg"
-"selfie_pic":"BT-000001/Photograph-Passport.jpg"
+"selfie_pic":"BT-000001/selfie.jpg"
 "aadhaar_pic":"BT-000001/IMG_20260422_151404.jpg"
 "pan_pic":"BT-000001/IMG_20260422_151423.jpg"
 "signature_pic":"BT-000001/pan_signature.jpg"
 "pdf_report":"BT-000001/identity_check_report.pdf"
 "aadhar_dtls":{...}
 "pan_dtls":{...}
-"report_json":{
-"match":true
-"threshold":0.4
-"aadhaar_qr":{...}
-"confidence":0.6321391463279724
-"cross_checks":{...}
-"display_score":75.4759430885315
-"pan_extraction":{...}
-"layered_analysis":{...}
-}
-"created_at":"datetime.datetime(2026, 4, 28, 16, 31, 1, 795009, tzinfo=datetime.timezone.utc)"
+"report_json":{...}
+"created_at":"datetime.datetime(2026, 4, 28, 17, 5, 21, 413136, tzinfo=datetime.timezone.utc)"
 }
 
-In report_json section, this part is not required -> "layered_analysis":{...}
-This is laos not required in this table ->
-"doc_filename":"IMG_20260422_151404.jpg"
-"selfie_filename":"Photograph-Passport.jpg"
-"liveness_state":NULL
-"liveness_passed":NULL
+This is not required in this table ->
+"check_type":NULL
 
 You can also remove the code associated with it.
+
+-----------------------------------------------------------------------------------------------------
+
+Video KYC screen ->
+
+Here we should have option for the following ->
+1) Session Setup
+Customer name
+
+e.g. Rahul Sharma
+Entity / Case ref
+
+e.g. ENT-001
+Challenge selection (optional)
+
+2) Create and Share
+Upload a reference ID above to enable face-match (optional — liveness-only is also supported).
+
+After this when the customer opens the link there he has to
+1) Upload ID - Aadhar or PAN
+2) Upload Address proof - Aadhar back side or passport back side.
+3) Click on share live location - (this will capture the exact address where the customer is now)
+4) Perform liveliness check
+
+While performing liveliness check images should be captured automatically and that image should be 
+compared with Aadhar or PAN photo.
+
+Address captured via live location and that mentioned on Aadhar back side ot passport back side should
+be near to each other (around 500 meters is fine)
+
+There is no need of "In-Person Verify" option in Video KYC screen as for that we can use 
+"Identity Verification" screen.
+
+Session Setup and Schedule Appointment should ideally be the same option. Only after scheduling the
+appointment a calendar invite and live session link of 30 minutes should be generated. We also need
+email option there, which will send the calendar invite as well as the live session link of 30 minutes
+to the customer.
+
+This is how I feel the Video KYC screen should work, currently its all over the place. What do you feel ?
+
+-----------------------------------------------------------------------------------------------------
 
 Also ->
 1) Make the change in Database.md and "Database Viewer" screen.
 2) Update unit tests.
 3) Push the code to git.
-
-
------------------------------------------------------------------------------------------------------
-

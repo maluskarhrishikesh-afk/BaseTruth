@@ -78,7 +78,7 @@ VALID TABLES — only these 6 tables exist in BaseTruth PostgreSQL:
   2. scans                — one row per document uploaded and scanned
   3. document_extractions — extracted field data from each document (JSON)
   4. identity_checks      — Identity Verification (face-match) results only;
-                            columns: id, entity_id, check_type (nullable, 'face_match' or NULL),
+                            columns: id, entity_id,
                             status, cosine_similarity, display_score, threshold, is_match,
                             verdict, selfie_pic, aadhaar_pic, pan_pic, signature_pic,
                             pdf_report (MinIO key), aadhar_dtls (JSONB), pan_dtls (JSONB),
@@ -273,10 +273,9 @@ TABLE: document_extractions  (structured JSON data extracted from each document)
       JOIN entities e ON e.id = de.entity_id
       WHERE e.entity_ref = 'BT-000001'
 
-TABLE: identity_checks  (face match and Video KYC results)
+TABLE: identity_checks  (Identity Verification face-match results)
   id            — internal primary key
   entity_id     — FK to entities
-  check_type    — face_match OR video_kyc
   status        — pass / fail / inconclusive
   verdict       — PASS or FAIL
   cosine_similarity  — face-match confidence score (0.0 to 1.0)
@@ -284,11 +283,11 @@ TABLE: identity_checks  (face match and Video KYC results)
 
   COMMON QUERIES:
     Total face matches performed:
-      SELECT COUNT(*) FROM identity_checks WHERE check_type = 'face_match'
+      SELECT COUNT(*) FROM identity_checks
 
     Pass / fail breakdown for face matching:
       SELECT verdict, COUNT(*) FROM identity_checks
-      WHERE check_type = 'face_match' GROUP BY verdict
+      GROUP BY verdict
 
 TABLE: entity_reports  (final cross-document verification reports)
   id            — internal primary key
@@ -521,8 +520,8 @@ APPROVAL STATUS SYNONYMS:
 
 KYC / IDENTITY:
   "KYC" / "know your customer" / "identity check" → identity_checks table
-  "face match" / "selfie check" / "photo verification" → identity_checks where check_type='face_match'
-  "video KYC" / "live video check" / "liveness" → identity_checks where check_type='video_kyc'
+  "face match" / "selfie check" / "photo verification" → identity_checks table (all rows are face-match)
+  "video KYC" / "live video check" / "liveness" → video_kyc_checks table
   "Aadhaar" / "UID" / "UIDAI card" → aadhaar document type, aadhar_number column
   "PAN" / "PAN card" / "tax ID" → pan_card document type, pan_number column
 
@@ -588,7 +587,7 @@ SQL: SELECT e.entity_ref, e.first_name, e.last_name, de.document_type, de.file_n
 Q: Which applicants failed face match?
 SQL: SELECT e.entity_ref, e.first_name, e.last_name, ic.cosine_similarity, ic.created_at
      FROM identity_checks ic JOIN entities e ON e.id = ic.entity_id
-     WHERE ic.check_type = 'face_match' AND ic.verdict = 'FAIL'
+     WHERE ic.verdict = 'FAIL'
      ORDER BY ic.created_at DESC LIMIT 20
 
 Q: Show fully approved reports
@@ -612,7 +611,7 @@ SQL: SELECT e.entity_ref, e.first_name, e.last_name, e.created_at
 
 Q: How many face match checks passed vs failed?
 SQL: SELECT verdict, COUNT(*) AS count
-     FROM identity_checks WHERE check_type = 'face_match' GROUP BY verdict
+     FROM identity_checks GROUP BY verdict
 
 Q: Show reports approved this month
 SQL: SELECT er.report_ref, e.entity_ref, e.first_name, e.last_name, er.generated_at

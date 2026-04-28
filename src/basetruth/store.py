@@ -1621,13 +1621,10 @@ def save_identity_verification_check(
             # Upsert: one row per entity for the Identity Verification workflow
             row = None
             if entity_id is not None:
-                # Look for an existing row — new rows have check_type NULL or 'face_match'
+                # Look for the single existing row for this entity
                 row = (
                     session.query(IdentityCheck)
-                    .filter(
-                        IdentityCheck.entity_id == entity_id,
-                        IdentityCheck.check_type.in_(["face_match", None]),
-                    )
+                    .filter(IdentityCheck.entity_id == entity_id)
                     .order_by(IdentityCheck.created_at.desc())
                     .first()
                 )
@@ -1635,7 +1632,6 @@ def save_identity_verification_check(
             if row is None:
                 row = IdentityCheck(
                     entity_id=entity_id,
-                    check_type=None,           # new rows leave check_type NULL
                     status=status,
                     cosine_similarity=result.get("confidence") or result.get("cosine_similarity"),
                     display_score=result.get("display_score"),
@@ -1667,7 +1663,6 @@ def save_identity_verification_check(
                     session.query(IdentityCheck)
                     .filter(
                         IdentityCheck.entity_id == entity_id,
-                        IdentityCheck.check_type.in_(["face_match", None]),
                         IdentityCheck.id != row.id,
                     )
                     .all()
@@ -2031,9 +2026,9 @@ def save_identity_check(
 def get_entity_identity_checks(entity_ref: str) -> List[Dict[str, Any]]:
     """Return the latest Identity Verification check for an entity as a list.
 
-    Only rows that belong to the Identity Verification workflow are returned
-    (check_type == 'face_match' or NULL).  Video KYC rows live in
-    ``video_kyc_checks`` and are fetched via get_entity_video_kyc_checks().
+    All rows in ``identity_checks`` belong to the Identity Verification
+    (face-match) workflow.  Video KYC rows live in ``video_kyc_checks``
+    and are fetched via get_entity_video_kyc_checks().
     """
     try:
         with db_session() as session:
@@ -2044,26 +2039,20 @@ def get_entity_identity_checks(entity_ref: str) -> List[Dict[str, Any]]:
             )
             if not entity:
                 return []
-            # Only include Identity Verification rows (face_match or NULL check_type)
-            checks = (
+            # All rows in this table are face-match rows — return the most recent one
+            latest = (
                 session.query(IdentityCheck)
-                .filter(
-                    IdentityCheck.entity_id == entity.id,
-                    IdentityCheck.check_type.in_(["face_match", None]),
-                )
+                .filter(IdentityCheck.entity_id == entity.id)
                 .order_by(IdentityCheck.created_at.desc())
-                .all()
+                .first()
             )
-            # Deduplicate: keep only the most-recent row (there should only be one)
-            latest_by_type: Dict[str, IdentityCheck] = {}
-            for check in checks:
-                key = check.check_type or "face_match"
-                if key not in latest_by_type:
-                    latest_by_type[key] = check
+            if not latest:
+                return []
+            c = latest
             return [
                 {
                     "id": c.id,
-                    "check_type": c.check_type or "face_match",
+                    "check_type": "face_match",   # hardcoded: this table is face-match only
                     "status": c.status,
                     "cosine_similarity": c.cosine_similarity,
                     "display_score": c.display_score,
@@ -2080,7 +2069,6 @@ def get_entity_identity_checks(entity_ref: str) -> List[Dict[str, Any]]:
                     "has_pdf": bool(c.pdf_report),
                     "created_at": c.created_at.isoformat() if c.created_at else "",
                 }
-                for c in latest_by_type.values()
             ]
     except Exception as exc:
         log.warning("get_entity_identity_checks failed: %s", exc)
@@ -2151,7 +2139,7 @@ def db_table_rows(table: str, limit: int = 500) -> tuple[List[Dict[str, Any]], i
             elif table == "identity_checks":
                 rows_raw = session.execute(
                     text(
-                        "SELECT id, entity_id, check_type, status, cosine_similarity, "
+                        "SELECT id, entity_id, status, cosine_similarity, "
                         "display_score, threshold, is_match, verdict, "
                         "selfie_pic, aadhaar_pic, pan_pic, signature_pic, "
                         "pdf_report, aadhar_dtls, pan_dtls, report_json, created_at "
@@ -2333,13 +2321,11 @@ _DB_VIEWER_TABLE_META: dict = {
         "json_cols": {"extracted_data"},
     },
     # identity_checks stores Identity Verification (face-match) results only.
-    # check_type is nullable for new rows; old rows may have 'face_match'.
     "identity_checks": {
         "pk": "id",
         "readonly": {"id", "created_at", "updated_at"},
         "editable": [
             {"name": "entity_id",         "label": "Entity",               "ui": "fk",    "fk_table": "entities", "nullable": True},
-            {"name": "check_type",        "label": "Check Type",           "ui": "select","choices": ["face_match", ""], "nullable": True},
             {"name": "status",            "label": "Status",               "ui": "select","choices": ["pass", "fail", "inconclusive"]},
             {"name": "cosine_similarity", "label": "Cosine Similarity",    "ui": "float", "nullable": True},
             {"name": "display_score",     "label": "Display Score (0–100)","ui": "float", "nullable": True},

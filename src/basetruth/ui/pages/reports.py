@@ -15,6 +15,7 @@ from basetruth.ui.components import (
     _page_title,
     get_all_entities_with_scans,
     get_entity_identity_checks,
+    get_entity_video_kyc_checks,
     get_entity_reports,
     get_entity_scans,
     minio_delete_object,
@@ -90,8 +91,9 @@ This screen keeps one final report per applicant and nothing else.
         email = entity.get("email") or ""
         linked_scans = entity.get("scans") or []
         identity_checks = get_entity_identity_checks(entity_ref)
-        face_checks = [check for check in identity_checks if check.get("check_type") == "face_match"]
-        kyc_checks = [check for check in identity_checks if check.get("check_type") == "video_kyc"]
+        # identity_checks only contains face-match rows; video KYC is a separate table
+        face_checks = identity_checks
+        kyc_checks = get_entity_video_kyc_checks(entity_ref)
 
         subtitle = "  ·  ".join(filter(None, [pan_number, email]))
         summary_parts = []

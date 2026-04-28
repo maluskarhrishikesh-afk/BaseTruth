@@ -269,10 +269,6 @@ class IdentityCheck(Base):
     Stores the ArcFace result together with the Aadhaar QR and PAN
     extraction data so the Final Report can summarise identity details
     without needing to read from document_extractions.
-
-    check_type is kept as a nullable VARCHAR for backwards compatibility
-    with rows written before the Identity / Video-KYC split.  New rows
-    written by save_identity_verification_check() leave it NULL.
     """
 
     __tablename__ = "identity_checks"
@@ -281,8 +277,6 @@ class IdentityCheck(Base):
     entity_id = Column(
         Integer, ForeignKey("entities.id", ondelete="SET NULL"), nullable=True
     )
-    # Legacy column kept for backward compat — new rows leave this NULL.
-    check_type = Column(String(30), nullable=True)         # 'face_match' | None
     status = Column(String(20), nullable=False)            # 'pass' | 'fail' | 'inconclusive'
 
     # ArcFace / face-match scores
@@ -651,16 +645,10 @@ def init_db() -> bool:
             # Drop stale columns that no longer belong on identity_checks.
             # liveness fields live in video_kyc_checks; filename columns are superseded
             # by MinIO key columns (selfie_pic, aadhaar_pic, pan_pic, signature_pic).
-            for _col in ("liveness_state", "liveness_passed", "doc_filename", "selfie_filename"):
+            for _col in ("liveness_state", "liveness_passed", "doc_filename", "selfie_filename", "check_type"):
                 conn.execute(text(
                     f"ALTER TABLE identity_checks DROP COLUMN IF EXISTS {_col}"
                 ))
-            # Make check_type nullable so new rows written by save_identity_verification_check
-            # can omit it (the column was NOT NULL before the split).
-            conn.execute(text(
-                "ALTER TABLE identity_checks "
-                "ALTER COLUMN check_type DROP NOT NULL"
-            ))
             # Migrate pdf_report from BYTEA (LargeBinary) to VARCHAR(500) MinIO key.
             # We rename the old binary column so existing data is not lost, then add
             # the new string column.  The DO block is idempotent — it only renames
