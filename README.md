@@ -51,6 +51,10 @@ Windows launcher executables are also provided:
 | `start.exe` | Starts the BaseTruth UI and records PID to `.runtime/` |
 | `stop.exe` | Stops the running BaseTruth UI using the recorded PID |
 
+## License
+
+BaseTruth is licensed under the Apache License 2.0. See `LICENSE` for the full text.
+
 ## REST API
 
 When the `api` extra is installed the REST server is available at `http://localhost:8502`.

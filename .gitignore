@@ -9,12 +9,15 @@ __pycache__/
 *.pyd
 dist/
 build/
+build.exe
 *.egg-info/
 artifacts/
 outputs/
 start.exe
 stop.exe
 train_model.exe
+log.txt
+ps_out.txt
 *.spec
 # but track the BaseTruth launcher spec
 !start.spec

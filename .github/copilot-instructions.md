@@ -52,7 +52,7 @@ These rules exist because they have caused bugs in the past. **Do not violate th
 
 12. **Testing Is Mandatory** — Every non-trivial code change must add or update unit tests. Prefer narrow, deterministic `pytest` tests that do not require a live DB, MinIO, Ollama, webcam, or network. If a behaviour truly cannot be unit tested, add the cheapest higher-level test possible and document the limitation.
 
-13. **Remove Stale Code And Docs** — When replacing behaviour, remove dead code, obsolete helpers, stale branches, unused imports, outdated comments, and stale documentation in the same area. BaseTruth should not accumulate superseded logic.
+13. **Remove Stale Code, Docs, And Unwanted Files** — When replacing behaviour, remove dead code, obsolete helpers, stale branches, unused imports, outdated comments, stale documentation, and tracked unwanted files such as generated binaries, one-off sample outputs, runtime logs, or scratch artifacts in the same area. BaseTruth should not accumulate superseded logic or stray files.
 
 14. **Design Principles** — Follow coding standards like SOLID design principles uniformly. Ensure separation of concerns, single responsibilities, and well-structured interfaces to keep the application modular.
 
