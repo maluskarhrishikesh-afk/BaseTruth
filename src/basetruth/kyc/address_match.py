@@ -251,15 +251,38 @@ def calculate_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> fl
 def reverse_geocode(lat: float, lon: float) -> Optional[str]:
     """Convert GPS coordinates to a human-readable address string.
 
-    Uses the free Nominatim API (OpenStreetMap).  No API key is required but
-    a reasonable User-Agent is set so OSM can contact us if we abuse the
-    service.
+    Uses Google Maps Geocoding API if BT_GOOGLE_MAPS_API_KEY is present,
+    otherwise falls back gracefully to the free Nominatim API (OpenStreetMap).
 
-    Returns the display_name string from Nominatim on success, or ``None``
-    when the request fails (network error, timeout, non-200 response, or
+    Returns the formatted address string on success, or ``None`` when the
+    request fails (network error, timeout, non-200 response, or
     missing key in the response body).  The caller must handle ``None``
     gracefully — this function must never raise.
     """
+    import os
+    api_key = os.getenv("BT_GOOGLE_MAPS_API_KEY")
+
+    if api_key:
+        try:
+            import json as _json
+            import urllib.request
+
+            url = f"https://maps.googleapis.com/maps/api/geocode/json?latlng={lat},{lon}&key={api_key}"
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "BaseTruth/1.0 (identity verification platform)"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = _json.loads(resp.read().decode())
+                
+            if data.get("status") == "OK" and data.get("results"):
+                address = data["results"][0].get("formatted_address")
+                if address:
+                    log.debug("google reverse_geocode: %.4f, %.4f → %s", lat, lon, address[:80])
+                    return address
+        except Exception as exc:
+            log.warning("Google reverse_geocode failed: %s. Falling back to Nominatim.", exc)
+
     try:
         import urllib.request  # noqa: PLC0415 — lazy import to avoid startup cost
         import json as _json
@@ -290,16 +313,41 @@ def geocode_address(address_text: str) -> Optional[tuple]:
     and the registered address on their proof document.  The result lets us
     apply the 500 m physical-proximity rule on top of pure text comparison.
 
-    Nominatim (OpenStreetMap) is queried with no API key.  Results for
-    Indian addresses (district / taluka specifics) have variable success
-    rates, so the caller must always treat None as a graceful skip and fall
-    back to text-only comparison.
+    Uses Google Maps Geocoding API if BT_GOOGLE_MAPS_API_KEY is present,
+    otherwise falls back gracefully to Nominatim.
 
     Returns a (lat, lon) tuple on success, or None on any failure.  Never
     raises — all exceptions are caught and logged at DEBUG level.
     """
     if not address_text or len(address_text.strip()) < 5:
         return None
+        
+    import os
+    api_key = os.getenv("BT_GOOGLE_MAPS_API_KEY")
+
+    if api_key:
+        try:
+            import json as _json
+            import urllib.parse
+            import urllib.request
+
+            params = urllib.parse.urlencode({"address": address_text, "key": api_key})
+            url = f"https://maps.googleapis.com/maps/api/geocode/json?{params}"
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "BaseTruth/1.0 (identity verification platform)"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = _json.loads(resp.read().decode())
+            if data.get("status") == "OK" and data.get("results"):
+                location = data["results"][0]["geometry"]["location"]
+                lat = float(location["lat"])
+                lon = float(location["lng"])
+                log.debug("google geocode_address: '%s…' → (%.4f, %.4f)", address_text[:40], lat, lon)
+                return lat, lon
+        except Exception as exc:
+            log.warning("Google geocode_address failed: %s. Falling back to Nominatim.", exc)
+
     try:
         import json as _json  # noqa: PLC0415
         import urllib.parse  # noqa: PLC0415

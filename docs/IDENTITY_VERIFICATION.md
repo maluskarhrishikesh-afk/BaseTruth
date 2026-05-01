@@ -89,14 +89,25 @@ Customer's browser ──WS /kyc/ws/{session_id}──► FastAPI server
    - The server runs **MediaPipe FaceLandmarker** (or InsightFace if available) to locate the face in each frame and extracts 5 key landmarks (eyes, nose, mouth corners).
    - A random set of 2–4 **active-liveness challenges** are assigned (configurable):
 
-   | Challenge | What the server looks for |
-     |---|---|
-   | `blink` | EAR (Eye Aspect Ratio) dips below 0.15 (eyes close), then recovers above 0.18 (eyes open) |
-     | `turn_left` | Nose `x` position (relative to face width) moves right past 0.62 |
-     | `turn_right` | Nose `x` position moves left below 0.38 |
-     | `nod` | Pitch (nose height relative to eye midpoint) range exceeds 0.28 across recent frames |
+    | Challenge | What the server looks for |
+       |---|---|
+    | `blink` | The eyes start open, close clearly, then open again |
+       | `turn_left` | The nose shifts left compared with the eye midpoint in the mirrored selfie-style frame |
+       | `turn_right` | The nose shifts right compared with the eye midpoint in the mirrored selfie-style frame |
+       | `nod` | The nose moves down and back up compared with the eyes over a short run of frames |
 
    - After each challenge passes, the server advances to the next one and sends a progress update.
+
+    **How this works in simple language**
+
+    - BaseTruth does not trust one frame. It watches a short recent sequence of frames and checks whether the movement really happened.
+    - The browser preview is mirrored and the captured frame is mirrored too, so `turn left` means **your real left**, not the opposite direction.
+    - The face must stay visible enough for the detector to see the eyes, nose, and mouth area.
+    - For `look_straight`, the face must stay near the centre for 5 steady frames.
+    - For `blink`, the main signal is **EAR (Eye Aspect Ratio)**. The engine looks for open eyes, then a dip when the eyelids close, then a reopen signal. It is tuned to still work on low-FPS webcams.
+   - For `turn_left` and `turn_right`, the main signal is **yaw**. This is the nose position compared with the middle point between the eyes. The engine first checks for an absolute turn of about `0.16` in either direction, and if that is not reached it also checks whether the nose and yaw moved clearly away from the starting pose for that challenge.
+    - For `nod`, the main signal is **pitch**. This is how far the nose moves up and down compared with the eyes. The system checks the pitch range over at least 6 recent frames and looks for a range above `0.14`.
+    - Distance from the camera matters less because these values are normalised using face size or eye distance.
 
 4. **Current-location capture** — During the customer flow:
    - The browser requests geolocation permission.

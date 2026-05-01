@@ -53,6 +53,8 @@ flowchart TD
 ### 1A. Operator UI Layer
 
 - supports single-file upload and immediate scan
+- supports a dedicated Face Scan page for instant static face-authenticity review without persistence
+- supports a dedicated Face Scan live-session contract with its own browser page, WebSocket transport, and canonical live result payload separate from Video KYC
 - supports a dedicated single-file Forensic Scan page for instant tamper verdicts without persistence
 - supports a dedicated Swagger page that links operators to live OpenAPI docs (`/docs`, `/openapi.json`, `/redoc`)
 - supports bulk upload and folder-driven scan workflows
@@ -539,12 +541,14 @@ All positions are normalised by face bounding-box width so they work at any came
 
 | Challenge      | How it is detected                                                | Pass condition                              |
 |----------------|-------------------------------------------------------------------|---------------------------------------------|
-| `turn_left`    | Nose moves right in image → `nose_rel_x` rises                   | `nose_rel_x > 0.62` in any recent frame     |
-| `turn_right`   | Nose moves left in image → `nose_rel_x` falls                    | `nose_rel_x < 0.38` in any recent frame     |
-| `nod`          | Nose moves below eye midpoint → `pitch` range widens             | pitch range `> 0.28` over ≥6 frames         |
-| `blink`        | Eyes close → Eye Aspect Ratio (EAR) drops then recovers          | EAR drops below 0.15 then recovers above 0.18 |
+| `turn_left`    | In the mirrored selfie-style frame, the nose swings left of the eye midpoint or clearly shifts left from the challenge starting pose | yaw `<= -0.16`, or a clear leftward yaw-plus-nose shift from the starting frames |
+| `turn_right`   | In the mirrored selfie-style frame, the nose swings right of the eye midpoint or clearly shifts right from the challenge starting pose | yaw `>= 0.16`, or a clear rightward yaw-plus-nose shift from the starting frames |
+| `nod`          | Nose moves below and back toward the eye midpoint over time      | pitch range `> 0.14` over ≥6 frames         |
+| `blink`        | Eyes close → Eye Aspect Ratio (EAR) shows an open-dip-reopen sequence | EAR baseline, dip, and reopen sequence tuned for low-FPS webcam capture |
 
 > **EAR source:** MediaPipe FaceLandmarker blendshape scores are always used for blink detection, regardless of whether InsightFace or MediaPipe handles face detection. When InsightFace is active (Docker / Python ≤ 3.12), both models run per frame: InsightFace for face-match embedding and MediaPipe for EAR. This ensures reliable blink detection at any camera distance.
+
+> **Direction note:** The browser mirrors the live preview and mirrors the captured frame before it is sent to the server. That means `turn left` and `turn right` follow the user's own left and right, not the opposite direction.
 
 By default, 2 challenges are chosen at random per session. The agent can override this in the dashboard.
 

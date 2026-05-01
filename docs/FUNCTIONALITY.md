@@ -13,6 +13,7 @@
 | Dashboard | 🏠 | `dashboard` | Dashboard |
 | Identity Verification | 🧑‍💻 | `identity` | Identity Verification |
 | Video KYC | 🎥 | `video_kyc` | Video KYC |
+| Face Scan | 🥸 | `face_scan` | Face Scan |
 | Scan Document | 🔍 | `scan` | Scan Document |
 | Forensic Scan | 🧪 | `forensic_scan` | Forensic Scan |
 | Bulk Scan | 📦 | `bulk` | Bulk Scan |
@@ -141,24 +142,83 @@
 
 ### Tab 2 — Session Status
 
+The Session Status tab is the operator's full review surface. It mirrors the Identity Verification screen and becomes active once a session is created. While the session is waiting/active it auto-polls every 2 s and shows a progress bar. Once the session completes, the full review surface renders.
+
+**Session Monitor (always visible while session exists):**
+
 | Element | Action | Expected Result |
 |---|---|---|
 | Status metric | Auto-renders | Shows current session status (Waiting / In Progress / Completed / Failed / Expired) |
 | Challenges progress | Auto-renders | Shows `X / Y done` metric and progress bar while session is active |
 | Live poll | Auto (every 2 s while active) | Calls `GET /kyc/sessions/{id}`; reruns the page to refresh status |
-| Face match score | Auto-renders after completion | Shows `Identity Verified` or `Verification Failed` with display score |
-| "💾 Save to Database" button | Click after a completed KYC result | Saves the completed Video KYC result to `video_kyc_checks`; uploads the reference ID document and best frontal live frame and one best frame per completed challenge to MinIO; stores location/address comparison fields and the PDF report MinIO key; PDF report download appears |
+
+**Identity Documents (visible after session completes):**
+
+| Element | Action | Expected Result |
+|---|---|---|
+| Aadhaar Card uploader | Upload image | Decodes QR → shows name, DOB, gender, UID, state, PIN. Bytes stored in `vkyc_aadhaar_bytes`. Cached in `vkyc_aadhaar_qr` |
+| PAN Card uploader | Upload image | Extracts PAN number, full name, father name, DOB via Gemma4 + OCR. Crops signature. Cached in `vkyc_pan_data` / `vkyc_pan_sig_bytes` |
+| Address Proof uploader | Upload image/PDF | Extracts address fields via AI. Cached in `vkyc_addr_dtls` |
+
+**Live Selfie:**
+
+| Element | Action | Expected Result |
+|---|---|---|
+| Live selfie preview | Auto-fetches from `GET /kyc/sessions/{id}/best-frame` | Shows the best JPEG frame captured during liveness; cached in `vkyc_live_selfie_bytes` |
+
+**Address Verification (shown when GPS data is available):**
+
+| Element | Action | Expected Result |
+|---|---|---|
+| Current Location vs Proof Address | Auto-renders | Side-by-side comparison of reverse-geocoded GPS address and extracted proof address |
+| Distance metric | Auto-renders | Distance in metres between the two addresses |
+| Address match result | Auto-renders | Labelled `✅ Address Matched` / `❌ Address Mismatch` / `⚠️ Partial Match` / `⏭️ Not Verified` |
+
+**Document Cross-Checks (shown when Aadhaar QR or PAN data is available):**
+
+| Element | Action | Expected Result |
+|---|---|---|
+| First Name & Last Name Match | Auto-renders | Compares first + last name from Aadhaar QR against PAN card; shows `PASS` (green) or `FAIL` (red) with both names displayed |
+| DOB Match | Auto-renders | Compares DOB from Aadhaar against PAN; exact-date match preferred, falls back to year-only; shows `PASS` (green) or `FAIL` (red) with the matched value |
+| Single document uploaded | Auto-renders | Shows an info/caption message explaining that both documents are needed for comparison |
+
+**Applicant Details form:**
+
+| Element | Action | Expected Result |
+|---|---|---|
+| Info banner | Auto-renders | Shows "Fields marked auto-filled are extracted from the documents. Please provide Phone and Email manually." |
+| First name, Last name | Auto-filled from Aadhaar QR / PAN name; `disabled=True` | Fields populate automatically; tooltip explains source. Values in `vkyc_first_name` / `vkyc_last_name` |
+| PAN number | Auto-filled from PAN extraction; `disabled=True`; placeholder `ABCDE1234F` | Stored in `vkyc_pan_number`; re-fills when PAN is first received |
+| Aadhaar number | Auto-filled from Aadhaar QR; `disabled=True`; placeholder `1234 5678 9012` | Stored in `vkyc_aadhaar_uid`; re-fills when Aadhaar is first received |
+| Email | Manual entry; placeholder `applicant@email.com`; pre-filled from session customer email | Stored on entity record; key `vkyc_email_input` |
+| Phone | Manual entry; placeholder `+91 98765 43210` | Stored on entity record; key `vkyc_phone` |
+| Required-field caption | Auto-renders when fields are empty | Shows `⚠️ The following fields will be auto-filled when documents are received: …` |
+| Entity link widget | Select / type | Links check to an existing entity or creates a new one |
+| Auto-fill trigger | Document bytes arrive (Aadhaar or PAN) | `_vkyc_auto_key` changes → all four auto fields refill from latest document data |
+
+**Face Match:**
+
+| Element | Action | Expected Result |
+|---|---|---|
+| "🔍 Match Face" button | Click (visible when Aadhaar + live selfie both present) | Runs ArcFace `compare_faces(aadhaar_bytes, live_selfie)`. Stores result in `vkyc_face_match_result`. Shows score, cosine similarity, threshold |
+
+**Save + PDF:**
+
+| Element | Action | Expected Result |
+|---|---|---|
+| "💾 Save to Database" button | Click after session completes | Saves enriched Video KYC result to `video_kyc_checks`; uploads Aadhaar, PAN, signature, address-proof, and live-selfie images to MinIO; stores `aadhar_dtls`, `pan_dtls`, `address_dtls` as JSONB; PDF report download appears |
 | PDF download button | Appears after save | Downloads the KYC report PDF |
-| "🔄 Start New Session" button | Click | Clears all `vkyc_*` session state and reruns the page |
 
 ### Liveness Challenges
 
 | Challenge | Detector | Pass Condition |
 |---|---|---|
-| `blink` | MediaPipe EAR (always, even with InsightFace active) | EAR drops below 0.15 then recovers above 0.18 |
-| `turn_left` | Nose x-position relative to bbox | `nose_rel_x > 0.62` |
-| `turn_right` | Nose x-position relative to bbox | `nose_rel_x < 0.38` |
-| `nod` | Nose-to-eye pitch range | Range > 0.28 over ≥ 6 frames |
+| `blink` | MediaPipe EAR (always, even with InsightFace active) | A real open-eye EAR baseline is followed by a clear dip and a short reopen sequence; tuned to work on low-FPS webcams |
+| `turn_left` | Head-turn yaw from nose vs eye midpoint | `yaw <= -0.16`, or a clear leftward yaw-plus-nose shift from the first frames of that challenge |
+| `turn_right` | Head-turn yaw from nose vs eye midpoint | `yaw >= 0.16`, or a clear rightward yaw-plus-nose shift from the first frames of that challenge |
+| `nod` | Nose-to-eye pitch range | Range > 0.14 over ≥ 6 frames |
+
+In simple words: BaseTruth watches a short sequence of recent frames, not just one frame. The browser sends a mirrored selfie-style frame, so left and right follow the user's own left and right. It mainly checks centred face stability, eye open-close-open motion, left/right yaw, up/down pitch range, and whether the nose clearly shifts away from the starting pose during a turn challenge.
 
 **Important Video KYC storage rules:**
 - The save path keeps one current `video_kyc_checks` row per entity.
@@ -207,6 +267,48 @@ The customer opens this URL on their phone or PC. The page is a self-contained 4
 | `/kyc/sessions/{id}/location` | POST | Accept GPS coordinates; reverse-geocode; compare addresses |
 | `/kyc/{id}` | GET | Serve the HTML wizard page |
 | `/kyc/ws/{id}` | WebSocket | Stream liveness frames + challenges; return final result |
+
+---
+
+## 🥸 Face Scan
+
+**Purpose:** Run an instant, non-persistent face-authenticity check on one uploaded face image and return a Scan Document-style result payload with verdict, risk score, confidence, evidence, and raw check details.
+
+### Tab 1 — Static Photo Scan
+
+| Element | Action | Expected Result |
+|---|---|---|
+| Face image uploader | Upload one selfie / portrait image | BaseTruth detects the primary face and runs deterministic static authenticity heuristics |
+| Static analysis spinner | Auto after upload | Shows while the static Face Scan service evaluates blur, exposure, face size, boundary artefacts, compression artefacts, and landmark asymmetry |
+| Result banner | Auto-renders after a successful scan | Shows final verdict, risk score, confidence score, and filename |
+| Agent Review card | Auto-renders | Shows a plain-English review summary (`honest_review`) for operators |
+| JSON result panel | Auto-renders | Shows the canonical Face Scan payload including `scan_type`, `schema_version`, `verdict`, `risk_score_0_100`, `confidence_0_100`, `trace`, `environment`, `checks`, and `artifacts` |
+| Download JSON button | Click | Downloads the full Face Scan result as JSON |
+| Reset button | Click | Clears Face Scan session-state keys and allows a fresh scan |
+| If no face is found or the image cannot be decoded | Upload | Shows a visible error message; nothing is saved |
+
+**Current rules:**
+- Face Scan static mode is stateless. It does **not** save to PostgreSQL or MinIO.
+- The static result is deterministic. It must never use a random score.
+- Low-quality images return low confidence and may return `INCONCLUSIVE` instead of overclaiming a verdict.
+
+### Tab 2 — Live Camera Challenge
+
+| Element | Action | Expected Result |
+|---|---|---|
+| Challenge selector | Choose one or more challenges | Builds a dedicated Face Scan live session; `look_straight` is always inserted first even when the operator does not select it |
+| Generate Live Challenge Link | Click | Calls `POST /api/v1/face-scan/sessions`; stores the Face Scan session id and customer URL in Streamlit state |
+| Open Live Face Scan | Click | Opens the dedicated customer-facing live page at `GET /face-scan/live/{session_id}` in a new tab |
+| Session status area | Auto-refreshes while session is active | Polls `GET /api/v1/face-scan/sessions/{session_id}` and shows progress, current challenge, and current instruction |
+| Live session result | Auto-renders on completion | Shows the canonical Face Scan live payload with verdict, risk score, confidence score, evidence, `temporal_consistency`, `replay_heuristics`, and `active_liveness` checks |
+
+**Current live-session rules:**
+- The live tab does **not** use Video KYC session JSON, Aadhaar/PAN/address fields, or `?mode=liveness_only` routing.
+- The browser page streams webcam frames to `WS /api/v1/face-scan/ws/{session_id}` and sends one metadata message with camera resolution and observed FPS.
+- Each Face Scan live session stays valid for 20 minutes from creation.
+- If the browser WebSocket drops before completion, the live session stays resumable until expiry and the live page retries the connection automatically.
+- The live result remains non-persistent like the static tab. It does **not** save to PostgreSQL or MinIO.
+- The first live-authenticity signals are temporal consistency, replay heuristics, live frame quality, and challenge completion.
 
 ---
 

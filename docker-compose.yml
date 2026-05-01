@@ -53,6 +53,8 @@ services:
       # the installed package in site-packages.
       - ./src:/app/src
       - ./logs:/app/logs
+    env_file:
+      - .env
     environment:
       EXIFTOOL_PATH: /usr/bin/exiftool
       BASETRUTH_ARTIFACT_ROOT: /app/artifacts
@@ -112,6 +114,8 @@ services:
       - ./fraud_model:/app/fraud_model
       - ./src:/app/src
       - ./logs:/app/logs
+    env_file:
+      - .env
     environment:
       EXIFTOOL_PATH: /usr/bin/exiftool
       BASETRUTH_ARTIFACT_ROOT: /app/artifacts

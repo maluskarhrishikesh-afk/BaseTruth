@@ -76,7 +76,7 @@ def test_save_video_kyc_check_creates_video_kyc_check_row(monkeypatch) -> None:
         "display_score": 82.0,
         "threshold": 0.40,
         "liveness_state": "passed",
-        "identity_dtls": {"name": "Alice", "uid": "111122223333"},
+        "aadhar_dtls": {"name": "Alice", "uid": "111122223333"},
         "address_dtls": {"address": "123 Main St, Pune"},
     }
 
@@ -100,8 +100,8 @@ def test_save_video_kyc_check_creates_video_kyc_check_row(monkeypatch) -> None:
     assert row.verdict == "PASS"
 
 
-def test_save_video_kyc_check_stores_identity_and_address_dtls(monkeypatch) -> None:
-    """identity_dtls and address_dtls must be stored on the VideoKYCCheck row."""
+def test_save_video_kyc_check_stores_aadhar_and_address_dtls(monkeypatch) -> None:
+    """aadhar_dtls and address_dtls must be stored on the VideoKYCCheck row."""
     fake_session = _FakeSession()
     entity = Entity(id=4, entity_ref="BT-000004", first_name="Bob")
 
@@ -115,7 +115,7 @@ def test_save_video_kyc_check_stores_identity_and_address_dtls(monkeypatch) -> N
     result = {
         "is_match": False,
         "liveness_passed": False,
-        "identity_dtls": {"uid": "999988887777", "name": "Bob"},
+        "aadhar_dtls": {"uid": "999988887777", "name": "Bob"},
         "address_dtls": {"address": "456 Park Ave, Mumbai"},
     }
 
@@ -124,8 +124,8 @@ def test_save_video_kyc_check_stores_identity_and_address_dtls(monkeypatch) -> N
     vkyc_rows = [o for o in fake_session.added if isinstance(o, VideoKYCCheck)]
     assert len(vkyc_rows) == 1
     row = vkyc_rows[0]
-    assert row.identity_dtls is not None
-    assert row.identity_dtls.get("uid") == "999988887777"
+    assert row.aadhar_dtls is not None
+    assert row.aadhar_dtls.get("uid") == "999988887777"
     assert row.address_dtls is not None
     assert "Mumbai" in row.address_dtls.get("address", "")
 

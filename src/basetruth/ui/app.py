@@ -937,6 +937,7 @@ _PAGES: Dict[str, str] = {
     "🎥  Video KYC": "video_kyc",
     "🔍  Scan Document": "scan",
     "🧪  Forensic Scan": "forensic_scan",
+    "🥸  Face Scan": "face_scan",
     "📦  Bulk Scan": "bulk",
     "🔬  Review Scans": "scans",
     "🧠  Document Intelligence": "document_intelligence",
@@ -3945,6 +3946,7 @@ def main() -> None:
     from basetruth.ui.pages.dashboard import _page_dashboard as _m_dashboard  # noqa: PLC0415
     from basetruth.ui.pages.scan import _page_scan as _m_scan  # noqa: PLC0415
     from basetruth.ui.pages.forensic_scan import _page_forensic_scan as _m_forensic_scan  # noqa: PLC0415
+    from basetruth.ui.pages.face_scan import _page_face_scan as _m_face_scan  # noqa: PLC0415
     from basetruth.ui.pages.bulk import _page_bulk as _m_bulk  # noqa: PLC0415
     from basetruth.ui.pages.scans import _page_scans as _m_scans  # noqa: PLC0415
     from basetruth.ui.pages.review_reports import _page_review_reports as _m_review_reports  # noqa: PLC0415
@@ -3964,6 +3966,8 @@ def main() -> None:
         _m_scan(service)
     elif page == "forensic_scan":
         _m_forensic_scan(service)
+    elif page == "face_scan":
+        _m_face_scan(service)
     elif page == "bulk":
         _m_bulk(service)
     elif page == "scans":

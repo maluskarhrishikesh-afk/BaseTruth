@@ -346,16 +346,20 @@ class VideoKYCCheck(Base):
     liveness_state = Column(String(30), nullable=True)
     liveness_passed = Column(Boolean, nullable=True)
 
-    # Identity document extracted fields (Aadhaar QR or Passport) stored as JSONB
-    identity_dtls = Column(JSONB, nullable=True)
-
     # Address proof extracted fields (Aadhaar or Passport) stored as JSONB
     address_dtls = Column(JSONB, nullable=True)
+
+    # Structured document payloads (added 2026 — mirrors identity_checks columns)
+    aadhar_dtls = Column(JSONB, nullable=True)      # Aadhaar QR parsed payload
+    pan_dtls = Column(JSONB, nullable=True)         # PAN card extraction payload
 
     # MinIO object keys for uploaded images
     video_kyc_pic = Column(String(500), nullable=True, default="")       # best live frame
     address_proof_pic = Column(String(500), nullable=True, default="")   # address proof image
-    reference_doc_pic = Column(String(500), nullable=True, default="")   # reference ID document
+    reference_doc_pic = Column(String(500), nullable=True, default="")   # reference ID document (legacy)
+    aadhaar_pic = Column(String(500), nullable=True, default="")         # Aadhaar card image
+    pan_pic = Column(String(500), nullable=True, default="")             # PAN card image
+    signature_pic = Column(String(500), nullable=True, default="")       # PAN signature crop
 
     # Address comparison result — 'match' | 'mismatch' | 'partial' | 'skipped'
     isAddressMatch = Column(String(20), nullable=True, default="skipped")
@@ -363,9 +367,8 @@ class VideoKYCCheck(Base):
     # Free-text comments from the KYC officer or the system
     kyc_comments = Column(String(500), nullable=True, default="")
 
-    # Geolocation captured from the user's browser during the session
-    current_location_json = Column(JSONB, nullable=True)   # {lat, lon, accuracy, captured_at}
-    current_address_text = Column(Text, nullable=True)     # reverse-geocoded address string
+    # Human-readable address derived from reverse-geocoding the user's live GPS fix
+    current_location = Column(Text, nullable=True)         # reverse-geocoded address string
     address_distance_meters = Column(Float, nullable=True) # metres between proof and live location
 
     # Per-challenge snapshots: list of {challenge_name, frame_key (MinIO), ear_value}
@@ -592,15 +595,13 @@ def init_db() -> bool:
                 "is_match BOOLEAN, "
                 "liveness_state VARCHAR(30), "
                 "liveness_passed BOOLEAN, "
-                "identity_dtls JSONB, "
                 "address_dtls JSONB, "
                 "video_kyc_pic VARCHAR(500) DEFAULT '', "
                 "address_proof_pic VARCHAR(500) DEFAULT '', "
                 "reference_doc_pic VARCHAR(500) DEFAULT '', "
                 "\"isAddressMatch\" VARCHAR(20) DEFAULT 'skipped', "
                 "kyc_comments VARCHAR(500) DEFAULT '', "
-                "current_location_json JSONB, "
-                "current_address_text TEXT, "
+                "current_location TEXT, "
                 "address_distance_meters DOUBLE PRECISION, "
                 "challenge_snapshots_json JSONB, "
                 "report_json JSONB, "
@@ -609,6 +610,56 @@ def init_db() -> bool:
                 "created_at TIMESTAMPTZ DEFAULT NOW(), "
                 "updated_at TIMESTAMPTZ DEFAULT NOW()"
                 ")"
+            ))
+
+            # ── video_kyc_checks new columns (added 2026 for enriched KYC) ────────
+            # Mirror the identity_checks columns so the Video KYC row has the same
+            # structured document data as a face-match check.  Idempotent.
+            conn.execute(text(
+                "ALTER TABLE video_kyc_checks "
+                "ADD COLUMN IF NOT EXISTS aadhar_dtls JSONB"
+            ))
+            conn.execute(text(
+                "ALTER TABLE video_kyc_checks "
+                "ADD COLUMN IF NOT EXISTS pan_dtls JSONB"
+            ))
+            conn.execute(text(
+                "ALTER TABLE video_kyc_checks "
+                "ADD COLUMN IF NOT EXISTS aadhaar_pic VARCHAR(500) DEFAULT ''"
+            ))
+            conn.execute(text(
+                "ALTER TABLE video_kyc_checks "
+                "ADD COLUMN IF NOT EXISTS pan_pic VARCHAR(500) DEFAULT ''"
+            ))
+            conn.execute(text(
+                "ALTER TABLE video_kyc_checks "
+                "ADD COLUMN IF NOT EXISTS signature_pic VARCHAR(500) DEFAULT ''"
+            ))
+            # ── video_kyc_checks schema cleanup (2026) ────────────────────────────
+            # Rename current_address_text → current_location (idempotent DO block:
+            # only renames if old column exists and new column does not).
+            conn.execute(text(
+                "DO $$ BEGIN "
+                "IF EXISTS (SELECT 1 FROM information_schema.columns "
+                "WHERE table_name='video_kyc_checks' AND column_name='current_address_text') "
+                "AND NOT EXISTS (SELECT 1 FROM information_schema.columns "
+                "WHERE table_name='video_kyc_checks' AND column_name='current_location') "
+                "THEN ALTER TABLE video_kyc_checks RENAME COLUMN current_address_text TO current_location; "
+                "END IF; END $$"
+            ))
+            # Add current_location if it still doesn't exist after the rename above
+            # (handles fresh databases created after this migration block was introduced).
+            conn.execute(text(
+                "ALTER TABLE video_kyc_checks "
+                "ADD COLUMN IF NOT EXISTS current_location TEXT"
+            ))
+            # Drop obsolete columns that are no longer read or written by the ORM.
+            # identity_dtls is superseded by aadhar_dtls; current_location_json is unused.
+            conn.execute(text(
+                "ALTER TABLE video_kyc_checks DROP COLUMN IF EXISTS identity_dtls"
+            ))
+            conn.execute(text(
+                "ALTER TABLE video_kyc_checks DROP COLUMN IF EXISTS current_location_json"
             ))
 
             # ── identity_checks new columns ────────────────────────────────────────

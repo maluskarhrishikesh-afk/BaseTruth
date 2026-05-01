@@ -9,21 +9,24 @@ from typing import Any, Dict, List, Optional
 
 SESSION_TTL = timedelta(minutes=30)
 
-# All supported active-liveness challenges.
+# All supported optional active-liveness challenges (look_straight is always
+# prepended as a mandatory first challenge and is not in this list).
 ALL_CHALLENGES: List[str] = ["blink", "turn_left", "turn_right", "nod"]
 
 CHALLENGE_LABELS: Dict[str, str] = {
-    "blink":       "CLOSE YOUR EYES",
-    "turn_left":   "TURN HEAD LEFT",
-    "turn_right":  "TURN HEAD RIGHT",
-    "nod":         "NOD YOUR HEAD",
+    "look_straight": "LOOK AT THE CAMERA",
+    "blink":         "CLOSE YOUR EYES",
+    "turn_left":     "TURN HEAD LEFT",
+    "turn_right":    "TURN HEAD RIGHT",
+    "nod":           "NOD YOUR HEAD",
 }
 
 CHALLENGE_INSTRUCTIONS: Dict[str, str] = {
-    "blink":       "Slowly close both eyes fully, then open them again",
-    "turn_left":   "Slowly turn your head to YOUR left",
-    "turn_right":  "Slowly turn your head to YOUR right",
-    "nod":         "Slowly nod your head down and then back up",
+    "look_straight": "Look directly into the camera and hold still for a moment",
+    "blink":         "Slowly close both eyes fully, then open them again",
+    "turn_left":     "Slowly turn your head to YOUR left",
+    "turn_right":    "Slowly turn your head to YOUR right",
+    "nod":           "Slowly nod your head down and then back up",
 }
 
 
@@ -50,20 +53,27 @@ class KYCSession:
     result: Optional[Dict[str, Any]] = None
 
     # ── identity & address document fields ───────────────────────────────
-    # Extracted fields from the reference identity document (Aadhaar QR / Passport)
-    identity_dtls: Optional[Dict[str, Any]] = None
     # Extracted fields from the address proof document (Aadhaar / Passport)
     address_dtls: Optional[Dict[str, Any]] = None
+    
+    # Customer extracted fields
+    aadhaar_qr: Optional[Dict[str, Any]] = None
+    pan_data: Optional[Dict[str, Any]] = None
+    pan_sig_b64: Optional[str] = None
+
+    # Base64 representations of the raw uploaded documents
+    aadhaar_b64: Optional[str] = None
+    pan_b64: Optional[str] = None
+    address_proof_b64: Optional[str] = None
+
     # Original filename of the reference identity document
     reference_doc_filename: str = ""
     # Original filename of the address proof document
     address_proof_filename: str = ""
 
     # ── geolocation & address comparison fields ──────────────────────────
-    # Raw GPS fix from the browser: {lat, lon, accuracy, captured_at}
-    current_location_json: Optional[Dict[str, Any]] = None
     # Human-readable address derived from the GPS fix (reverse-geocoded)
-    current_address_text: str = ""
+    current_location: str = ""
     # Result of address comparison: 'match' | 'mismatch' | 'partial' | 'skipped'
     address_match_result: str = ""
     # Distance in metres between the address-proof location and the live GPS fix
@@ -72,6 +82,9 @@ class KYCSession:
     # ── liveness challenge snapshot archive ──────────────────────────────
     # One entry per challenge: {challenge_name, frame_minio_key, ear_value}
     challenge_snapshots: List[Dict[str, Any]] = field(default_factory=list)
+    # Per-challenge pass/fail records added when each challenge is completed.
+    # Each entry: {"index": int, "challenge": str, "passed": bool}
+    challenge_results: List[Dict[str, Any]] = field(default_factory=list)
     # Best live frame (JPEG bytes) captured during the highest-confidence
     # challenge frame — uploaded to MinIO as video_kyc_capture.jpg
     best_live_frame_bytes: Optional[bytes] = None
@@ -102,6 +115,12 @@ class KYCSession:
         return self.challenge_frame_history.setdefault(key, [])
 
     def advance_challenge(self) -> None:
+        # Record the completed challenge result before advancing the index.
+        self.challenge_results.append({
+            "index":     self.current_challenge_idx,
+            "challenge": self.current_challenge,
+            "passed":    True,
+        })
         self.current_challenge_idx += 1
         # Reset frame history for the next challenge
         key = f"ch_{self.current_challenge_idx}"
@@ -119,6 +138,23 @@ class KYCSession:
             "result": self.result,
             "created_at": self.created_at.isoformat(),
             "expires_at": self.expires_at.isoformat(),
+            # Per-challenge pass/fail results — used by the Session Status tab
+            "challenge_results": self.challenge_results,
+            # Address comparison fields — populated after kyc_save_location is called
+            "current_location": self.current_location,
+            "address_match_result": self.address_match_result,
+            "isAddressMatch": self.address_match_result,  # alias for UI compatibility
+            "address_distance_meters": self.address_distance_meters,
+            # Identity and address proof payloads seeded at session creation or customer upload
+            "address_dtls": self.address_dtls,
+            "aadhaar_qr": self.aadhaar_qr,
+            "pan_data": self.pan_data,
+            "pan_sig_b64": self.pan_sig_b64,
+            "aadhaar_b64": self.aadhaar_b64,
+            "pan_b64": self.pan_b64,
+            "address_proof_b64": self.address_proof_b64,
+            # kyc_comments filled by system when address mismatch details are notable
+            "kyc_comments": "",
         }
 
 

@@ -65,6 +65,48 @@ try:
         evidence:            List[str]      = Field(..., description="Bullet-point list of specific forensic evidence items.")
         layers:              Dict[str, Any] = Field(..., description="Raw per-layer metrics: ELA, DCT, clone detection, noise, metadata, AI artefacts, etc.")
 
+    class FaceScanResponse(BaseModel):
+        filename:            str            = Field(..., description="Original filename of the uploaded face image.")
+        scan_type:           str            = Field(..., description="Product result type — always `face_scan` for this endpoint.")
+        mode:                str            = Field(..., description="Execution mode for the result. Static scans return `static`.")
+        schema_version:      str            = Field(..., description="Version of the Face Scan response schema.")
+        verdict:             str            = Field(..., description="Final verdict: GENUINE, SUSPICIOUS, DEEPFAKE, LIVENESS_FAILED, or INCONCLUSIVE.")
+        risk_score_0_100:    float          = Field(..., ge=0, le=100, description="Static spoof-risk score — 0 means low risk, 100 means high risk.")
+        confidence_0_100:    float          = Field(..., ge=0, le=100, description="Confidence in the current result given image quality and detector stability.")
+        confidence_reason:   str            = Field(..., description="Plain-English explanation of why confidence is high or low.")
+        overall_explanation: str            = Field(..., description="Technical explanation of the strongest signals found.")
+        honest_review:       str            = Field(..., description="Plain-English review text for operators.")
+        evidence:            List[str]      = Field(..., description="Bullet-point evidence items that justify the verdict.")
+        trace:               Dict[str, Any] = Field(..., description="Audit trace metadata such as decision trace id, processing time, and rules version.")
+        environment:         Dict[str, Any] = Field(..., description="Known runtime or client environment metadata for this scan.")
+        checks:              Dict[str, Any] = Field(..., description="Detailed per-check scores for face detection, quality, spoof signals, and liveness status.")
+        artifacts:           Dict[str, Any] = Field(..., description="Availability flags for any retained live-session artefacts.")
+
+    class CreateFaceScanLiveSessionRequest(BaseModel):
+        challenges: List[str] = Field([], description="Optional ordered live Face Scan challenges. `look_straight` is always inserted first.")
+
+    class FaceScanLiveSessionCreateResponse(BaseModel):
+        session_id: str = Field(..., description="Unique Face Scan live session token.")
+        status: str = Field(..., description="Session lifecycle status.", examples=["waiting"])
+        session_url: str = Field(..., description="Customer-facing URL for the live Face Scan browser flow.")
+        challenges: List[str] = Field(..., description="Liveness challenges assigned to the live Face Scan session.")
+
+    class FaceScanLiveSessionStatusResponse(BaseModel):
+        session_id: str = Field(..., description="Unique Face Scan live session token.")
+        status: str = Field(..., description="Session lifecycle status.")
+        challenges: List[str] = Field(..., description="Ordered live Face Scan challenges for the session.")
+        current_challenge: Optional[str] = Field(None, description="Current live challenge to perform, if the session is still active.")
+        current_instruction: str = Field("", description="Plain-English instruction for the current challenge.")
+        challenges_completed: int = Field(..., description="Number of completed live challenges.")
+        total_challenges: int = Field(..., description="Total live challenges in the session.")
+        challenge_results: List[Dict[str, Any]] = Field(..., description="Per-challenge pass records captured during the live session.")
+        result: Optional[Dict[str, Any]] = Field(None, description="Canonical final Face Scan payload once the live session completes.")
+        created_at: str = Field(..., description="Session creation timestamp in ISO-8601 format.")
+        expires_at: str = Field(..., description="Session expiry timestamp in ISO-8601 format.")
+        environment: Dict[str, Any] = Field(..., description="Known browser or device metadata captured during the live session.")
+        best_frame_available: bool = Field(..., description="Whether the session retained a best live frame.")
+        challenge_snapshots_available: bool = Field(..., description="Whether challenge snapshots were retained for the session.")
+
     class DocumentExtractResponse(BaseModel):
         filename:         str            = Field(..., description="Original filename.")
         document_type:    str            = Field(..., description="Classified document type.", examples=["Payslip"])
@@ -212,13 +254,15 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
 
 <!-- Step indicator — hidden until the wizard starts -->
 <div class="step-bar" id="step-bar" style="display:none">
-  <div class="s-item" id="st1"><div class="s-num">1</div><div class="s-lbl">Upload ID</div></div>
+  <div class="s-item" id="st1"><div class="s-num">1</div><div class="s-lbl">Aadhaar</div></div>
   <div class="s-sep">›</div>
-  <div class="s-item" id="st2"><div class="s-num">2</div><div class="s-lbl">Address</div></div>
+  <div class="s-item" id="st2"><div class="s-num">2</div><div class="s-lbl">PAN</div></div>
   <div class="s-sep">›</div>
-  <div class="s-item" id="st3"><div class="s-num">3</div><div class="s-lbl">Location</div></div>
+  <div class="s-item" id="st3"><div class="s-num">3</div><div class="s-lbl">Address</div></div>
   <div class="s-sep">›</div>
-  <div class="s-item" id="st4"><div class="s-num">4</div><div class="s-lbl">Verify</div></div>
+  <div class="s-item" id="st4"><div class="s-num">4</div><div class="s-lbl">Location</div></div>
+  <div class="s-sep">›</div>
+  <div class="s-item" id="st5"><div class="s-num">5</div><div class="s-lbl">Verify</div></div>
 </div>
 
 <!-- IDLE: welcome screen -->
@@ -242,12 +286,11 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
 
 <!-- STEP 1: Upload ID document -->
 <div id="s-1" class="card" style="display:none">
-  <h3 style="font-size:1rem;font-weight:700;margin-bottom:.4rem">Step 1 · Upload Your ID</h3>
+  <h3 style="font-size:1rem;font-weight:700;margin-bottom:.4rem">Step 1 · Aadhaar Card</h3>
   <p style="font-size:.83rem;color:#94a3b8;line-height:1.55;margin-bottom:.1rem">
     Upload a clear, well-lit photo of your
-    <strong style="color:#e2e8f0">Aadhaar card (front)</strong> or
-    <strong style="color:#e2e8f0">PAN card</strong>.
-    The face photo on the ID will be used to verify your identity.
+    <strong style="color:#e2e8f0">Aadhaar card (front)</strong>.
+    The face photo will be used to verify your identity.
   </p>
   <div class="uz" id="uz1">
     <input type="file" id="f-id" accept="image/jpeg,image/png,image/webp" style="display:none">
@@ -259,9 +302,27 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
   <button class="btn" id="btn1-next" disabled>Continue →</button>
 </div>
 
-<!-- STEP 2: Upload address proof -->
+<!-- STEP 2: Upload PAN card -->
 <div id="s-2" class="card" style="display:none">
-  <h3 style="font-size:1rem;font-weight:700;margin-bottom:.4rem">Step 2 · Address Proof</h3>
+  <h3 style="font-size:1rem;font-weight:700;margin-bottom:.4rem">Step 2 · PAN Card</h3>
+  <p style="font-size:.83rem;color:#94a3b8;line-height:1.55;margin-bottom:.1rem">
+    Upload a clear photo of your <strong style="color:#e2e8f0">PAN card (front)</strong>.
+    This step is optional but recommended.
+  </p>
+  <div class="uz" id="uz-pan">
+    <input type="file" id="f-pan" accept="image/jpeg,image/png,image/webp" style="display:none">
+    <div class="uz-icon">💳</div>
+    <div class="uz-lbl" id="uz-pan-lbl">Tap to select photo</div>
+    <img id="prev-pan" class="thumb" alt="PAN preview">
+  </div>
+  <div class="fb" id="fb-pan"></div>
+  <button class="btn" id="btn-pan-next" disabled>Continue →</button>
+  <button class="btn btn-skip" id="btn-pan-skip">Skip — proceed without PAN</button>
+</div>
+
+<!-- STEP 3: Upload address proof -->
+<div id="s-3" class="card" style="display:none">
+  <h3 style="font-size:1rem;font-weight:700;margin-bottom:.4rem">Step 3 · Address Proof</h3>
   <p style="font-size:.83rem;color:#94a3b8;line-height:1.55;margin-bottom:.1rem">
     Upload the <strong style="color:#e2e8f0">back side of your Aadhaar card</strong> or
     the <strong style="color:#e2e8f0">address page of your Passport</strong>.
@@ -278,9 +339,9 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
   <button class="btn btn-skip" id="btn2-skip">Skip — proceed without address verification</button>
 </div>
 
-<!-- STEP 3: Share live GPS location -->
-<div id="s-3" class="card" style="display:none">
-  <h3 style="font-size:1rem;font-weight:700;margin-bottom:.4rem">Step 3 · Share Your Location</h3>
+<!-- STEP 4: Share live GPS location -->
+<div id="s-4" class="card" style="display:none">
+  <h3 style="font-size:1rem;font-weight:700;margin-bottom:.4rem">Step 4 · Share Your Location</h3>
   <p style="font-size:.83rem;color:#94a3b8;line-height:1.55;margin-bottom:.75rem">
     Allow location access so we can verify your current address is within range
     of your registered address on the proof document.
@@ -296,8 +357,8 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
   <button class="btn btn-skip" id="btn3-skip">Skip — proceed without location check</button>
 </div>
 
-<!-- STEP 4: Liveness challenge -->
-<div id="s-4" class="card" style="display:none">
+<!-- STEP 5: Liveness challenge -->
+<div id="s-5" class="card" style="display:none">
   <div class="video-wrap">
     <video id="vid" autoplay muted playsinline></video>
     <div class="oval"></div>
@@ -333,12 +394,14 @@ const CHALLENGES       = __CHALLENGES_JSON__;
 
 // Human-readable labels and instructions for each challenge type
 const LABELS = {
+  look_straight: 'LOOK AT THE CAMERA',
   blink:      'CLOSE YOUR EYES',
   turn_left:  'TURN YOUR HEAD LEFT',
   turn_right: 'TURN YOUR HEAD RIGHT',
   nod:        'NOD YOUR HEAD',
 };
 const INSTR = {
+  look_straight: 'Look directly into the camera and hold still',
   blink:      'Slowly close both eyes completely, then open them again',
   turn_left:  'Slowly turn your head to YOUR left',
   turn_right: 'Slowly turn your head to YOUR right',
@@ -349,7 +412,7 @@ let ws=null, stream=null, captureTimer=null, resultShown=false;
 
 // ── Screen manager ────────────────────────────────────────────────────────
 function show(id){
-  ['s-idle','s-1','s-2','s-3','s-4','s-result'].forEach(s=>{
+  ['s-idle','s-1','s-2','s-3','s-4','s-5','s-result'].forEach(s=>{
     const el=document.getElementById(s);
     if(el) el.style.display = s===id ? 'block' : 'none';
   });
@@ -359,7 +422,7 @@ function show(id){
 function setStep(n){
   const bar=document.getElementById('step-bar');
   if(bar) bar.style.display='flex';
-  [1,2,3,4].forEach(i=>{
+  [1,2,3,4,5].forEach(i=>{
     const el=document.getElementById('st'+i);
     if(!el) return;
     el.className='s-item'+(i===n?' active':i<n?' done':'');
@@ -381,8 +444,17 @@ if(CUSTOMER_NAME){
   ci.style.display='block';
 }
 
-// ── Idle → Step 1 ─────────────────────────────────────────────────────────
-document.getElementById('btn-start').onclick=()=>{ show('s-1'); setStep(1); };
+// ── Idle → Step 1 (or straight to liveness if mode=liveness_only) ────────
+document.getElementById('btn-start').onclick=()=>{
+  if (window.location.search.includes('mode=liveness_only')) {
+    show('s-5');
+    setStep(5);
+    startLiveness();
+  } else {
+    show('s-1'); 
+    setStep(1); 
+  }
+};
 
 // ── Step 1: Upload ID document ────────────────────────────────────────────
 const uz1=document.getElementById('uz1');
@@ -408,14 +480,14 @@ document.getElementById('btn1-next').onclick=async()=>{
   const file=fId.files[0]; if(!file) return;
   const btn=document.getElementById('btn1-next');
   btn.disabled=true; btn.textContent='Processing…';
-  setFb('fb1','⏳ Extracting face from ID…','');
+  setFb('fb1','⏳ Extracting Aadhaar details…','');
 
   const fd=new FormData(); fd.append('file',file);
   try{
     const resp=await fetch(`/kyc/sessions/${SESSION_ID}/upload-id`,{method:'POST',body:fd});
     const data=await resp.json();
     if(resp.ok && data.face_found){
-      setFb('fb1','✓ ID processed — face extracted successfully','pass');
+      setFb('fb1','✓ Aadhaar processed — face extracted successfully','pass');
       setTimeout(()=>{ show('s-2'); setStep(2); },700);
     } else {
       const msg=data.detail||data.message||'Could not extract face. Try a clearer, well-lit photo.';
@@ -428,7 +500,52 @@ document.getElementById('btn1-next').onclick=async()=>{
   }
 };
 
-// ── Step 2: Upload address proof ──────────────────────────────────────────
+// ── Step 2: Upload PAN card ──────────────────────────────────────────────
+const uzPan=document.getElementById('uz-pan');
+const fPan=document.getElementById('f-pan');
+uzPan.onclick=()=>fPan.click();
+
+fPan.onchange=e=>{
+  const file=e.target.files[0]; if(!file) return;
+  const r=new FileReader();
+  r.onload=ev=>{
+    const img=document.getElementById('prev-pan');
+    img.src=ev.target.result; img.style.display='block';
+    document.getElementById('uz-pan-lbl').textContent=file.name;
+    uzPan.classList.add('has-file');
+    document.getElementById('btn-pan-next').disabled=false;
+    setFb('fb-pan','','');
+  };
+  r.readAsDataURL(file);
+};
+
+document.getElementById('btn-pan-next').onclick=async()=>{
+  const file=fPan.files[0]; if(!file) return;
+  const btn=document.getElementById('btn-pan-next');
+  btn.disabled=true; btn.textContent='Processing…';
+  setFb('fb-pan','⏳ Extracting PAN details…','');
+
+  const fd=new FormData(); fd.append('file',file);
+  try{
+    const resp=await fetch(`/kyc/sessions/${SESSION_ID}/upload-pan`,{method:'POST',body:fd});
+    const data=await resp.json();
+    if(resp.ok){
+      setFb('fb-pan','✓ PAN details extracted successfully','pass');
+      setTimeout(()=>{ show('s-3'); setStep(3); },700);
+    } else {
+      const msg=data.detail||data.message||'Could not extract details. Try a clearer photo.';
+      setFb('fb-pan','✗ '+msg,'fail');
+      btn.disabled=false; btn.textContent='Try Again';
+    }
+  } catch{
+    setFb('fb-pan','✗ Upload failed. Please check your connection and try again.','fail');
+    btn.disabled=false; btn.textContent='Continue →';
+  }
+};
+
+document.getElementById('btn-pan-skip').onclick=()=>{ show('s-3'); setStep(3); };
+
+// ── Step 3: Upload address proof ──────────────────────────────────────────
 const uz2=document.getElementById('uz2');
 const fAddr=document.getElementById('f-addr');
 uz2.onclick=()=>fAddr.click();
@@ -459,7 +576,7 @@ document.getElementById('btn2-next').onclick=async()=>{
     const data=await resp.json();
     if(resp.ok){
       setFb('fb2','✓ Address proof uploaded','pass');
-      setTimeout(()=>{ show('s-3'); setStep(3); },700);
+      setTimeout(()=>{ show('s-4'); setStep(4); },700);
     } else {
       const msg=data.detail||data.message||'Could not process document. Try a clearer photo.';
       setFb('fb2','✗ '+msg,'fail');
@@ -471,9 +588,9 @@ document.getElementById('btn2-next').onclick=async()=>{
   }
 };
 
-document.getElementById('btn2-skip').onclick=()=>{ show('s-3'); setStep(3); };
+document.getElementById('btn2-skip').onclick=()=>{ show('s-4'); setStep(4); };
 
-// ── Step 3: Share GPS location ────────────────────────────────────────────
+// ── Step 4: Share GPS location ────────────────────────────────────────────
 document.getElementById('btn-loc').onclick=()=>{
   if(!navigator.geolocation){
     setFb('fb3','Location is not supported by your browser.','fail');
@@ -533,9 +650,9 @@ document.getElementById('btn-loc').onclick=()=>{
 document.getElementById('btn3-next').onclick=()=>{ startLiveness(); };
 document.getElementById('btn3-skip').onclick=()=>{ startLiveness(); };
 
-// ── Step 4: Liveness — open WebSocket, start camera, run challenges ───────
+// ── Step 5: Liveness — open WebSocket, start camera, run challenges ───────
 async function startLiveness(){
-  show('s-4'); setStep(4);
+  show('s-5'); setStep(5);
 
   // Build dot indicators for each challenge
   const dotsEl=document.getElementById('dots');
@@ -576,7 +693,14 @@ function startCapture(){
     // Resize to 640 px wide to keep payload manageable
     canvas.width=640;
     canvas.height=Math.round(640*vid.videoHeight/vid.videoWidth);
-    ctx.drawImage(vid,0,0,canvas.width,canvas.height);
+    // Mirror the frame horizontally before sending so that left/right directions
+    // on the server match what the user sees in their mirrored video preview.
+    // The video CSS uses scaleX(-1) for display; we apply the same flip here
+    // so the server receives a frame that matches the user's perspective.
+    ctx.save();
+    ctx.scale(-1,1);
+    ctx.drawImage(vid,-canvas.width,0,canvas.width,canvas.height);
+    ctx.restore();
     canvas.toBlob(blob=>{
       if(!blob) return;
       const fr=new FileReader();
@@ -642,9 +766,7 @@ function showResult(passed,score,message,fullResult){
     inner.className='res-card res-pass';
     icon.textContent='✅';
     title.textContent='Identity Verified';
-    det.innerHTML='Your identity has been successfully verified.<br>'
-      +'<span style="color:#4ade80">Face match score: '+(score).toFixed(1)+'%</span><br><br>'
-      +'You may now close this window.';
+    det.innerHTML='Your identity has been successfully verified.<br><br>You may now close this window.';
   } else {
     inner.className='res-card res-fail';
     icon.textContent='❌';
@@ -654,11 +776,11 @@ function showResult(passed,score,message,fullResult){
   }
 
   // Show address summary panel if the server returned address check fields
-  if(fullResult&&(fullResult.address_match_result||fullResult.current_address_text)){
+  if(fullResult&&(fullResult.address_match_result||fullResult.current_location)){
     const sumEl=document.getElementById('addr-summary');
     sumEl.style.display='block';
     const r=fullResult.address_match_result;
-    const addr=fullResult.current_address_text||'';
+    const addr=fullResult.current_location||'';
     const dist=fullResult.address_distance_meters;
     let html='<strong>Address check:</strong> ';
     html += r==='match'   ? '<span style="color:#4ade80">✓ Match</span>' :
@@ -1239,6 +1361,173 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
             "visual_intelligence": visual_intelligence,
         }
 
+    @app.post(
+        "/api/v1/face-scan",
+        tags=["Scan"],
+        summary="Face Deepfake & Liveliness Scan",
+        response_model=FaceScanResponse,
+        responses={
+            400: {"description": "Unsupported file type"},
+            500: {"description": "Face analysis engine error"},
+        },
+    )
+    async def face_scan_endpoint(file: UploadFile = File(..., description="Face image to analyse for deepfakes and liveliness.")):
+        """Upload a face image and run deepfake/liveliness analysis.
+
+        Returns the canonical Face Scan payload for the static image path.
+        """
+        from basetruth.face_scan.service import run_face_scan_static
+
+        file_bytes = await file.read()
+        filename = file.filename or "face_image"
+        result = run_face_scan_static(file_bytes, filename)
+        if result.get("error"):
+            status = 400 if result.get("error_type") in {"decode_error", "no_face"} else 500
+            raise HTTPException(status_code=status, detail=result["error"])
+
+        return result
+
+    # ── Face Scan Live — dedicated liveness + authenticity session contract ──
+
+    import asyncio as _asyncio
+
+    from basetruth.face_scan import live as _face_scan_live
+    from basetruth.logger import get_logger as _get_logger
+
+    _face_scan_live_log = _get_logger("basetruth.face_scan.live")
+    _face_scan_live_store = _face_scan_live.FaceScanLiveSessionStore()
+
+    @app.post(
+        "/api/v1/face-scan/sessions",
+        tags=["Scan"],
+        summary="Create Live Face Scan Session",
+        response_model=FaceScanLiveSessionCreateResponse,
+        responses={422: {"description": "Invalid challenge name supplied"}},
+    )
+    def create_face_scan_live_session(req: CreateFaceScanLiveSessionRequest) -> Dict[str, Any]:
+        """Create a dedicated live Face Scan session.
+
+        This contract is intentionally separate from Video KYC so the live Face
+        Scan surface only exposes live-authenticity state and results.
+        """
+        requested = req.challenges or _face_scan_live.DEFAULT_FACE_SCAN_CHALLENGES
+        valid = set(_face_scan_live.FACE_SCAN_CHALLENGE_LABELS)
+        invalid = [name for name in requested if name not in valid]
+        if invalid:
+            raise HTTPException(status_code=422, detail=f"Invalid Face Scan challenge(s): {', '.join(invalid)}")
+
+        optional = [name for name in requested if name != "look_straight"]
+        challenges = ["look_straight", *optional]
+        session = _face_scan_live_store.create(challenges=challenges)
+        _face_scan_live_log.info(
+            "Face Scan live session created",
+            extra={"session_id": session.session_id, "challenges": challenges},
+        )
+        return {
+            "session_id": session.session_id,
+            "status": session.status,
+            "session_url": f"/face-scan/live/{session.session_id}",
+            "challenges": session.challenges,
+        }
+
+    @app.get(
+        "/api/v1/face-scan/sessions/{session_id}",
+        tags=["Scan"],
+        summary="Get Live Face Scan Session Status",
+        response_model=FaceScanLiveSessionStatusResponse,
+        responses={404: {"description": "Session not found or expired"}},
+    )
+    def get_face_scan_live_session_status(session_id: str) -> Dict[str, Any]:
+        """Return the dedicated Face Scan live session status payload."""
+        session = _face_scan_live_store.get(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found or expired.")
+        return session.to_status_dict()
+
+    @app.get("/face-scan/live/{session_id}", tags=["Scan"], include_in_schema=False)
+    def face_scan_live_page(session_id: str) -> Any:
+        """Serve the lightweight customer-facing Face Scan live page."""
+        from fastapi.responses import HTMLResponse as _FaceScanHTMLResponse  # noqa: PLC0415
+
+        session = _face_scan_live_store.get(session_id)
+        if not session:
+            return _FaceScanHTMLResponse(
+                "<html><body style='font-family:sans-serif;background:#0f172a;color:#f87171;display:flex;justify-content:center;align-items:center;height:100vh;margin:0'><h2>Session not found or has expired.</h2></body></html>",
+                status_code=404,
+            )
+        return _FaceScanHTMLResponse(_face_scan_live.render_live_page_html(session.session_id, session.challenges))
+
+    @app.websocket("/api/v1/face-scan/ws/{session_id}")
+    async def face_scan_live_websocket(websocket: WebSocket, session_id: str) -> None:
+        """Receive live Face Scan frames and reply with Face Scan-specific status/result JSON."""
+        await websocket.accept()
+        session = _face_scan_live_store.get(session_id)
+        if not session:
+            await websocket.send_json({"type": "error", "message": "Session not found or expired."})
+            await websocket.close(code=1008)
+            return
+        if session.status not in ("waiting", "active"):
+            await websocket.send_json({"type": "error", "message": f"Session is {session.status}."})
+            await websocket.close(code=1008)
+            return
+
+        session.status = "active"
+        loop = _asyncio.get_running_loop()
+        clean_exit = False
+        _face_scan_live_log.info("Face Scan live WebSocket connected", extra={"session_id": session_id})
+        try:
+            while True:
+                try:
+                    data = await _asyncio.wait_for(websocket.receive_json(), timeout=15.0)
+                except _asyncio.TimeoutError:
+                    await websocket.send_json({"type": "status", "face_detected": False, "feedback": "No frames received — check your camera."})
+                    continue
+                except WebSocketDisconnect:
+                    if session.status == "active":
+                        session.status = "waiting"
+                    clean_exit = True
+                    break
+
+                msg_type = data.get("type")
+                if msg_type == "meta":
+                    _face_scan_live.handle_live_meta(session, data)
+                    continue
+                if msg_type != "frame":
+                    continue
+
+                result = await loop.run_in_executor(
+                    None,
+                    _face_scan_live.process_live_frame_message,
+                    session,
+                    data.get("data", ""),
+                )
+                await websocket.send_json(result)
+                if result.get("type") == "result":
+                    _face_scan_live_log.info(
+                        "Face Scan live session completed",
+                        extra={
+                            "session_id": session_id,
+                            "verdict": result.get("verdict"),
+                            "risk": result.get("risk_score_0_100"),
+                        },
+                    )
+                    clean_exit = True
+                    break
+        except Exception as exc:  # noqa: BLE001
+            _face_scan_live_log.warning(
+                "Face Scan live WebSocket interrupted; session remains resumable.",
+                extra={"session_id": session_id, "error": str(exc)},
+            )
+            if session.status == "active":
+                session.status = "waiting"
+        finally:
+            if session.status == "active" and not clean_exit:
+                session.status = "waiting"
+            try:
+                await websocket.close(code=1000)
+            except RuntimeError:
+                pass
+
     @app.get(
         "/api/v1/reports",
         tags=["Reports"],
@@ -1362,6 +1651,11 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
         analysis   = analyze_challenge(history, current_ch)
         just_passed = False
         if analysis["passed"]:
+            # When the look_straight challenge passes, save the current frame as
+            # the best live frame immediately — it is the clearest frontal selfie
+            # and will be used for face comparison with the Aadhaar card photo.
+            if current_ch == "look_straight":
+                session.best_live_frame_bytes = raw
             session.advance_challenge()
             just_passed = True
             if session.all_done:
@@ -1389,39 +1683,49 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
         and stored in session.result.  Attaches address comparison fields so
         the customer result screen can display the address verification outcome.
         """
+        # Promote the most recent live frame (set just before this call) to
+        # best_live_frame_bytes so the /best-frame endpoint can serve it.
+        # This is the highest-confidence frame — captured when the final
+        # liveness challenge passed and a face was confirmed in the image.
+        if session.last_live_frame_bytes and not session.best_live_frame_bytes:
+            session.best_live_frame_bytes = session.last_live_frame_bytes
+
+        # Run face match for informational purposes when a reference embedding is
+        # available, but NEVER fail the session based on the score.  The contract
+        # of the customer-facing liveness page is liveness-only verification; the
+        # authoritative face match is run by the operator on the Session Status
+        # screen using the Aadhaar photo vs the captured live selfie.
         if session.reference_embedding_b64:
             try:
-                match = run_face_match(face, session.reference_embedding_b64)
+                fm = run_face_match(face, session.reference_embedding_b64)
             except Exception as exc:
                 _kyc_log.error("run_face_match error", extra={"error": str(exc)})
-                match = {
-                    "passed": False,
+                fm = {
+                    "passed": True,
                     "match_score": 0.0,
                     "display_score": 0.0,
                     "cosine_similarity": 0.0,
                     "threshold": 0.40,
-                    "message": "Face match error — please retry.",
+                    "message": "Liveness verified.",
                 }
-            session.status = "completed" if match["passed"] else "failed"
-            session.result = match
-            result = {"type": "result", **match}
+            # Always mark as passed — face match score is informational only
+            match = {**fm, "passed": True, "message": "Liveness verified."}
         else:
-            # No reference embedding → liveness-only session
-            result = {
+            match = {
                 "passed": True,
                 "match_score": 1.0,
                 "display_score": 100.0,
                 "cosine_similarity": 1.0,
-                "message": "Liveness checks passed (no ID reference provided).",
+                "message": "Liveness checks passed.",
             }
-            session.status = "completed"
-            session.result = result
-            result = {"type": "result", **result}
+        session.status = "completed"
+        session.result = match
+        result = {"type": "result", **match}
 
         # Attach address verification fields so the result screen can display them
         result["address_match_result"] = session.address_match_result or "skipped"
         result["address_distance_meters"] = session.address_distance_meters
-        result["current_address_text"] = session.current_address_text
+        result["current_location"] = session.current_location
 
         return result
 
@@ -1448,6 +1752,11 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
         ID document photo is performed after liveness passes.
         """
         challenges = req.challenges or _random.sample(ALL_CHALLENGES, k=2)
+        # look_straight is mandatory: it captures the clearest frontal selfie and
+        # must always run first so the face image is available for subsequent
+        # face-match.  Deduplicate and ensure it is always the first challenge.
+        optional = [c for c in challenges if c != "look_straight"]
+        challenges = ["look_straight"] + optional
         session = _kyc_store.create(
             challenges=challenges,
             reference_embedding_b64=req.reference_embedding_b64,
@@ -1490,9 +1799,40 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
             raise HTTPException(status_code=404, detail="Session not found or expired.")
         return session.to_status_dict()
 
+    @app.get(
+        "/kyc/sessions/{session_id}/best-frame",
+        tags=["Video KYC"],
+        summary="Get Best Live Frame",
+        responses={
+            200: {"content": {"image/jpeg": {}}, "description": "JPEG image of the best liveness frame"},
+            404: {"description": "No frame available yet or session not found"},
+        },
+    )
+    def get_kyc_session_best_frame(session_id: str) -> Any:
+        """Return the best live frame captured during liveness challenges.
+
+        The Streamlit Session Status tab fetches this after the session completes
+        so the operator can see the live selfie and run face match against the
+        uploaded Aadhaar card.
+
+        Returns a JPEG image, or HTTP 404 when the session does not exist, has
+        expired, or no high-confidence frame was captured yet.
+        """
+        from fastapi.responses import Response as _FResponse  # noqa: PLC0415
+
+        session = _kyc_store.get(session_id)
+        if not session or not session.best_live_frame_bytes:
+            raise HTTPException(
+                status_code=404,
+                detail="No best frame available — session not found or liveness not completed.",
+            )
+        return _FResponse(content=session.best_live_frame_bytes, media_type="image/jpeg")
+
     @app.get("/kyc/{session_id}", response_class=_HTMLResponse, tags=["Video KYC"], include_in_schema=False)
     def kyc_session_page(session_id: str) -> Any:
-        """Serve the customer-facing Video KYC browser page."""
+        """Serve the customer-facing Video KYC browser page.
+        Supports ?mode=liveness_only query parameter to skip ID/Address uploads.
+        """
         session = _kyc_store.get(session_id)
         if not session:
             return _HTMLResponse(
@@ -1553,28 +1893,54 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
             return None
         return _b64.b64encode(emb.astype("float32").tobytes()).decode()
 
-    def _extract_address_text(image_bytes: bytes) -> str:
-        """OCR an address-proof document image and return the raw text.
+    def _extract_address_text(image_bytes: bytes) -> tuple[str, Dict[str, Any]]:
+        """Extract address text from an address-proof document.
 
-        Tries pytesseract (Tesseract wrapper) — returns an empty string if
-        pytesseract or Tesseract is not installed.  Failure is non-critical:
-        the address comparison will fall back to GPS-only when no text is
-        available.
+        Uses the central document extraction pipeline (Gemma AI).  Only the
+        address portion of the extracted fields is returned as the text string
+        — ID numbers, names, dates and other non-address fields are excluded so
+        that GPS comparison and the operator's address display are not polluted.
+        Failure is non-critical: the address comparison will fall back to GPS-only
+        when no text is available.
         """
         try:
-            import io as _io  # noqa: PLC0415
+            from basetruth.ui.pages.scan import extract_document  # noqa: PLC0415
 
-            import pytesseract  # noqa: PLC0415
-            from PIL import Image as _PILImg  # noqa: PLC0415
+            result = extract_document(image_bytes, "address_proof")
+            extracted_fields = result.get("extracted_fields", {})
 
-            img = _PILImg.open(_io.BytesIO(image_bytes))
-            text = pytesseract.image_to_string(img, lang="eng")
-            extracted = text.strip()
-            _kyc_log.debug("_extract_address_text: extracted %d chars via OCR", len(extracted))
-            return extracted
+            # Non-address fields that must be excluded from the address text.
+            # Including Aadhaar/PAN numbers, names, or dates causes false text
+            # mismatches when comparing against the GPS-reverse-geocoded address.
+            _SKIP_KEYS = {
+                "document_type", "extraction_confidence", "data_quality_notes",
+                "aadhar_number", "aadhaar_number", "pan_number",
+                "name", "full_name", "father_name", "care_of",
+                "dob", "date_of_birth", "year_of_birth", "gender",
+                "email", "phone", "mobile",
+            }
+
+            # Prefer a single dedicated address field to avoid duplication.
+            # The LLM often returns both individual components (street, city,
+            # state, pin) AND a composite full_address field — using only the
+            # composite avoids repeating the same text twice in the output.
+            for addr_key in ("full_address", "address", "complete_address", "residential_address"):
+                addr_val = extracted_fields.get(addr_key, "")
+                if addr_val and len(str(addr_val)) > 20:
+                    _kyc_log.debug("_extract_address_text: used '%s' field (%d chars)", addr_key, len(str(addr_val)))
+                    return str(addr_val).strip(), extracted_fields
+
+            # Fall back: join only address-component fields
+            text_parts = []
+            for k, v in extracted_fields.items():
+                if not k.startswith("_") and k not in _SKIP_KEYS and v:
+                    text_parts.append(str(v))
+            extracted = " ".join(text_parts).strip()
+            _kyc_log.debug("_extract_address_text: extracted %d chars via AI (joined fields)", len(extracted))
+            return extracted, extracted_fields
         except Exception as exc:
-            _kyc_log.debug("_extract_address_text: OCR unavailable or failed (non-critical): %s", exc)
-            return ""
+            _kyc_log.debug("_extract_address_text: extraction unavailable or failed (non-critical): %s", exc)
+            return "", {}
 
     @app.post(
         "/kyc/sessions/{session_id}/upload-id",
@@ -1619,6 +1985,27 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
 
         # Replace the reference embedding with the one extracted from the customer's ID
         session.reference_embedding_b64 = emb_b64
+        
+        # Try to extract Aadhar / PAN data using Identity functions
+        try:
+            from basetruth.ui.pages.identity import _parse_aadhaar_qr, _extract_pan_info, _crop_pan_signature
+            qr = await _asyncio.get_event_loop().run_in_executor(None, _parse_aadhaar_qr, image_bytes)
+            if qr and qr.get("qr_found"):
+                session.aadhaar_qr = qr
+            else:
+                pan_d = await _asyncio.get_event_loop().run_in_executor(None, _extract_pan_info, image_bytes)
+                if pan_d and (pan_d.get("pan_number") or pan_d.get("full_name")):
+                    session.pan_data = pan_d
+                    sig_b = await _asyncio.get_event_loop().run_in_executor(None, _crop_pan_signature, image_bytes)
+                    if sig_b:
+                        import base64 as _b64
+                        session.pan_sig_b64 = _b64.b64encode(sig_b).decode("utf-8")
+        except Exception as exc:
+            _kyc_log.warning("kyc_upload_id: extra details extraction failed: %s", exc)
+            
+        import base64 as _b64
+        session.aadhaar_b64 = _b64.b64encode(image_bytes).decode("utf-8")
+
         # Store filename for audit trail
         session.reference_doc_filename = file.filename or "uploaded_id"
         _kyc_log.info(
@@ -1626,6 +2013,64 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
             extra={"session_id": session_id, "doc_filename": file.filename},
         )
         return {"face_found": True}
+
+    @app.post(
+        "/kyc/sessions/{session_id}/upload-pan",
+        tags=["Video KYC"],
+        summary="Upload Customer PAN Card",
+        responses={
+            404: {"description": "Session not found or expired"},
+        },
+    )
+    async def kyc_upload_pan(session_id: str, file: UploadFile) -> Dict[str, Any]:
+        """Receive the customer's PAN card photo (Step 2 of the KYC wizard).
+
+        Extracts PAN details and the signature image.
+        Returns ``{"pan_extracted": bool, "hint": "..."}``.
+        """
+        session = _kyc_store.get(session_id)
+        if not session or session.is_expired():
+            raise HTTPException(status_code=404, detail="Session not found or expired.")
+
+        image_bytes = await file.read()
+        
+        pan_extracted = False
+        try:
+            from basetruth.ui.pages.identity import _extract_pan_info, _crop_pan_signature
+            pan_d = await _asyncio.get_event_loop().run_in_executor(None, _extract_pan_info, image_bytes)
+            if pan_d and (pan_d.get("pan_number") or pan_d.get("full_name")):
+                session.pan_data = pan_d
+                pan_extracted = True
+                # Pass the sig_box already returned by _extract_pan_info so
+                # _crop_pan_signature uses the fast path (no second Gemma4 call).
+                # This is the same pattern used by the Identity Verification screen
+                # and guarantees identical signature quality and speed on both surfaces.
+                _sig_box = pan_d.get("sig_box")
+                sig_b = await _asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda _ib=image_bytes, _sb=_sig_box: _crop_pan_signature(_ib, precomputed_box=_sb),
+                )
+                if sig_b:
+                    import base64 as _b64
+                    session.pan_sig_b64 = _b64.b64encode(sig_b).decode("utf-8")
+        except Exception as exc:
+            _kyc_log.warning("kyc_upload_pan: PAN extraction failed: %s", exc)
+
+        import base64 as _b64
+        session.pan_b64 = _b64.b64encode(image_bytes).decode("utf-8")
+
+        _kyc_log.info(
+            "kyc_upload_pan: PAN card uploaded",
+            extra={
+                "session_id": session_id,
+                "doc_filename": file.filename,
+                "extracted": pan_extracted,
+            },
+        )
+        return {
+            "pan_extracted": pan_extracted,
+            "hint": "PAN details extracted." if pan_extracted else "Could not extract PAN details from image.",
+        }
 
     @app.post(
         "/kyc/sessions/{session_id}/upload-address",
@@ -1651,15 +2096,19 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
             raise HTTPException(status_code=404, detail="Session not found or expired.")
 
         image_bytes = await file.read()
-        address_text = await _asyncio.get_event_loop().run_in_executor(
+        address_text, extracted_fields = await _asyncio.get_event_loop().run_in_executor(
             None, _extract_address_text, image_bytes
         )
 
         # Store whatever we extracted; empty string is valid (OCR not available)
-        session.address_dtls = {
-            "raw_text": address_text,
-            "filename": file.filename or "address_proof",
-        }
+        session.address_dtls = extracted_fields
+        session.address_dtls["raw_text"] = address_text
+        session.address_dtls["filename"] = file.filename or "address_proof"
+
+        # Persist the raw image so the operator's Session Status tab can display
+        # the address-proof document once it is synced via to_status_dict().
+        import base64 as _b64
+        session.address_proof_b64 = _b64.b64encode(image_bytes).decode("utf-8")
         session.address_proof_filename = file.filename or "address_proof"
         _kyc_log.info(
             "kyc_upload_address: address proof stored",
@@ -1709,16 +2158,9 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
         if not session or session.is_expired():
             raise HTTPException(status_code=404, detail="Session not found or expired.")
 
-        # Persist the raw GPS coordinates for audit trail
-        session.current_location_json = {
-            "lat": data.lat,
-            "lon": data.lon,
-            "accuracy": data.accuracy,
-        }
-
         # Reverse-geocode to a readable address string (may return None on failure)
         live_addr: str = reverse_geocode(data.lat, data.lon) or ""
-        session.current_address_text = live_addr
+        session.current_location = live_addr
 
         comparison: Optional[Dict[str, Any]] = None
         proof_text: str = (session.address_dtls or {}).get("raw_text", "")

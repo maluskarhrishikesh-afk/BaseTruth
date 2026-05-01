@@ -46,30 +46,40 @@ The following areas are high-priority and should always gain or keep unit covera
    - `src/basetruth/kyc/session.py`
    - challenge pass/fail rules, expiry handling, and face-match edge cases
 
-2. **Deterministic identity checks**
+2. **Face Scan decision logic**
+   - `src/basetruth/face_scan/service.py`
+   - `src/basetruth/face_scan/live.py`
+   - static authenticity heuristics
+   - live session contract shaping
+   - temporal consistency and replay-heuristic scoring
+   - verdict mapping
+   - confidence-score mapping
+   - API contract shaping for `/api/v1/face-scan` and `/api/v1/face-scan/sessions`
+
+3. **Deterministic identity checks**
    - name comparison
    - DOB comparison
    - PAN validation and interpretation
 
-3. **Persistence and upsert logic**
+4. **Persistence and upsert logic**
    - `save_identity_verification_check()` / `save_video_kyc_check()`
    - `save_scan_to_db()`
    - one-row-per-entity upsert rules for `identity_checks` and `video_kyc_checks`
    - document extraction upsert rules for Scan Document and Bulk Scan only
    - visible failure handling for DB/MinIO writes
 
-4. **Schema and migration logic**
+5. **Schema and migration logic**
    - split-table creation and backfill from legacy `identity_checks` rows
    - removal of the `check_type` dependency
    - PDF-report path migration to MinIO-key storage for identity flows
 
-5. **Validation packs and scoring rules**
+6. **Validation packs and scoring rules**
    - arithmetic checks
    - required-field checks
    - fraud signal generation
    - ML/heuristic fallback behaviour
 
-6. **Routing and fallback logic**
+7. **Routing and fallback logic**
    - OCR/document-type routing
    - structured-vs-image branching
    - offline fallback paths when Ollama, DB, or MinIO are unavailable
@@ -143,6 +153,12 @@ python -m pytest tests/test_kyc_liveness.py -q --tb=short
 
 ```powershell
 python -m pytest tests/test_kyc_liveness.py tests/test_kyc_session.py -q --tb=short
+```
+
+### Focused Face Scan tests
+
+```powershell
+python -m pytest tests/test_face_scan_service.py tests/test_face_scan_api.py tests/test_face_scan_live.py -q --tb=short
 ```
 
 ### Full suite

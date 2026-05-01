@@ -178,8 +178,8 @@ def get_mediapipe_faces(img_bgr: np.ndarray) -> list:
         pts = np.array([[lm.x * w, lm.y * h] for lm in lm_list], dtype=np.float32)
 
         # 5-point kps matching InsightFace order:
-        #   kps[0] = image-left eye  (subject's right in a mirrored webcam)
-        #   kps[1] = image-right eye (subject's left  in a mirrored webcam)
+        #   kps[0] = image-left eye  (subject's LEFT in a mirrored frame sent by browser)
+        #   kps[1] = image-right eye (subject's RIGHT in a mirrored frame sent by browser)
         #   kps[2] = nose tip
         #   kps[3] = mouth left corner
         #   kps[4] = mouth right corner
@@ -208,9 +208,14 @@ def get_mediapipe_faces(img_bgr: np.ndarray) -> list:
             blink_l = bs_map.get("eyeBlinkLeft", None)
             blink_r = bs_map.get("eyeBlinkRight", None)
             if blink_l is not None and blink_r is not None:
-                # Convert blink score (0=open, 1=closed) to EAR-like value
-                # EAR open ≈ 0.30, closed ≈ 0.03 → EAR = 0.30 * (1 - blink_score)
-                ear = 0.30 * (1.0 - (blink_l + blink_r) / 2.0)
+                # Convert blink score (0=open, 1=closed) to EAR-like value.
+                # Blendshape score is 0 for open eyes, 1 for fully closed.
+                # We map it so that:
+                #   open  (blink≈0.0) → EAR ≈ 0.35 (clearly above the 0.18 open threshold)
+                #   blink (blink≈0.7+) → EAR ≈ 0.07 (clearly below the 0.15 closed threshold)
+                # Formula: EAR = 0.35 * (1 - blink_avg)
+                blink_avg = (blink_l + blink_r) / 2.0
+                ear = 0.35 * (1.0 - blink_avg)
 
         faces.append(_MediaPipeFace(kps=kps, bbox=bbox, ear=ear))
 
@@ -305,3 +310,14 @@ def compare_faces(document_bytes: bytes, selfie_bytes: bytes) -> Dict[str, Any]:
     except Exception as exc:
         log.exception("compare_faces encounted an error: %s", exc)
         return {"error": str(exc)}
+
+def analyze_face(image_bytes: bytes, filename: str) -> Dict[str, Any]:
+    """Compatibility wrapper for the dedicated Face Scan service.
+
+    Older callers still import ``analyze_face`` from this module. We delegate to
+    the new Face Scan service so the static contract stays consistent across the
+    UI and the REST API.
+    """
+    from basetruth.face_scan.service import run_face_scan_static  # noqa: PLC0415
+
+    return run_face_scan_static(image_bytes, filename)

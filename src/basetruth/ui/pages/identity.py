@@ -56,6 +56,86 @@ _PAN_ENTITY_TYPES = {
 # ---------------------------------------------------------------------------
 
 
+def render_aadhaar_qr_fields(qr: Dict[str, Any]) -> None:
+    """Render all fields extracted from an Aadhaar QR decode result.
+
+    Shared by the Identity Verification screen and the Video KYC Session
+    Status tab so both surfaces always display the same set of fields in
+    the same format.  Call this function after checking qr_found is True
+    and qr_type is not 'secure'.
+    """
+    import streamlit as _st  # noqa: PLC0415  (local import avoids circular deps)
+
+    _st.markdown(
+        f"**UID:** {qr.get('uid', '\u2014')}  \n"
+        f"**Full Name:** {qr.get('name', '\u2014')}  \n"
+        f"**DOB/YOB:** {qr.get('dob') or qr.get('yob', '\u2014')}  \n"
+        f"**Gender (M/F/T):** {qr.get('gender', '\u2014')}  \n"
+        f"**Care of (typically Father or Husband's name): S/O:** {qr.get('co', '\u2014')}  \n"
+        f"**VTC (Village/Town/City):** {qr.get('vtc', '\u2014')}  \n"
+        f"**District:** {qr.get('dist', '\u2014')}  \n"
+        f"**State:** {qr.get('state', '\u2014')}  \n"
+        f"**PIN Code:** {qr.get('pc', '\u2014')}"
+    )
+
+
+def render_pan_fields(pan_data: Dict[str, Any], sig_bytes: "bytes | None" = None) -> None:
+    """Render all fields extracted from a PAN card.
+
+    Shared by the Identity Verification screen and the Video KYC Session
+    Status tab so both surfaces always display the same set of fields in
+    the same format.  Accepts the dict returned by ``_extract_pan_info``
+    and optional raw bytes for the signature crop from ``_crop_pan_signature``.
+    """
+    import streamlit as _st  # noqa: PLC0415
+
+    # Nothing useful to show if the dict is empty
+    if not pan_data:
+        return
+
+    any_field = any(
+        pan_data.get(f) for f in ("pan_number", "full_name", "name", "father_name", "date_of_birth")
+    )
+    if any_field:
+        _st.success("PAN decoded successfully")
+
+    pan_num = (pan_data.get("pan_number") or "").strip().upper()
+    if pan_num:
+        # Validate format and derive entity type (individual / company / etc.)
+        pv = _validate_pan(pan_num)
+        if pv["valid"]:
+            _st.markdown(
+                f"**PAN:** {pan_num}  \n"
+                f"**Entity type:** {pv.get('entity_type', '')}"
+            )
+        else:
+            _st.warning(f"PAN read: `{pan_num}` — {pv.get('error', '')}")
+    else:
+        _st.info("PAN number not detected. Enter it manually if needed.")
+
+    full_name = pan_data.get("full_name") or pan_data.get("name", "")
+    if full_name:
+        _st.markdown(f"**Full Name:** {full_name}")
+
+    if pan_data.get("father_name"):
+        _st.markdown(
+            f"**Care of (typically Father or Husband's name): S/O:** "
+            f"{pan_data['father_name']}"
+        )
+
+    dob = pan_data.get("date_of_birth") or pan_data.get("dob", "")
+    if dob:
+        _st.markdown(f"**DOB/YOB:** {dob}")
+
+    if sig_bytes:
+        _st.markdown("**✍️ Signature (extracted):**")
+        # Fixed width keeps the signature at a realistic size rather than
+        # stretching it to fill the full column.
+        _st.image(sig_bytes, caption="PAN card signature", use_container_width=False)
+    elif any_field:
+        _st.caption("Signature could not be extracted from this image.")
+
+
 def _parse_aadhaar_qr(img_bytes: bytes) -> Dict[str, Any]:
     """Decode the QR code on an Aadhaar card and return extracted fields.
 
@@ -1240,17 +1320,7 @@ def _page_identity_verification() -> None:
                         st.success("Aadhaar details extracted via Gamma4 fallback")
                     else:
                         st.success("QR decoded successfully")
-                    st.markdown(
-                        f"**UID:** {_aq.get('uid', '—')}  \n"
-                        f"**Full Name:** {_aq.get('name', '—')}  \n"
-                        f"**DOB/YOB:** {_aq.get('dob') or _aq.get('yob', '—')}  \n"
-                        f"**Gender (M/F/T):** {_aq.get('gender', '—')}  \n"
-                        f"**Care of (typically Father or Husband's name):** {_aq.get('co', '—')}  \n"
-                        f"**VTC (Village/Town/City):** {_aq.get('vtc', '—')}  \n"
-                        f"**District:** {_aq.get('dist', '—')}  \n"
-                        f"**State:** {_aq.get('state', '—')}  \n"
-                        f"**PIN Code:** {_aq.get('pc', '—')}"
-                    )
+                    render_aadhaar_qr_fields(_aq)
                     st.caption("Aadhaar looks good")
                 elif _aq.get("qr_type") == "secure":
                     st.info(_aq.get("note", "Secure QR detected."))
@@ -1572,43 +1642,14 @@ def _page_identity_verification() -> None:
                 st.success("Aadhaar details extracted via Gamma4 fallback")
             else:
                 st.success("QR decoded successfully")
-            st.markdown(
-                f"**UID:** {aadhaar_qr.get('uid', '—')}  \n"
-                f"**Full Name:** {aadhaar_qr.get('name', '—')}  \n"
-                f"**DOB/YOB:** {aadhaar_qr.get('dob') or aadhaar_qr.get('yob', '—')}  \n"
-                f"**Gender:** {aadhaar_qr.get('gender', '—')}  \n"
-                f"**Care of (C/O):** {aadhaar_qr.get('co', '—')}  \n"
-                f"**VTC:** {aadhaar_qr.get('vtc', '—')}  \n"
-                f"**District:** {aadhaar_qr.get('dist', '—')}  \n"
-                f"**State:** {aadhaar_qr.get('state', '—')}  \n"
-                f"**PIN Code:** {aadhaar_qr.get('pc', '—')}"
-            )
+            render_aadhaar_qr_fields(aadhaar_qr)
             st.caption("Aadhaar looks good")
         elif aadhaar_qr.get("qr_type") == "secure":
             st.info(aadhaar_qr.get("note", "Secure Aadhaar QR detected."))
         elif aadhaar_qr.get("qr_found") is False:
             st.warning("No Aadhaar QR code detected in the captured photo.")
     if _is_cam_pan:
-        if pan_data.get("pan_number"):
-            if pan_validation.get("valid"):
-                st.success("PAN decoded successfully")
-                st.markdown(
-                    f"**PAN:** {pan_data['pan_number']}  \n"
-                    f"**Entity type:** {pan_validation.get('entity_type', '')}"
-                )
-            else:
-                st.warning(f"PAN read: `{pan_data['pan_number']}` — {pan_validation.get('error', '')}")
-        if pan_data.get("full_name") or pan_data.get("name"):
-            st.markdown(f"**Full name on PAN:** {pan_data.get('full_name') or pan_data.get('name')}")
-        if pan_data.get("father_name"):
-            st.markdown(
-                f"**Care of (typically Father or Husband's name): S/O:** "
-                f"{pan_data['father_name']}"
-            )
-        if pan_data.get("date_of_birth"):
-            st.markdown(f"**Date of birth:** {pan_data['date_of_birth']}")
-        elif any(pan_data.get(field) for field in ("full_name", "father_name", "date_of_birth")):
-            st.info("PAN details were partially extracted. Review the fields below and enter PAN manually if needed.")
+        render_pan_fields(pan_data)
 
     # ── Step 2 — Document Cross-Checks and PAN Layers ─────────────────────
     if aadhaar_file or pan_file:

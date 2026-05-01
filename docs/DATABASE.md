@@ -214,7 +214,7 @@ Stores the current Identity Verification result for one entity. This tells you w
 ### `video_kyc_checks`
 
 **What is it used for?**
-Stores the current Video KYC result for one entity. This tells you whether the applicant passed liveness, matched the live face against the uploaded proof document, and matched the current location against the address proof.
+Stores the current Video KYC result for one entity. This tells you whether the applicant passed liveness, matched the live face against the uploaded proof document, and matched the current location against the address proof. The 2026 enriched schema stores Aadhaar QR, PAN extraction, and separate image columns — mirroring the `identity_checks` structure.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -227,21 +227,26 @@ Stores the current Video KYC result for one entity. This tells you whether the a
 | `is_match` | BOOLEAN | Live-face match result |
 | `liveness_state` | VARCHAR(50) | Final / latest liveness state |
 | `liveness_passed` | BOOLEAN | Liveness result |
-| `identity_dtls` | JSONB | Reference identity-proof payload |
+| `aadhar_dtls` | JSONB | Aadhaar QR decoded payload (name, dob, gender, uid, state, pc) |
+| `pan_dtls` | JSONB | PAN card extraction payload (pan_number, full_name, father_name, dob) |
 | `address_dtls` | JSONB | Address-proof payload |
-| `isAddressMatch` | VARCHAR(20) | `yes`, `no`, or `inconclusive` |
+| `isAddressMatch` | VARCHAR(20) | `match`, `mismatch`, `partial`, or `skipped` |
 | `kyc_comments` | VARCHAR(500) | System/operator note for mismatch or distance context |
 | `current_location_json` | JSONB | Browser latitude/longitude/accuracy/timestamp payload |
 | `current_address_text` | TEXT | Reverse-geocoded current address |
 | `address_distance_meters` | FLOAT | Distance between current location and proof address |
 | `video_kyc_pic` | VARCHAR(500) | MinIO object key for the best live frame |
 | `address_proof_pic` | VARCHAR(500) | MinIO object key for the address-proof upload |
-| `reference_doc_pic` | VARCHAR(500) | MinIO object key for the reference identity document |
+| `aadhaar_pic` | VARCHAR(500) | MinIO object key for the Aadhaar card image |
+| `pan_pic` | VARCHAR(500) | MinIO object key for the PAN card image |
+| `signature_pic` | VARCHAR(500) | MinIO object key for the PAN signature crop |
 | `challenge_snapshots_json` | JSONB | Metadata for one best retained frame per completed challenge |
 | `report_json` | JSONB | Full Video KYC payload |
 | `pdf_report` | VARCHAR(500) | MinIO object key for the current PDF report |
 | `created_at` | TIMESTAMPTZ | Save timestamp |
 | `updated_at` | TIMESTAMPTZ | Last update timestamp |
+| `identity_dtls` | JSONB | Legacy: alias for `aadhar_dtls` (kept for backward compat) |
+| `reference_doc_pic` | VARCHAR(500) | Legacy: superseded by `aadhaar_pic` / `pan_pic` |
 
 **Operational UPSERT key:**
 - `(entity_id)`

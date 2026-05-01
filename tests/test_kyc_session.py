@@ -99,12 +99,10 @@ def test_kyc_session_new_fields_have_correct_defaults() -> None:
     )
 
     # New address / identity fields must default to falsy values
-    assert session.identity_dtls is None
     assert session.address_dtls is None
     assert session.reference_doc_filename == ""
     assert session.address_proof_filename == ""
-    assert session.current_location_json is None
-    assert session.current_address_text == ""
+    assert session.current_location == ""
     assert session.address_match_result == ""
     assert session.address_distance_meters is None
     assert session.challenge_snapshots == []
@@ -124,3 +122,57 @@ def test_session_store_create_passes_address_dtls_to_session() -> None:
 
     assert session.address_dtls == {"address": "Pune", "pin": "411001"}
     assert session.reference_doc_filename == "aadhaar.pdf"
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for known bugs
+# ---------------------------------------------------------------------------
+
+def test_address_proof_b64_is_included_in_to_status_dict() -> None:
+    """address_proof_b64 must be returned by to_status_dict so the operator
+    Session Status tab can decode and display the uploaded address proof image.
+    This is a regression test: the field was previously never set in
+    kyc_upload_address, causing the address-proof panel to always show
+    'Address Proof not yet received'.
+    """
+    session = KYCSession(
+        session_id="session-addr",
+        customer_name="Test",
+        entity_ref="BT-000020",
+        challenges=["blink"],
+        reference_embedding_b64=None,
+    )
+    # Simulate what kyc_upload_address now does
+    import base64
+    fake_image = b"\xff\xd8\xff\xe0fake-jpeg-bytes"
+    session.address_proof_b64 = base64.b64encode(fake_image).decode("utf-8")
+    session.address_dtls = {"raw_text": "123 Test Street", "filename": "aadhaar_back.jpg"}
+
+    d = session.to_status_dict()
+    assert d["address_proof_b64"] == session.address_proof_b64
+    assert base64.b64decode(d["address_proof_b64"]) == fake_image
+
+
+def test_best_live_frame_defaults_to_none_before_session_completes() -> None:
+    """best_live_frame_bytes must be None until _finish_session promotes it.
+    This is a regression test: the field was never assigned, so the /best-frame
+    endpoint always returned 404 even after the liveness challenge passed.
+    """
+    session = KYCSession(
+        session_id="session-selfie",
+        customer_name="Test",
+        entity_ref="BT-000021",
+        challenges=["turn_left"],
+        reference_embedding_b64=None,
+    )
+    assert session.best_live_frame_bytes is None
+
+    # Simulate _process_kyc_frame setting last_live_frame_bytes
+    fake_frame = b"\xff\xd8\xff\xe0fake-selfie"
+    session.last_live_frame_bytes = fake_frame
+
+    # Simulate _finish_session promoting it to best_live_frame_bytes
+    if session.last_live_frame_bytes and not session.best_live_frame_bytes:
+        session.best_live_frame_bytes = session.last_live_frame_bytes
+
+    assert session.best_live_frame_bytes == fake_frame

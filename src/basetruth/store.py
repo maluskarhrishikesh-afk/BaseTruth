@@ -1760,23 +1760,41 @@ def save_video_kyc_check(
     pdf_bytes: Optional[bytes] = None,
     doc_bytes: Optional[bytes] = None,
     selfie_bytes: Optional[bytes] = None,
+    aadhar_dtls: Optional[Dict[str, Any]] = None,
+    pan_dtls: Optional[Dict[str, Any]] = None,
+    aadhaar_bytes: Optional[bytes] = None,
+    aadhaar_filename: str = "",
+    pan_bytes: Optional[bytes] = None,
+    pan_filename: str = "",
+    pan_signature_bytes: Optional[bytes] = None,
+    address_proof_bytes: Optional[bytes] = None,
+    address_proof_filename: str = "",
 ) -> Optional[Dict[str, Any]]:
     """Persist a Video KYC session result to the DB.
 
     Writes one row to ``video_kyc_checks`` per entity (upsert).
     Identity and address proof fields are stored as JSONB columns
-    (``identity_dtls`` / ``address_dtls``) so they are available for
-    downstream review without touching ``document_extractions``.
+    (``aadhar_dtls`` / ``pan_dtls`` / ``address_dtls``) so they are
+    available for downstream review without touching ``document_extractions``.
 
     Parameters
     ----------
-    result:            Full KYC result dict (is_match, liveness_passed, etc.).
-    forced_entity_ref: Explicit entity to link to.
-    extra_identity:    Operator-supplied identity fields.
-    doc_filename:      Reference ID document filename.
-    pdf_bytes:         PDF report bytes — uploaded to MinIO, key stored in DB.
-    doc_bytes:         Reference document image bytes — uploaded to MinIO.
-    selfie_bytes:      Live frame / selfie bytes — uploaded to MinIO.
+    result:               Full KYC result dict (is_match, liveness_passed, etc.).
+    forced_entity_ref:    Explicit entity to link to.
+    extra_identity:       Operator-supplied identity fields.
+    doc_filename:         Reference ID document filename.
+    pdf_bytes:            PDF report bytes — uploaded to MinIO, key stored in DB.
+    doc_bytes:            Reference document image bytes (legacy, for session reference).
+    selfie_bytes:         Live frame / selfie bytes from liveness challenge.
+    aadhar_dtls:          Aadhaar QR decoded payload dict.
+    pan_dtls:             PAN card extraction payload dict.
+    aadhaar_bytes:        Aadhaar card image bytes — uploaded to MinIO as aadhaar_pic.
+    aadhaar_filename:     Original filename of the Aadhaar card image.
+    pan_bytes:            PAN card image bytes — uploaded to MinIO as pan_pic.
+    pan_filename:         Original filename of the PAN card image.
+    pan_signature_bytes:  PAN signature crop bytes — uploaded to MinIO as signature_pic.
+    address_proof_bytes:  Address proof image bytes — uploaded to MinIO as address_proof_pic.
+    address_proof_filename: Original filename of the address proof image.
     """
     try:
         with db_session() as session:
@@ -1822,6 +1840,20 @@ def save_video_kyc_check(
                     .first()
                 )
 
+            # Resolve enriched document payloads — prefer explicitly passed values,
+            # fall back to embedded keys in the result dict for backward compat.
+            resolved_aadhar_dtls = aadhar_dtls or result.get("aadhar_dtls")
+            resolved_pan_dtls    = pan_dtls or result.get("pan_dtls")
+            resolved_addr_dtls   = result.get("address_dtls")
+            # Strip internal session-only metadata keys (raw_text and filename are used
+            # for in-session GPS comparison but must not pollute the DB column — only
+            # the clean extracted document fields should be stored).
+            if resolved_addr_dtls:
+                resolved_addr_dtls = {
+                    k: v for k, v in resolved_addr_dtls.items()
+                    if k not in ("raw_text", "filename")
+                }
+
             if row is None:
                 row = VideoKYCCheck(
                     entity_id=entity_id,
@@ -1832,30 +1864,47 @@ def save_video_kyc_check(
                     is_match=is_match,
                     liveness_state=result.get("liveness_state"),
                     liveness_passed=liveness,
-                    identity_dtls=_json_ready(result.get("identity_dtls") or {}),
-                    address_dtls=_json_ready(result.get("address_dtls") or {}),
+                    # New structured doc columns (mirror identity_checks)
+                    aadhar_dtls=_json_ready(resolved_aadhar_dtls or {}),
+                    pan_dtls=_json_ready(resolved_pan_dtls or {}),
+                    address_dtls=_json_ready(resolved_addr_dtls or {}),
+                    isAddressMatch=result.get("isAddressMatch", "skipped"),
+                    kyc_comments=result.get("kyc_comments", ""),
+                    current_location=result.get("current_location", ""),
+                    address_distance_meters=result.get("address_distance_meters"),
                     verdict=verdict,
                     report_json=_json_ready(result),
                     pdf_report="",
                 )
                 session.add(row)
             else:
-                row.entity_id        = entity_id
-                row.status           = status
-                row.cosine_similarity= result.get("cosine_similarity") or result.get("confidence")
-                row.display_score    = result.get("display_score")
-                row.threshold        = result.get("threshold", 0.40)
-                row.is_match         = is_match
-                row.liveness_state   = result.get("liveness_state")
-                row.liveness_passed  = liveness
-                row.verdict          = verdict
-                row.report_json      = _json_ready(result)
-                row.updated_at       = datetime.now(timezone.utc)  # type: ignore[assignment]
-                # Preserve existing address/identity details unless new ones supplied
-                if result.get("identity_dtls"):
-                    row.identity_dtls = _json_ready(result["identity_dtls"])
-                if result.get("address_dtls"):
-                    row.address_dtls  = _json_ready(result["address_dtls"])
+                row.entity_id         = entity_id
+                row.status            = status
+                row.cosine_similarity = result.get("cosine_similarity") or result.get("confidence")
+                row.display_score     = result.get("display_score")
+                row.threshold         = result.get("threshold", 0.40)
+                row.is_match          = is_match
+                row.liveness_state    = result.get("liveness_state")
+                row.liveness_passed   = liveness
+                row.verdict           = verdict
+                row.report_json       = _json_ready(result)
+                row.updated_at        = datetime.now(timezone.utc)  # type: ignore[assignment]
+                # Update structured doc payloads when new data is supplied
+                if resolved_aadhar_dtls:
+                    row.aadhar_dtls   = _json_ready(resolved_aadhar_dtls)
+                if resolved_pan_dtls:
+                    row.pan_dtls      = _json_ready(resolved_pan_dtls)
+                if resolved_addr_dtls:
+                    row.address_dtls  = _json_ready(resolved_addr_dtls)
+                # Update address comparison fields when present in result
+                if result.get("isAddressMatch"):
+                    row.isAddressMatch = result["isAddressMatch"]
+                if result.get("kyc_comments"):
+                    row.kyc_comments   = result["kyc_comments"]
+                if result.get("current_location"):
+                    row.current_location  = result["current_location"]
+                if result.get("address_distance_meters") is not None:
+                    row.address_distance_meters = result["address_distance_meters"]
 
             # Remove stale duplicate rows for this entity
             if entity_id is not None:
@@ -1906,6 +1955,43 @@ def save_video_kyc_check(
                     except Exception:
                         log.warning("save_video_kyc_check: live frame upload failed", exc_info=True)
 
+                # ── New enriched images ───────────────────────────────────────────
+                if aadhaar_bytes and aadhaar_filename:
+                    try:
+                        aadhaar_key = f"{entity_ref}/vkyc_{Path(aadhaar_filename).name}"
+                        minio_upload(aadhaar_key, aadhaar_bytes, "application/octet-stream")
+                        row.aadhaar_pic = aadhaar_key
+                        session.flush()
+                    except Exception:
+                        log.warning("save_video_kyc_check: Aadhaar image upload failed", exc_info=True)
+
+                if pan_bytes and pan_filename:
+                    try:
+                        pan_key = f"{entity_ref}/vkyc_{Path(pan_filename).name}"
+                        minio_upload(pan_key, pan_bytes, "application/octet-stream")
+                        row.pan_pic = pan_key
+                        session.flush()
+                    except Exception:
+                        log.warning("save_video_kyc_check: PAN image upload failed", exc_info=True)
+
+                if pan_signature_bytes:
+                    try:
+                        sig_key = f"{entity_ref}/vkyc_signature_crop.jpg"
+                        minio_upload(sig_key, pan_signature_bytes, "image/jpeg")
+                        row.signature_pic = sig_key
+                        session.flush()
+                    except Exception:
+                        log.warning("save_video_kyc_check: signature upload failed", exc_info=True)
+
+                if address_proof_bytes and address_proof_filename:
+                    try:
+                        addr_key = f"{entity_ref}/vkyc_{Path(address_proof_filename).name}"
+                        minio_upload(addr_key, address_proof_bytes, "application/octet-stream")
+                        row.address_proof_pic = addr_key
+                        session.flush()
+                    except Exception:
+                        log.warning("save_video_kyc_check: address proof upload failed", exc_info=True)
+
             saved = {
                 "id": row.id,
                 "entity_ref": entity_ref,
@@ -1955,15 +2041,18 @@ def get_entity_video_kyc_checks(entity_ref: str) -> List[Dict[str, Any]]:
                     "liveness_state": c.liveness_state,
                     "liveness_passed": c.liveness_passed,
                     "verdict": c.verdict or "",
-                    "identity_dtls": c.identity_dtls or {},
+                    # Enriched document columns
+                    "aadhar_dtls": c.aadhar_dtls or {},
+                    "pan_dtls": c.pan_dtls or {},
+                    "aadhaar_pic": c.aadhaar_pic or "",
+                    "pan_pic": c.pan_pic or "",
+                    "signature_pic": c.signature_pic or "",
                     "address_dtls": c.address_dtls or {},
                     "video_kyc_pic": c.video_kyc_pic or "",
                     "address_proof_pic": c.address_proof_pic or "",
-                    "reference_doc_pic": c.reference_doc_pic or "",
                     "isAddressMatch": c.isAddressMatch or "skipped",
                     "kyc_comments": c.kyc_comments or "",
-                    "current_location_json": c.current_location_json or {},
-                    "current_address_text": c.current_address_text or "",
+                    "current_location": c.current_location or "",
                     "address_distance_meters": c.address_distance_meters,
                     "report_json": c.report_json or {},
                     "pdf_report": c.pdf_report or "",
@@ -1988,6 +2077,13 @@ def save_identity_check(
     pan_filename: str = "",
     pan_bytes: Optional[bytes] = None,
     pan_signature_bytes: Optional[bytes] = None,
+    # Video KYC enriched params (ignored when check_type is not 'video_kyc')
+    aadhar_dtls: Optional[Dict[str, Any]] = None,
+    pan_dtls: Optional[Dict[str, Any]] = None,
+    aadhaar_bytes: Optional[bytes] = None,
+    aadhaar_filename: str = "",
+    address_proof_bytes: Optional[bytes] = None,
+    address_proof_filename: str = "",
 ) -> Optional[Dict[str, Any]]:
     """Backward-compatible shim that routes to the correct specialised save function.
 
@@ -2007,6 +2103,15 @@ def save_identity_check(
             pdf_bytes=pdf_bytes,
             doc_bytes=doc_bytes,
             selfie_bytes=selfie_bytes,
+            aadhar_dtls=aadhar_dtls,
+            pan_dtls=pan_dtls,
+            aadhaar_bytes=aadhaar_bytes,
+            aadhaar_filename=aadhaar_filename,
+            pan_bytes=pan_bytes,
+            pan_filename=pan_filename,
+            pan_signature_bytes=pan_signature_bytes,
+            address_proof_bytes=address_proof_bytes,
+            address_proof_filename=address_proof_filename,
         )
     # Default to identity verification (face_match) path
     return save_identity_verification_check(
@@ -2148,15 +2253,21 @@ def db_table_rows(table: str, limit: int = 500) -> tuple[List[Dict[str, Any]], i
                     {"lim": limit},
                 ).mappings().all()
             elif table == "video_kyc_checks":
+                # NOTE: "isAddressMatch" must be double-quoted — it was created with a
+                # mixed-case quoted identifier, so PostgreSQL requires the quotes to
+                # match. Unquoted, it folds to lowercase and raises UndefinedColumn.
                 rows_raw = session.execute(
                     text(
-                        "SELECT id, entity_id, status, cosine_similarity, "
-                        "display_score, threshold, is_match, liveness_state, "
-                        "liveness_passed, verdict, video_kyc_pic, address_proof_pic, "
-                        "reference_doc_pic, isAddressMatch, kyc_comments, "
-                        "current_address_text, address_distance_meters, "
-                        "identity_dtls, address_dtls, pdf_report, created_at "
-                        "FROM video_kyc_checks ORDER BY created_at DESC LIMIT :lim"
+                        'SELECT id, entity_id, status, cosine_similarity, '
+                        'display_score, threshold, is_match, liveness_state, '
+                        'liveness_passed, verdict, video_kyc_pic, address_proof_pic, '
+                        'aadhaar_pic, pan_pic, signature_pic, '
+                        '"isAddressMatch", kyc_comments, '
+                        'current_location, address_distance_meters, '
+                        'aadhar_dtls, pan_dtls, address_dtls, '
+                        'challenge_snapshots_json, '
+                        'pdf_report, created_at '
+                        'FROM video_kyc_checks ORDER BY created_at DESC LIMIT :lim'
                     ),
                     {"lim": limit},
                 ).mappings().all()
@@ -2360,21 +2471,20 @@ _DB_VIEWER_TABLE_META: dict = {
             {"name": "verdict",                 "label": "Verdict",                    "ui": "select","choices": ["PASS", "FAIL", ""]},
             {"name": "video_kyc_pic",           "label": "Live Frame MinIO Key",       "ui": "text"},
             {"name": "address_proof_pic",       "label": "Address Proof MinIO Key",    "ui": "text"},
-            {"name": "reference_doc_pic",       "label": "Ref Doc MinIO Key",          "ui": "text"},
             {"name": "isAddressMatch",          "label": "Address Match",              "ui": "select","choices": ["match", "mismatch", "skipped", ""], "nullable": True},
             {"name": "kyc_comments",            "label": "KYC Comments",               "ui": "textarea"},
-            {"name": "current_address_text",    "label": "Current Address (live)",     "ui": "textarea"},
+            {"name": "current_location",        "label": "Current Location (live)",    "ui": "textarea"},
             {"name": "address_distance_meters", "label": "Address Distance (meters)",  "ui": "float", "nullable": True},
             {"name": "pdf_report",              "label": "PDF MinIO Key",              "ui": "text"},
-            {"name": "identity_dtls",           "label": "Identity Details (JSON)",    "ui": "json", "nullable": True},
+            {"name": "aadhar_dtls",             "label": "Aadhaar Details (JSON)",     "ui": "json", "nullable": True},
+            {"name": "pan_dtls",                "label": "PAN Details (JSON)",         "ui": "json", "nullable": True},
             {"name": "address_dtls",            "label": "Address Details (JSON)",     "ui": "json", "nullable": True},
-            {"name": "current_location_json",   "label": "GPS Location (JSON)",        "ui": "json", "nullable": True},
             {"name": "challenge_snapshots_json","label": "Challenge Snapshots (JSON)",  "ui": "json", "nullable": True},
             {"name": "report_json",             "label": "Report JSON",                "ui": "json"},
         ],
         "fk": {"entity_id": "entities"},
-        "json_cols": {"report_json", "identity_dtls", "address_dtls",
-                      "current_location_json", "challenge_snapshots_json"},
+        "json_cols": {"report_json", "aadhar_dtls", "pan_dtls", "address_dtls",
+                      "challenge_snapshots_json"},
     },
     "entity_reports": {
         "pk": "id",

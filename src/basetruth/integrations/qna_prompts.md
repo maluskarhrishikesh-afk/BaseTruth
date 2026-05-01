@@ -86,11 +86,12 @@ VALID TABLES — only these 6 tables exist in BaseTruth PostgreSQL:
   5. video_kyc_checks     — Video KYC session results only;
                             columns: id, entity_id, status, cosine_similarity, display_score,
                             threshold, is_match, liveness_state, liveness_passed, verdict,
-                            video_kyc_pic, address_proof_pic, reference_doc_pic,
-                            isAddressMatch, kyc_comments, current_address_text,
+                            aadhar_dtls (JSONB), pan_dtls (JSONB),
+                            video_kyc_pic, address_proof_pic,
+                            aadhaar_pic, pan_pic, signature_pic,
+                            isAddressMatch, kyc_comments, current_location (TEXT),
                             address_distance_meters, pdf_report (MinIO key),
-                            identity_dtls (JSONB), address_dtls (JSONB),
-                            current_location_json (JSONB), challenge_snapshots_json (JSONB),
+                            address_dtls (JSONB), challenge_snapshots_json (JSONB),
                             report_json (JSONB), created_at, updated_at
   6. entity_reports       — final cross-document verification reports
 

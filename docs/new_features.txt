@@ -1,72 +1,346 @@
-﻿This is how data gets stored in identity_checks table from "Identity Verification" screen->
+﻿SUSPICIOUS
+Risk Score: 35.4/100
+Confidence: 88.8/100
+The live session completed, but some replay or motion-consistency signals look suspicious. Review it manually.
+Completed live challenges: look_straight, blink, nod, turn_left, turn_right.
+Head and eye motion stayed reasonably consistent across the live challenge sequence.
+
+----------
+
 {
-"id":1
-"entity_id":1
-"check_type":NULL
-"status":"pass"
-"cosine_similarity":0.6699966192245483
-"display_score":77.99977461496988
-"threshold":0.4
-"is_match":true
-"verdict":"PASS"
-"selfie_pic":"BT-000001/selfie.jpg"
-"aadhaar_pic":"BT-000001/IMG_20260422_151404.jpg"
-"pan_pic":"BT-000001/IMG_20260422_151423.jpg"
-"signature_pic":"BT-000001/pan_signature.jpg"
-"pdf_report":"BT-000001/identity_check_report.pdf"
-"aadhar_dtls":{...}
-"pan_dtls":{...}
-"report_json":{...}
-"created_at":"datetime.datetime(2026, 4, 28, 17, 5, 21, 413136, tzinfo=datetime.timezone.utc)"
+  "filename": "face_scan_live_4mf55kiGq6LLnOSBlbVjOQ.jpg",
+  "scan_type": "face_scan",
+  "mode": "live",
+  "schema_version": "1.0.0",
+  "verdict": "SUSPICIOUS",
+  "risk_score_0_100": 35.35,
+  "confidence_0_100": 88.8,
+  "confidence_reason": "The live session captured enough stable, well-tracked frames for a reliable result.",
+  "overall_explanation": "The live session completed, but the temporal or replay signals warrant manual review.",
+  "honest_review": "The live session completed, but some replay or motion-consistency signals look suspicious. Review it manually.",
+  "evidence": [
+    "Completed live challenges: look_straight, blink, nod, turn_left, turn_right.",
+    "Head and eye motion stayed reasonably consistent across the live challenge sequence."
+  ],
+  "trace": {
+    "decision_trace_id": "fs_live_e71677e8b326",
+    "timestamp_utc": "2026-05-01T16:53:04Z",
+    "processing_time_ms": 92730,
+    "rules_version": "face-scan-rules-1.0.0",
+    "model_version": "heuristics-only"
+  },
+  "environment": {
+    "platform": "web",
+    "browser": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0",
+    "os": "Win32",
+    "camera_resolution": [
+      1280,
+      720
+    ],
+    "observed_fps": 8.0,
+    "frame_drop_rate": 0.0,
+    "virtual_camera_suspected": false
+  },
+  "checks": {
+    "face_detection": {
+      "status": "pass",
+      "face_count": 1,
+      "primary_face_box": [
+        259,
+        72,
+        352,
+        199
+      ],
+      "detector_confidence": 0.7983,
+      "frames_processed": 170,
+      "frames_without_face": 0
+    },
+    "quality_assessment": {
+      "status": "pass",
+      "blur_risk_0_100": 0.0,
+      "brightness_risk_0_100": 44.79,
+      "face_size_risk_0_100": 100.0,
+      "mean_laplacian_var": 138.42,
+      "mean_brightness": 77.75,
+      "mean_face_area_ratio": 0.0449
+    },
+    "temporal_consistency": {
+      "status": "pass",
+      "score_0_100": 26.79,
+      "yaw_jerk": 0.0253,
+      "pitch_jerk": 0.059,
+      "nose_jitter": 0.0205
+    },
+    "replay_heuristics": {
+      "status": "review",
+      "score_0_100": 41.91,
+      "repeat_frame_score": 55.62,
+      "flicker_score": 9.93,
+      "brightness_instability": 4.0918
+    },
+    "active_liveness": {
+      "status": "pass",
+      "passed": true,
+      "completed_challenges": [
+        "look_straight",
+        "blink",
+        "nod",
+        "turn_left",
+        "turn_right"
+      ],
+      "challenge_count": 5,
+      "best_frame_available": true
+    }
+  },
+  "artifacts": {
+    "best_frame_available": true,
+    "challenge_snapshots_available": true
+  }
 }
 
-This is not required in this table ->
-"check_type":NULL
+-------------------------------
 
-You can also remove the code associated with it.
+I think in the response we can return all the parameters that were captured. This will also 
+be helpful to the users to understand the response better.
 
------------------------------------------------------------------------------------------------------
+--------------------------------
 
-Video KYC screen ->
+Also got this from experts ->
 
-Here we should have option for the following ->
-1) Session Setup
-Customer name
+Apart from this do we need to capture any more signals to make the liveliness challenge product full proof ->
 
-e.g. Rahul Sharma
-Entity / Case ref
+{
 
-e.g. ENT-001
-Challenge selection (optional)
+"filename": "face_scan_live_4mf55kiGq6LLnOSBlbVjOQ.jpg",
 
-2) Create and Share
-Upload a reference ID above to enable face-match (optional — liveness-only is also supported).
+"scan_type": "face_scan",
 
-After this when the customer opens the link there he has to
-1) Upload ID - Aadhar or PAN
-2) Upload Address proof - Aadhar back side or passport back side.
-3) Click on share live location - (this will capture the exact address where the customer is now)
-4) Perform liveliness check
+"mode": "live",
 
-While performing liveliness check images should be captured automatically and that image should be 
-compared with Aadhar or PAN photo.
+"schema_version": "1.0.0",
 
-Address captured via live location and that mentioned on Aadhar back side ot passport back side should
-be near to each other (around 500 meters is fine)
+"verdict": "SUSPICIOUS",
 
-There is no need of "In-Person Verify" option in Video KYC screen as for that we can use 
-"Identity Verification" screen.
+"risk_score_0_100": 35.35,
 
-Session Setup and Schedule Appointment should ideally be the same option. Only after scheduling the
-appointment a calendar invite and live session link of 30 minutes should be generated. We also need
-email option there, which will send the calendar invite as well as the live session link of 30 minutes
-to the customer.
+"confidence_0_100": 88.8,
 
-This is how I feel the Video KYC screen should work, currently its all over the place. What do you feel ?
+"confidence_reason": "The live session captured enough stable, well-tracked frames for a reliable result.",
 
------------------------------------------------------------------------------------------------------
+"overall_explanation": "The live session completed, but the temporal or replay signals warrant manual review.",
 
-Also ->
-1) Make the change in Database.md and "Database Viewer" screen.
-2) Update unit tests.
-3) Push the code to git.
+"honest_review": "The live session completed, but some replay or motion-consistency signals look suspicious. Review it manually.",
+
+"evidence": [
+
+"Completed live challenges: look_straight, blink, nod, turn_left, turn_right.",
+
+"Head and eye motion stayed reasonably consistent across the live challenge sequence."
+
+],
+
+"trace": {
+
+"decision_trace_id": "fs_live_e71677e8b326",
+
+"timestamp_utc": "2026-05-01T16:53:04Z",
+
+"processing_time_ms": 92730,
+
+"rules_version": "face-scan-rules-1.0.0",
+
+"model_version": "heuristics-only"
+
+},
+
+"environment": {
+
+"platform": "web",
+
+"browser": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0",
+
+"os": "Win32",
+
+"camera_resolution": [
+
+1280,
+
+720
+
+],
+
+"observed_fps": 8.0,
+
+"frame_drop_rate": 0.0,
+
+"virtual_camera_suspected": false
+
+},
+
+"checks": {
+
+"face_detection": {
+
+"status": "pass",
+
+"face_count": 1,
+
+"primary_face_box": [
+
+259,
+
+72,
+
+352,
+
+199
+
+],
+
+"detector_confidence": 0.7983,
+
+"frames_processed": 170,
+
+"frames_without_face": 0
+
+},
+
+"quality_assessment": {
+
+"status": "pass",
+
+"blur_risk_0_100": 0.0,
+
+"brightness_risk_0_100": 44.79,
+
+"face_size_risk_0_100": 100.0,
+
+"mean_laplacian_var": 138.42,
+
+"mean_brightness": 77.75,
+
+"mean_face_area_ratio": 0.0449
+
+},
+
+"temporal_consistency": {
+
+"status": "pass",
+
+"score_0_100": 26.79,
+
+"yaw_jerk": 0.0253,
+
+"pitch_jerk": 0.059,
+
+"nose_jitter": 0.0205
+
+},
+
+"replay_heuristics": {
+
+"status": "review",
+
+"score_0_100": 41.91,
+
+"repeat_frame_score": 55.62,
+
+"flicker_score": 9.93,
+
+"brightness_instability": 4.0918
+
+},
+
+"active_liveness": {
+
+"status": "pass",
+
+"passed": true,
+
+"completed_challenges": [
+
+"look_straight",
+
+"blink",
+
+"nod",
+
+"turn_left",
+
+"turn_right"
+
+],
+
+"challenge_count": 5,
+
+"best_frame_available": true
+
+}
+
+},
+
+"artifacts": {
+
+"best_frame_available": true,
+
+"challenge_snapshots_available": true
+
+}
+
+}
+
+To make a liveness detection system more robust—especially when the current verdict is "SUSPICIOUS" due to replay or temporal signals—you should look beyond basic motion challenges. The goal is to move from "Heuristics" toward "Multi-modal Authentication."
+
+Here are several additional signals and techniques to help harden the product against sophisticated spoofing like deepfakes, high-resolution replays, and injection attacks.
+
+1. Active Illumination (Chromatic Reflection)
+This is one of the most effective ways to detect a replay from a screen.
+
+The Signal: During the scan, the UI flashes a sequence of random, high-contrast colors (e.g., Bright Red -> Neon Green -> Blue).
+
+The Check: The system analyzes the specular reflection on the user's skin. A real human face will show a specific color shift and diffusion pattern. A screen or a paper mask will either lack this reflection or show a flat, uniform "screen-on-screen" reflection.
+
+2. Remote Photoplethysmography (rPPG)
+This detects physiological signs that are nearly impossible to replicate in a standard video replay.
+
+The Signal: Micro-variations in skin color caused by blood flow (the human pulse).
+
+The Check: By analyzing specific color channels (usually the green channel), the system can detect a heart rate. If the "person" has no pulse or a perfectly static pulse, it's a high-probability replay or synthetic injection.
+
+3. 3D Depth Consistency (Structure from Motion)
+Since your current challenges include "turn_left" and "turn_right," you have the data needed for depth mapping.
+
+The Signal: Tracking landmarks as they move across a 3D arc.
+
+The Check: Use Structure from Motion (SfM) to verify the 3D geometry of the face. A 2D photo or a flat tablet screen being rotated will maintain a fixed perspective, whereas a real 3D head will show varying occlusion (e.g., the nose covering part of the far cheek).
+
+4. Advanced Hardware & Network Fingerprinting
+The environment block in your JSON is a good start, but it can be deeper.
+
+WebGL/Canvas Fingerprinting: Check for GPU-accelerated rendering anomalies. Virtual cameras often leave distinct traces in how they report hardware capabilities.
+
+Clock Skew & Latency: Measure the precise time between frame capture and arrival. Replay tools or "man-in-the-middle" proxies often introduce subtle, non-human jitters in the packet timing.
+
+Battery & Sensor Data: On mobile, monitor the accelerometer/gyroscope. If the "head turns" but the device is perfectly static on a tripod (or reporting 0 movement), it may indicate a professional spoofing setup.
+
+5. Texture & Frequency Analysis (Anti-Moiré)
+Screens have a physical pixel grid that creates interference when filmed by another camera.
+
+The Signal: High-frequency noise patterns.
+
+The Check: Perform a Fast Fourier Transform (FFT) on the frames. Replays from digital screens often produce "Moiré patterns" or specific frequency peaks that are invisible to the naked eye but obvious in the frequency domain.
+
+6. Semantic Consistency & Saccades
+Involuntary Eye Movement (Saccades): Human eyes don't stay perfectly still; they make tiny, rapid movements. Deepfakes and static replays often struggle to simulate the "micro-jitter" of a real human gaze.
+
+Pupillary Response: If you use a flash or a bright UI, you can check for pupil constriction. This is a very "high-bar" signal but extremely hard to spoof.
+
+Comparison of Spoofing Vectors vs. Signals
+Attack Vector	Counter-Signal	Implementation Difficulty
+High-Res Replay	rPPG (Pulse) / Chromatic Reflection	High
+Deepfake / AI	Saccades / Texture Analysis	Medium
+Virtual Camera	WebGL Fingerprinting / FPS Jitter	Low
+2D Paper Mask	3D Pose Consistency (SfM)	Medium
+Why your current result is "SUSPICIOUS"
+Looking at your replay_heuristics, the repeat_frame_score of 55.62 and an observed_fps of 8.0 are the primary red flags. A low FPS combined with frame repetition strongly suggests that the browser is struggling to process the stream or, more likely, an external tool is injecting a pre-recorded video that doesn't perfectly match the browser's expected timing. Adding Network Latency Jitter checks would likely confirm if this is an injection.
+
