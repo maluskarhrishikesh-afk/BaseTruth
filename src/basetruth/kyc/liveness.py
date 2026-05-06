@@ -173,6 +173,15 @@ FACE_STABILITY_YAW_VARIANCE_MIN = 0.0002
 # Threshold at 18 gives a comfortable margin between the two populations.
 MIN_FACE_TEXTURE_SCORE = 18.0
 
+# Maximum time (seconds) a user has to complete each liveness challenge from the
+# moment the prompt appears.  If the challenge is not completed within this window,
+# the current challenge frame-history is cleared and the timer restarts so the
+# user gets another attempt from a clean baseline.  This prevents slow brute-force
+# probing strategies where an attacker submits random motions until one happens to
+# score a pass.  10 seconds is generous for a genuine user but short enough to
+# deter patient attackers.
+CHALLENGE_TIMEOUT_SECONDS = 10.0
+
 
 def compute_face_texture_score(img: Any, bbox: Any) -> float:
     """Measure local texture richness inside the face bounding box.
@@ -223,6 +232,101 @@ def compute_face_texture_score(img: Any, bbox: Any) -> float:
     return float(np.mean(stds)) if stds else 99.0
 
 
+def compute_face_brightness(img: Any, bbox: Any) -> float:
+    """Return the mean pixel intensity (0–255) of the grayscale face crop.
+
+    Used to select the correct adaptive texture threshold — in dim lighting the
+    texture score of a flat screen or print may be inflated by sensor noise and
+    JPEG compression artefacts, so we relax the threshold below
+    LOW_BRIGHTNESS_THRESHOLD to avoid false-rejecting real faces in dark rooms.
+
+    Returns 128.0 (mid-range, neutral) when the crop cannot be computed.
+    """
+    try:
+        import cv2 as _cv2  # noqa: PLC0415
+    except ImportError:
+        return 128.0
+
+    x1 = int(max(float(bbox[0]), 0))
+    y1 = int(max(float(bbox[1]), 0))
+    x2 = int(min(float(bbox[2]), img.shape[1]))
+    y2 = int(min(float(bbox[3]), img.shape[0]))
+    if x2 <= x1 or y2 <= y1:
+        return 128.0
+
+    crop = _cv2.cvtColor(img[y1:y2, x1:x2], _cv2.COLOR_BGR2GRAY)
+    return float(np.mean(crop)) if crop.size > 0 else 128.0
+
+
+# Brightness below this value means the face is in a dark environment.
+# At these levels, JPEG compression adds noise that inflates texture scores
+# for flat surfaces, so we use a relaxed threshold to avoid false rejections.
+LOW_BRIGHTNESS_THRESHOLD  = 80
+LOW_BRIGHTNESS_TEXTURE_SCORE = 14.0  # relaxed threshold for dark frames
+
+
+def get_adaptive_texture_threshold(brightness_mean: float) -> float:
+    """Return the appropriate texture score threshold for the given face brightness.
+
+    In low-light conditions (brightness < LOW_BRIGHTNESS_THRESHOLD), JPEG noise
+    and sensor noise can inflate the local std-dev of a flat surface enough to
+    falsely pass the static threshold of 18.0.  Dropping to 14.0 in that regime
+    keeps the guard meaningful without producing false rejects of real faces in
+    dark rooms.
+
+    The returned threshold should be compared against the score from
+    compute_face_texture_score().
+    """
+    if brightness_mean < LOW_BRIGHTNESS_THRESHOLD:
+        return LOW_BRIGHTNESS_TEXTURE_SCORE
+    return MIN_FACE_TEXTURE_SCORE
+
+
+# Maximum fraction of consecutive diff-pairs with alternating signs (direction
+# reverses between adjacent frames) in the stability yaw buffer.
+# Artificial jitter (screen shaking, programmatic video wobble) bounces back and
+# forth on almost every frame → high alternation rate (~1.0).
+# Real involuntary micro-movement drifts slowly and changes direction irregularly
+# → alternation rate is typically 0.3–0.6.
+# Threshold at 0.80 gives comfortable separation between the two populations.
+FACE_STABILITY_YAW_JITTER_ALTERNATION_MAX = 0.80
+
+
+def is_yaw_motion_natural(yaw_buffer: List[float]) -> Tuple[bool, str]:
+    """Return (True, "") if the yaw movement pattern looks like natural micro-movement.
+
+    Artificial jitter used to spoof the yaw-variance check (screen shaking,
+    programmatic video wobble) typically produces a high-frequency alternating
+    signal: the yaw value flips direction on almost every frame.  Natural
+    involuntary micro-movement from breathing and muscle tremor is irregular —
+    the direction reverses only occasionally across a 10-frame window.
+
+    Metric: fraction of adjacent diff-pairs where signs alternate (direction
+    reverses between consecutive frames).  Above FACE_STABILITY_YAW_JITTER_ALTERNATION_MAX
+    (0.80) indicates a suspiciously periodic, non-natural signal.
+
+    Returns True (passes) when the buffer is too short to be conclusive, so
+    early frames are never incorrectly penalised.
+    """
+    if len(yaw_buffer) < 4:
+        return True, ""  # too few samples to test reliably
+
+    diffs = np.diff(np.asarray(yaw_buffer, dtype=np.float64))
+    if len(diffs) < 3:
+        return True, ""
+
+    # Count pairs where the direction (sign of diff) reversed between consecutive steps.
+    # A perfect sine-like artificial wiggle would alternate on EVERY pair → rate = 1.0.
+    sign_alternations = sum(
+        1 for i in range(1, len(diffs)) if diffs[i] * diffs[i - 1] < 0
+    )
+    alternation_rate = sign_alternations / max(len(diffs) - 1, 1)
+
+    if alternation_rate > FACE_STABILITY_YAW_JITTER_ALTERNATION_MAX:
+        return False, "Unnatural movement detected — ensure you are using a live camera, not a video."
+    return True, ""
+
+
 def is_face_stable(
     face: Any,
     face_count: int,
@@ -233,6 +337,7 @@ def is_face_stable(
     yaw: float = 0.0,
     pitch: float = 0.0,
     texture_score: float = 99.0,
+    brightness_mean: float = 128.0,
 ) -> Tuple[bool, str]:
     """Return (True, "") if this frame qualifies as a valid stability frame, or
     (False, user_feedback) explaining what the user needs to fix.
@@ -249,11 +354,11 @@ def is_face_stable(
       5. Nose within vertical band FACE_STABILITY_Y_MIN–MAX (30–70%).
       6. |yaw|   ≤ FACE_STABILITY_YAW_MAX (0.08) — head near-frontal.
       7. |pitch| ≤ FACE_STABILITY_PITCH_MAX (0.08) — head near-frontal.
-      8. texture_score ≥ MIN_FACE_TEXTURE_SCORE (18) — not a flat surface.
+      8. texture_score ≥ get_adaptive_texture_threshold(brightness_mean) — not a flat surface.
       9. Geometry invariants pass (caller must pre-check with face_geometry_valid).
 
-    Parameters nose_rel_y, yaw, pitch, texture_score default to safe "pass"
-    values so existing callers that do not supply them are unaffected.
+    Parameters nose_rel_y, yaw, pitch, texture_score, brightness_mean all default
+    to safe "pass" values so existing callers that do not supply them are unaffected.
 
     This function is intentionally stateless — the caller owns the consecutive-
     frame counter and resets it on any False return.
@@ -287,9 +392,12 @@ def is_face_stable(
     if abs(pitch) > FACE_STABILITY_PITCH_MAX:
         return False, "Look straight at the camera — do not tilt your head up or down."
 
-    # Flat surface guard — a screen or printed photo has very low local texture variance.
-    # A real face has organic skin texture that scores well above the threshold.
-    if texture_score < MIN_FACE_TEXTURE_SCORE:
+    # Flat surface guard — uses an adaptive threshold based on face brightness.
+    # In low-light frames, sensor noise can inflate the texture score of a flat
+    # surface; using a lower threshold there avoids false-rejecting real faces
+    # in dark environments while still blocking high-quality bright-room spoofs.
+    _texture_threshold = get_adaptive_texture_threshold(brightness_mean)
+    if texture_score < _texture_threshold:
         return False, "Real face not detected — ensure you are in front of the camera, not a screen."
 
     return True, ""

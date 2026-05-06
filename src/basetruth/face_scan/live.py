@@ -28,9 +28,11 @@ from basetruth.face_scan.service import (
 )
 from basetruth.kyc.liveness import (
     analyze_challenge, extract_features, face_geometry_valid,
-    is_face_stable, compute_face_texture_score,
+    is_face_stable, compute_face_texture_score, compute_face_brightness,
+    is_yaw_motion_natural,
     MIN_FACE_DETECTION_CONFIDENCE, MIN_FACE_AREA_RATIO,
     FACE_STABLE_FRAMES_REQUIRED, FACE_STABILITY_YAW_VARIANCE_MIN,
+    CHALLENGE_TIMEOUT_SECONDS,
 )
 from basetruth.logger import get_logger
 from basetruth.vision.face import get_face_analyzer, get_mediapipe_faces
@@ -326,6 +328,14 @@ class FaceScanLiveSession:
     # genuine real-time interaction produces self-corrections; scripted attacks are
     # typically robotically perfect with zero wrong attempts.
     challenge_wrong_actions: List[Dict[str, Any]] = field(default_factory=list)
+    # Whether a natural blink (EAR dip) was observed during the stability window.
+    # A real person blinks involuntarily; a static screen or photo never blinks.
+    # Not a hard fail — a soft signal that informs the risk audit trail.
+    blink_observed_in_stability: bool = False
+    # Monotonic timestamp (time.monotonic()) of when the current challenge was
+    # presented to the user.  Zero means no challenge has started yet.
+    # Used by the timeout enforcement logic to reset slow or stuck challenges.
+    challenge_started_at: float = 0.0
     frames_received: int = 0
     frames_without_face: int = 0
     last_live_frame_bytes: Optional[bytes] = None
@@ -1491,11 +1501,14 @@ def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> 
     # Challenges only start once FACE_STABLE_FRAMES_REQUIRED consecutive frames
     # all pass the stricter stability check.  Any failure resets the counter so
     # a flickering or marginal detection cannot accumulate a partial count.
-    # After the window fills, yaw variance is checked to confirm natural
-    # micro-movement — a real person always oscillates; a static source does not.
+    # After the window fills, yaw variance AND jitter naturalness are checked to
+    # confirm live micro-movement — a real person oscillates irregularly; a static
+    # source or shaken screen has near-zero or perfectly-alternating yaw values.
     if session.face_stable_frames < FACE_STABLE_FRAMES_REQUIRED:
-        # Compute face texture score to guard against flat screens and photos.
+        # Compute texture score and brightness together — brightness drives the
+        # adaptive texture threshold (lower in dark rooms to avoid false rejects).
         _texture = compute_face_texture_score(img, face.bbox)
+        _brightness = metrics.get("brightness_mean", 128.0)
         stable_ok, stable_feedback = is_face_stable(
             face=face,
             face_count=len(faces),
@@ -1506,11 +1519,13 @@ def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> 
             yaw=metrics.get("yaw", 0.0),
             pitch=metrics.get("pitch", 0.0),
             texture_score=_texture,
+            brightness_mean=_brightness,
         )
         if not stable_ok:
             # Reset on any validation failure — must be a continuous clean window.
             session.face_stable_frames = 0
             session.face_stable_yaw_buffer.clear()
+            session.blink_observed_in_stability = False
             return {
                 "type": "status",
                 "face_detected": True,
@@ -1527,6 +1542,9 @@ def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> 
         # Frame passed all validation checks — accumulate toward the quota.
         session.face_stable_frames += 1
         session.face_stable_yaw_buffer.append(float(metrics.get("yaw", 0.0)))
+        # Track natural blink signal during the stability window.
+        if metrics.get("ear", 0.30) < 0.20:
+            session.blink_observed_in_stability = True
         log.debug(
             "Face stability progress.",
             extra={"stable_frames": session.face_stable_frames, "required": FACE_STABLE_FRAMES_REQUIRED, "session_id": session.session_id},
@@ -1539,6 +1557,7 @@ def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> 
                 # Static source suspected — reset and demand another window.
                 session.face_stable_frames = 0
                 session.face_stable_yaw_buffer.clear()
+                session.blink_observed_in_stability = False
                 log.warning(
                     "Face stability gate: yaw variance too low — static source suspected.",
                     extra={"yaw_var": _yaw_var, "threshold": FACE_STABILITY_YAW_VARIANCE_MIN, "session_id": session.session_id},
@@ -1555,7 +1574,30 @@ def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> 
                     "feedback": "No natural movement detected — ensure you are using a live camera.",
                     "challenge_just_passed": False,
                 }
-            # Variance check passed — fall through to challenge logic on this same frame.
+            # Anti-gaming: reject artificially periodic jitter (e.g. screen shaking).
+            _natural_ok, _natural_msg = is_yaw_motion_natural(session.face_stable_yaw_buffer)
+            if not _natural_ok:
+                session.face_stable_frames = 0
+                session.face_stable_yaw_buffer.clear()
+                session.blink_observed_in_stability = False
+                log.warning(
+                    "Face stability gate: yaw jitter pattern too regular — artificial source suspected.",
+                    extra={"session_id": session.session_id},
+                )
+                return {
+                    "type": "status",
+                    "face_detected": True,
+                    "face_stable": False,
+                    "face_stable_progress": 0,
+                    "face_stable_required": FACE_STABLE_FRAMES_REQUIRED,
+                    "challenge": session.current_challenge,
+                    "challenges_completed": session.current_challenge_idx,
+                    "total_challenges": len(session.challenges),
+                    "feedback": _natural_msg,
+                    "challenge_just_passed": False,
+                }
+            # All checks passed — start challenge timing and fall through to challenge logic.
+            session.challenge_started_at = time.monotonic()
         else:
             # Still accumulating — inform the user to keep holding still.
             _remaining = FACE_STABLE_FRAMES_REQUIRED - session.face_stable_frames
@@ -1584,6 +1626,30 @@ def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> 
         if session.result is not None and not bool(session.result.get("narrative_pending")):
             return {"type": "result", **session.result}
         return {"type": "processing", "message": "All challenges completed. Verifying your results\u2026"}
+
+    # Challenge timeout enforcement: if the user has not completed the current
+    # challenge within CHALLENGE_TIMEOUT_SECONDS, reset the frame history and
+    # restart the timer.  This prevents slow brute-force probing.
+    _now = time.monotonic()
+    if session.challenge_started_at == 0.0:
+        session.challenge_started_at = _now
+    elif _now - session.challenge_started_at > CHALLENGE_TIMEOUT_SECONDS:
+        ch_key = f"ch_{session.current_challenge_idx}"
+        session.challenge_frame_history[ch_key] = []
+        session.challenge_started_at = _now
+        log.info(
+            "Live challenge timed out; resetting challenge history.",
+            extra={"challenge": current_challenge, "timeout": CHALLENGE_TIMEOUT_SECONDS, "session_id": session.session_id},
+        )
+        return {
+            "type": "status",
+            "face_detected": True,
+            "challenge": current_challenge,
+            "challenges_completed": session.current_challenge_idx,
+            "total_challenges": len(session.challenges),
+            "feedback": f"Time's up — please perform the '{current_challenge.replace('_', ' ')}' challenge again.",
+            "challenge_just_passed": False,
+        }
 
     try:
         analysis = analyze_challenge(session.current_frame_history(), current_challenge)
@@ -1650,6 +1716,8 @@ def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> 
             "face_box": metrics["face_box"],
         }
         session.advance_challenge(snapshot=snapshot)
+        # Reset the challenge timer so the next challenge has a fresh timeout window.
+        session.challenge_started_at = time.monotonic()
         just_passed = True
         if session.all_done:
             # Signal the WebSocket handler to build the result payload outside

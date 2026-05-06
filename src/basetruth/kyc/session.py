@@ -93,6 +93,19 @@ class KYCSession:
     # Per-challenge pass/fail records added when each challenge is completed.
     # Each entry: {"index": int, "challenge": str, "passed": bool}
     challenge_results: List[Dict[str, Any]] = field(default_factory=list)
+    # Each entry records one wrong-motion event: challenge name, what the user did
+    # wrong, and the feature snapshot at that moment. This is a forensic signal:
+    # genuine real-time interaction produces self-corrections; scripted attacks are
+    # typically robotically perfect with zero wrong attempts.
+    challenge_wrong_actions: List[Dict[str, Any]] = field(default_factory=list)
+    # Whether a natural blink (EAR dip) was observed during the stability window.
+    # A real person blinks involuntarily; a static screen or photo never blinks.
+    # Not a hard fail — a soft signal that informs the risk audit trail.
+    blink_observed_in_stability: bool = False
+    # Monotonic timestamp (time.monotonic()) of when the current challenge was
+    # presented to the user.  Zero means no challenge has started yet.
+    # Used by the timeout enforcement logic to reset slow or stuck challenges.
+    challenge_started_at: float = 0.0
     # Best live frame (JPEG bytes) captured during the highest-confidence
     # challenge frame — uploaded to MinIO as video_kyc_capture.jpg
     best_live_frame_bytes: Optional[bytes] = None

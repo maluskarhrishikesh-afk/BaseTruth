@@ -692,6 +692,7 @@ def _stable_call(
     yaw: float = 0.0,
     pitch: float = 0.0,
     texture_score: float = 99.0,
+    brightness_mean: float = 128.0,
 ):
     """Build a minimal face stub and call is_face_stable with the given parameters."""
     from basetruth.kyc.liveness import is_face_stable
@@ -715,6 +716,7 @@ def _stable_call(
         yaw=yaw,
         pitch=pitch,
         texture_score=texture_score,
+        brightness_mean=brightness_mean,
     )
 
 
@@ -956,4 +958,109 @@ def test_compute_face_texture_score_returns_99_for_tiny_bbox() -> None:
     bbox = np.array([20, 20, 20, 20], dtype=float)
     score = compute_face_texture_score(img_bgr, bbox)
     assert score == 99.0
+
+
+# ── Issue 2: Adaptive texture threshold ──────────────────────────────────────
+
+def test_get_adaptive_texture_threshold_low_brightness() -> None:
+    """Below LOW_BRIGHTNESS_THRESHOLD the relaxed (lower) threshold is returned."""
+    from basetruth.kyc.liveness import (
+        get_adaptive_texture_threshold,
+        LOW_BRIGHTNESS_THRESHOLD, LOW_BRIGHTNESS_TEXTURE_SCORE, MIN_FACE_TEXTURE_SCORE,
+    )
+    threshold = get_adaptive_texture_threshold(LOW_BRIGHTNESS_THRESHOLD - 1)
+    assert threshold == LOW_BRIGHTNESS_TEXTURE_SCORE
+    assert threshold < MIN_FACE_TEXTURE_SCORE  # must be relaxed relative to normal
+
+
+def test_get_adaptive_texture_threshold_normal_brightness() -> None:
+    """At or above LOW_BRIGHTNESS_THRESHOLD the full threshold is returned."""
+    from basetruth.kyc.liveness import (
+        get_adaptive_texture_threshold,
+        LOW_BRIGHTNESS_THRESHOLD, MIN_FACE_TEXTURE_SCORE,
+    )
+    threshold = get_adaptive_texture_threshold(LOW_BRIGHTNESS_THRESHOLD)
+    assert threshold == MIN_FACE_TEXTURE_SCORE
+
+
+def test_is_face_stable_passes_low_texture_when_dark() -> None:
+    """A low texture score that would fail in normal light must pass in a dark frame."""
+    from basetruth.kyc.liveness import (
+        MIN_FACE_TEXTURE_SCORE, LOW_BRIGHTNESS_TEXTURE_SCORE, LOW_BRIGHTNESS_THRESHOLD,
+    )
+    # Score is between the relaxed (dark) and normal thresholds.
+    mid_score = (LOW_BRIGHTNESS_TEXTURE_SCORE + MIN_FACE_TEXTURE_SCORE) / 2.0
+    # Dark frame (brightness < LOW_BRIGHTNESS_THRESHOLD) → relaxed threshold applies → passes.
+    ok_dark, _ = _stable_call(texture_score=mid_score, brightness_mean=LOW_BRIGHTNESS_THRESHOLD - 10)
+    assert ok_dark is True
+    # Normal frame (brightness ≥ LOW_BRIGHTNESS_THRESHOLD) → full threshold → fails.
+    ok_normal, fb = _stable_call(texture_score=mid_score, brightness_mean=LOW_BRIGHTNESS_THRESHOLD + 10)
+    assert ok_normal is False
+    assert "screen" in fb.lower() or "real" in fb.lower()
+
+
+def test_compute_face_brightness_returns_value() -> None:
+    """compute_face_brightness must return a float in [0, 255] for valid input."""
+    pytest.importorskip("cv2")
+    import numpy as np
+    from basetruth.kyc.liveness import compute_face_brightness
+
+    img_bgr = np.full((120, 100, 3), 100, dtype=np.uint8)
+    bbox = np.array([0, 0, 100, 120], dtype=float)
+    brightness = compute_face_brightness(img_bgr, bbox)
+    assert 0.0 <= brightness <= 255.0
+
+
+def test_compute_face_brightness_returns_128_for_bad_bbox() -> None:
+    """A bbox that clips to nothing must return 128.0 (neutral default)."""
+    pytest.importorskip("cv2")
+    import numpy as np
+    from basetruth.kyc.liveness import compute_face_brightness
+
+    img_bgr = np.zeros((10, 10, 3), dtype=np.uint8)
+    bbox = np.array([20, 20, 20, 20], dtype=float)  # outside image
+    brightness = compute_face_brightness(img_bgr, bbox)
+    assert brightness == 128.0
+
+
+# ── Issue 3: Yaw frequency anti-gaming ───────────────────────────────────────
+
+def test_is_yaw_motion_natural_passes_irregular_signal() -> None:
+    """An irregular yaw buffer (real micro-movement) must pass the naturalness check."""
+    from basetruth.kyc.liveness import is_yaw_motion_natural
+
+    # Monotonically drifting signal — very few or zero sign alternations.
+    yaw_buffer = [0.001, 0.003, 0.005, 0.007, 0.009, 0.011, 0.013, 0.015, 0.017, 0.019]
+    ok, feedback = is_yaw_motion_natural(yaw_buffer)
+    assert ok is True
+    assert feedback == ""
+
+
+def test_is_yaw_motion_natural_rejects_perfectly_alternating_signal() -> None:
+    """A perfectly alternating yaw buffer (artificial jitter) must fail."""
+    from basetruth.kyc.liveness import is_yaw_motion_natural
+
+    # Every frame flips direction: the classic screen-shaking pattern.
+    yaw_buffer = [0.0, 0.01, -0.01, 0.01, -0.01, 0.01, -0.01, 0.01, -0.01, 0.01]
+    ok, feedback = is_yaw_motion_natural(yaw_buffer)
+    assert ok is False
+    assert "natural" in feedback.lower() or "unnatural" in feedback.lower()
+
+
+def test_is_yaw_motion_natural_passes_short_buffer() -> None:
+    """A buffer with fewer than 4 values must always pass (not enough data to test)."""
+    from basetruth.kyc.liveness import is_yaw_motion_natural
+
+    ok, _ = is_yaw_motion_natural([0.0, 0.01, -0.01])
+    assert ok is True
+
+
+# ── Issue 5: Challenge timeout ────────────────────────────────────────────────
+
+def test_challenge_timeout_seconds_is_positive() -> None:
+    """CHALLENGE_TIMEOUT_SECONDS must be a positive float."""
+    from basetruth.kyc.liveness import CHALLENGE_TIMEOUT_SECONDS
+
+    assert isinstance(CHALLENGE_TIMEOUT_SECONDS, float)
+    assert CHALLENGE_TIMEOUT_SECONDS > 0
 

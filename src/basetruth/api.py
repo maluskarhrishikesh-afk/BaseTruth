@@ -1620,8 +1620,10 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
     from basetruth.kyc.liveness import (
         analyze_challenge, extract_features, run_face_match,
         face_geometry_valid, is_face_stable, compute_face_texture_score,
+        compute_face_brightness, is_yaw_motion_natural,
         MIN_FACE_DETECTION_CONFIDENCE, MIN_FACE_AREA_RATIO,
         FACE_STABLE_FRAMES_REQUIRED, FACE_STABILITY_YAW_VARIANCE_MIN,
+        CHALLENGE_TIMEOUT_SECONDS,
     )
     from basetruth.vision.face import get_face_analyzer, get_mediapipe_faces
     from basetruth.logger import get_logger as _get_logger
@@ -1749,6 +1751,8 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
         if session.face_stable_frames < FACE_STABLE_FRAMES_REQUIRED:
             # Compute texture score lazily — cheap guard against flat screens/photos.
             _texture = compute_face_texture_score(img, face.bbox)
+            # Compute brightness to pick the right adaptive texture threshold.
+            _brightness = compute_face_brightness(img, face.bbox)
             stable_ok, stable_feedback = is_face_stable(
                 face=face,
                 face_count=len(faces),
@@ -1759,11 +1763,13 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
                 yaw=features.get("yaw", 0.0),
                 pitch=features.get("pitch", 0.0),
                 texture_score=_texture,
+                brightness_mean=_brightness,
             )
             if not stable_ok:
                 # Reset on any validation failure — must be a continuous clean window.
                 session.face_stable_frames = 0
                 session.face_stable_yaw_buffer.clear()
+                session.blink_observed_in_stability = False
                 return {
                     "type": "status",
                     "face_detected": True,
@@ -1780,6 +1786,10 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
             # Frame passed all validation checks — accumulate toward the quota.
             session.face_stable_frames += 1
             session.face_stable_yaw_buffer.append(float(features.get("yaw", 0.0)))
+            # Track whether any natural blink was seen during the stability window.
+            # A real person blinks involuntarily; a static image never blinks.
+            if features.get("ear", 0.30) < 0.20:
+                session.blink_observed_in_stability = True
             _kyc_log.debug(
                 "KYC face stability progress.",
                 extra={"stable_frames": session.face_stable_frames, "required": FACE_STABLE_FRAMES_REQUIRED},
@@ -1794,6 +1804,7 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
                 if _yaw_var < FACE_STABILITY_YAW_VARIANCE_MIN:
                     session.face_stable_frames = 0
                     session.face_stable_yaw_buffer.clear()
+                    session.blink_observed_in_stability = False
                     _kyc_log.warning(
                         "KYC stability gate: yaw variance too low — static source suspected.",
                         extra={"yaw_var": _yaw_var, "threshold": FACE_STABILITY_YAW_VARIANCE_MIN},
@@ -1810,7 +1821,31 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
                         "feedback": "No natural movement detected — ensure you are using a live camera.",
                         "challenge_just_passed": False,
                     }
-                # Variance check passed — fall through to challenge logic on this same frame.
+                # Anti-gaming: check that the micro-movement is not artificial periodic jitter.
+                _natural_ok, _natural_msg = is_yaw_motion_natural(session.face_stable_yaw_buffer)
+                if not _natural_ok:
+                    session.face_stable_frames = 0
+                    session.face_stable_yaw_buffer.clear()
+                    session.blink_observed_in_stability = False
+                    _kyc_log.warning(
+                        "KYC stability gate: yaw jitter pattern too regular — artificial source suspected.",
+                    )
+                    return {
+                        "type": "status",
+                        "face_detected": True,
+                        "face_stable": False,
+                        "face_stable_progress": 0,
+                        "face_stable_required": FACE_STABLE_FRAMES_REQUIRED,
+                        "challenge": session.current_challenge,
+                        "challenges_completed": session.current_challenge_idx,
+                        "total_challenges": len(session.challenges),
+                        "feedback": _natural_msg,
+                        "challenge_just_passed": False,
+                    }
+                # Variance and naturalness checks passed — start challenge timing.
+                import time as _time  # noqa: PLC0415
+                session.challenge_started_at = _time.monotonic()
+                # Fall through to challenge logic on this same frame.
             else:
                 # Still accumulating — inform the user to keep holding still.
                 _remaining = FACE_STABLE_FRAMES_REQUIRED - session.face_stable_frames
@@ -1865,7 +1900,70 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
         history.append(features)
 
         current_ch = session.current_challenge
+
+        # Challenge timeout enforcement: if the user has not completed the current
+        # challenge within CHALLENGE_TIMEOUT_SECONDS, reset the frame history and
+        # restart the timer.  This prevents slow brute-force probing where an
+        # attacker submits random movements until one accidentally satisfies the check.
+        import time as _time  # noqa: PLC0415
+        _now = _time.monotonic()
+        if session.challenge_started_at == 0.0:
+            session.challenge_started_at = _now
+        elif _now - session.challenge_started_at > CHALLENGE_TIMEOUT_SECONDS:
+            ch_key = f"ch_{session.current_challenge_idx}"
+            session.challenge_frame_history[ch_key] = []
+            session.challenge_started_at = _now
+            _kyc_log.info(
+                "KYC challenge timed out; resetting challenge history.",
+                extra={"challenge": current_ch, "timeout": CHALLENGE_TIMEOUT_SECONDS},
+            )
+            return {
+                "type": "status",
+                "face_detected": True,
+                "face_stable": True,
+                "challenge": current_ch,
+                "challenges_completed": session.current_challenge_idx,
+                "total_challenges": len(session.challenges),
+                "feedback": f"Time's up — please perform the '{current_ch.replace('_', ' ')}' challenge again.",
+                "challenge_just_passed": False,
+            }
+
         analysis   = analyze_challenge(history, current_ch)
+
+        # Wrong-action detection: if the user moved in the wrong direction (e.g.
+        # turned right when asked to turn left), reset the current challenge frame
+        # buffer so the spurious frames are discarded and the user must redo the
+        # challenge from a neutral position.  The wrong-action event is appended to
+        # challenge_wrong_actions for the forensic audit trail — a genuine person
+        # self-corrects; scripted attacks are robotically perfect with zero errors.
+        if analysis.get("reset_needed") or analysis.get("wrong_motion"):
+            wrong_motion = analysis.get("wrong_motion", "unknown")
+            session.challenge_wrong_actions.append({
+                "challenge": current_ch,
+                "wrong_motion": wrong_motion,
+            })
+            if analysis.get("reset_needed"):
+                ch_key = f"ch_{session.current_challenge_idx}"
+                current_history = session.challenge_frame_history.get(ch_key, [])
+                # Keep the last 2 frames — they represent the face near neutral
+                # (just returned from the wrong-direction peak) and act as a clean baseline.
+                session.challenge_frame_history[ch_key] = current_history[-2:] if len(current_history) >= 2 else []
+                _kyc_log.info(
+                    "KYC wrong-direction motion detected; challenge history reset.",
+                    extra={"challenge": current_ch, "wrong_motion": wrong_motion},
+                )
+            return {
+                "type": "status",
+                "face_detected": True,
+                "face_stable": True,
+                "challenge": current_ch,
+                "challenges_completed": session.current_challenge_idx,
+                "total_challenges": len(session.challenges),
+                "feedback": analysis["feedback"],
+                "feedback_sticky": True,
+                "challenge_just_passed": False,
+            }
+
         just_passed = False
         if analysis["passed"]:
             # When the look_straight challenge passes, save the current frame as
@@ -1874,6 +1972,8 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
             if current_ch == "look_straight":
                 session.best_live_frame_bytes = raw
             session.advance_challenge()
+            # Reset the challenge timer for the next challenge.
+            session.challenge_started_at = _time.monotonic()
             just_passed = True
             if session.all_done:
                 try:

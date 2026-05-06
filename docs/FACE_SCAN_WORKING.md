@@ -258,10 +258,14 @@ This counter only increments when a frame passes **all five** of these checks si
 4. **Nose within the horizontal centre band** (35%–65% of frame width) — the person's face must be roughly centred horizontally.
 5. **Nose within the vertical centre band** (30%–70% of frame height) — prevents partial faces, tilted cameras, and bad landmark geometry from a very low or high camera position.
 6. **Head near-frontal** — |yaw| ≤ 0.08 and |pitch| ≤ 0.08 (roughly ±5°). The user must face straight at the camera before challenges begin.
-7. **Texture richness ≥ 18** — the face crop must have sufficient local texture variation (measured as mean per-patch standard deviation across a 6×6 grid). A flat screen, printed photo, or uniform background scores < 15; a real face at selfie distance typically scores 25–70.
+7. **Texture richness (adaptive)** — the face crop must have sufficient local texture variation (measured as mean per-patch standard deviation across a 6×6 grid). The threshold adapts to ambient brightness: in a dark frame (brightness mean < 80) the threshold relaxes to 14.0 to avoid false rejects; in normal light it is 18.0. A flat screen, printed photo, or uniform background scores < 15; a real face at selfie distance typically scores 25–70.
 8. **Geometry invariants pass** — the face must look like a real human face (eyes above nose, mouth below eyes, proportions within normal ranges).
 
-Additionally, once the window of qualifying frames is complete, the server checks **yaw micro-movement variance** across the window. A real person always has small involuntary oscillations (breathing, muscle tremor); their yaw variance over 10 frames is typically 1×10⁻³ to 1×10⁻². A static screen or printed photo has machine-precision-flat yaw values — variance ≈ 0. If the variance is below 2×10⁻⁴, the window is rejected and the counter resets with the message: "No natural movement detected — ensure you are using a live camera."
+Additionally, once the window of qualifying frames is complete, the server checks two anti-spoofing signals:
+
+1. **Yaw micro-movement variance** — A real person always has small involuntary oscillations (breathing, muscle tremor); their yaw variance over 10 frames is typically 1×10⁻³ to 1×10⁻². A static screen or printed photo has machine-precision-flat yaw values — variance ≈ 0. If the variance is below 2×10⁻⁴, the window is rejected and the counter resets with the message: "No natural movement detected — ensure you are using a live camera."
+
+2. **Yaw jitter naturalness** — A real person's micro-movement direction changes occasionally but not on every frame. An attacker who shakes a screen to pass the variance check produces a high-frequency alternating signal: yaw direction reverses on almost every frame. If more than 80% of consecutive diff-pairs alternate sign, the motion is flagged as unnatural. The window resets with the message: "Unnatural movement detected — ensure you are using a live camera, not a video." This is controlled by `FACE_STABILITY_YAW_JITTER_ALTERNATION_MAX = 0.80`.
 
 If any condition fails, the counter resets to zero. The counter must reach **10 consecutive qualifying frames** (approximately 1 second at 10 FPS) before challenge history starts accumulating.
 
@@ -285,7 +289,11 @@ Once the counter reaches 10 and the yaw variance check passes, `face_stable: tru
 | `FACE_STABILITY_YAW_MAX` | 0.08 | Maximum absolute yaw before challenges (~±5°) |
 | `FACE_STABILITY_PITCH_MAX` | 0.08 | Maximum absolute pitch before challenges (~±5°) |
 | `FACE_STABILITY_YAW_VARIANCE_MIN` | 0.0002 | Minimum yaw variance over stability window (micro-movement check) |
-| `MIN_FACE_TEXTURE_SCORE` | 18.0 | Minimum local texture richness score (flat surface guard) |
+| `FACE_STABILITY_YAW_JITTER_ALTERNATION_MAX` | 0.80 | Maximum fraction of alternating yaw diffs before jitter is flagged as artificial |
+| `MIN_FACE_TEXTURE_SCORE` | 18.0 | Minimum local texture richness score in normal light |
+| `LOW_BRIGHTNESS_THRESHOLD` | 80 | Brightness mean below which the relaxed texture threshold applies |
+| `LOW_BRIGHTNESS_TEXTURE_SCORE` | 14.0 | Relaxed texture threshold in dark/low-light frames |
+| `CHALLENGE_TIMEOUT_SECONDS` | 10.0 | Seconds before a challenge that has not been completed resets |
 | `MIN_FACE_DETECTION_CONFIDENCE` | 0.55 | Minimum confidence during active challenges |
 | `MIN_FACE_AREA_RATIO` | 0.05 | Minimum face area (5%) at all times during active challenges |
 
@@ -295,6 +303,38 @@ Once the counter reaches 10 and the yaw variance check passes, `face_stable: tru
 
 All measurements are done on the mirrored frame (the same orientation the person sees in their selfie preview).
 So "the person turns to their own left" means the nose moves toward the left side of the image.
+
+### Wrong-Action Handling
+
+Each directional challenge (turn left, turn right, nod) has a built-in wrong-direction guard.
+If the person moves in the exact wrong direction before completing the challenge, the server detects the `wrong_motion` flag from `analyze_challenge`.
+The server then:
+1. Appends the event to `challenge_wrong_actions` (an audit trail on the session object).
+2. Resets the frame history for the current challenge to the last 2 frames only — this keeps the baseline near-neutral and avoids a junk accumulation of wrong-direction frames.
+3. Returns a sticky feedback message (e.g. "Move the opposite direction") so the browser displays it persistently until the next frame.
+
+The audit trail (`challenge_wrong_actions`) is not shown to the user but is available in session logs.
+A high wrong-action count can itself be a soft signal of confusion or spoofing.
+
+### Challenge Timeout
+
+Once the stability gate passes and the first challenge begins, every challenge has a hard timeout of **10 seconds** (`CHALLENGE_TIMEOUT_SECONDS = 10.0`).
+The timer is tracked in `session.challenge_started_at` (Unix monotonic timestamp).
+On every incoming frame during challenge processing, the server checks `time.monotonic() - session.challenge_started_at`.
+If the elapsed time exceeds 10 seconds:
+- The frame history for the current challenge is reset to an empty list.
+- The timer restarts.
+- The user receives the feedback: "Time's up — please perform the challenge again."
+
+The timer also resets whenever a challenge passes (so each challenge gets a fresh 10-second window).
+
+### Early Blink Signal
+
+During the stability window (while `face_stable_frames` is accumulating), the server watches the eye aspect ratio (EAR) on every frame.
+If any frame has `ear < 0.20` (a blink or partial close), `session.blink_observed_in_stability` is set to `True`.
+This is a **soft signal only** — it does not gate any decision.
+Its purpose is to confirm that the person is alive and interacting before the formal Blink challenge starts.
+It is logged and available for future automated risk scoring.
 
 ### Look Straight
 
