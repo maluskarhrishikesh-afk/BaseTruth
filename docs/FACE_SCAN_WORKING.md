@@ -254,29 +254,40 @@ This counter only increments when a frame passes **all five** of these checks si
 
 1. **Exactly one face** is detected in the frame — no more, no less.
 2. **Detection confidence ≥ 0.80** — the face must be clearly recognisable. This threshold is deliberately stricter than the 0.55 used during live challenges (where turns, blinks, and nods temporarily reduce confidence). The pre-challenge phase allows the server to demand high certainty while the person is stationary.
-3. **Face area ≥ 3% of frame** — the person must be close enough to the camera to fill a meaningful part of the oval. A tiny or distant face fails this check.
-4. **Nose within the centre band** (35%–65% of frame width) — the person's face must be roughly centred before challenges begin.
-5. **Geometry invariants pass** — the face must look like a real human face (eyes above nose, mouth below eyes, proportions within normal ranges).
+3. **Face area ≥ 6% of frame** — the stability gate is stricter than the 5% live-challenge threshold. At 6%, the bounding box is at least ~125×125 px at 640×480, giving the landmark model reliable results before challenges start.
+4. **Nose within the horizontal centre band** (35%–65% of frame width) — the person's face must be roughly centred horizontally.
+5. **Nose within the vertical centre band** (30%–70% of frame height) — prevents partial faces, tilted cameras, and bad landmark geometry from a very low or high camera position.
+6. **Head near-frontal** — |yaw| ≤ 0.08 and |pitch| ≤ 0.08 (roughly ±5°). The user must face straight at the camera before challenges begin.
+7. **Texture richness ≥ 18** — the face crop must have sufficient local texture variation (measured as mean per-patch standard deviation across a 6×6 grid). A flat screen, printed photo, or uniform background scores < 15; a real face at selfie distance typically scores 25–70.
+8. **Geometry invariants pass** — the face must look like a real human face (eyes above nose, mouth below eyes, proportions within normal ranges).
 
-If any condition fails, the counter resets to zero. The counter must reach **8 consecutive qualifying frames** (approximately 1 second at 8 FPS) before challenge history starts accumulating.
+Additionally, once the window of qualifying frames is complete, the server checks **yaw micro-movement variance** across the window. A real person always has small involuntary oscillations (breathing, muscle tremor); their yaw variance over 10 frames is typically 1×10⁻³ to 1×10⁻². A static screen or printed photo has machine-precision-flat yaw values — variance ≈ 0. If the variance is below 2×10⁻⁴, the window is rejected and the counter resets with the message: "No natural movement detected — ensure you are using a live camera."
 
-While the counter is below 8, the server responds with:
+If any condition fails, the counter resets to zero. The counter must reach **10 consecutive qualifying frames** (approximately 1 second at 10 FPS) before challenge history starts accumulating.
+
+While the counter is below 10, the server responds with:
 - `face_stable: false`
 - `face_stable_progress` (current count)
-- `face_stable_required` (8)
-- A human-readable feedback message explaining what the person needs to fix (e.g. "Move closer to the camera — your face is too far away.")
+- `face_stable_required` (10)
+- A human-readable feedback message explaining what the person needs to fix (e.g. "Move closer to the camera — your face is too small in the oval.")
 
-Once the counter reaches 8, `face_stable: true` is set on all subsequent status messages, and the normal challenge-accumulation logic begins.
+Once the counter reaches 10 and the yaw variance check passes, `face_stable: true` is set on all subsequent status messages, and the normal challenge-accumulation logic begins.
 
 ### Constants (in `src/basetruth/kyc/liveness.py`)
 
 | Constant | Value | Meaning |
 |---|---|---|
-| `FACE_STABLE_FRAMES_REQUIRED` | 8 | Consecutive qualifying frames before challenges start |
+| `FACE_STABLE_FRAMES_REQUIRED` | 10 | Consecutive qualifying frames before challenges start |
 | `FACE_STABILITY_CONFIDENCE_MIN` | 0.80 | Minimum detection confidence for the stability gate |
+| `FACE_STABILITY_AREA_MIN` | 0.06 | Minimum face area (6%) for the stability gate |
 | `FACE_STABILITY_X_MIN` / `X_MAX` | 0.35 / 0.65 | Horizontal centering band |
+| `FACE_STABILITY_Y_MIN` / `Y_MAX` | 0.30 / 0.70 | Vertical centering band |
+| `FACE_STABILITY_YAW_MAX` | 0.08 | Maximum absolute yaw before challenges (~±5°) |
+| `FACE_STABILITY_PITCH_MAX` | 0.08 | Maximum absolute pitch before challenges (~±5°) |
+| `FACE_STABILITY_YAW_VARIANCE_MIN` | 0.0002 | Minimum yaw variance over stability window (micro-movement check) |
+| `MIN_FACE_TEXTURE_SCORE` | 18.0 | Minimum local texture richness score (flat surface guard) |
 | `MIN_FACE_DETECTION_CONFIDENCE` | 0.55 | Minimum confidence during active challenges |
-| `MIN_FACE_AREA_RATIO` | 0.03 | Minimum face area (3% of frame) at all times |
+| `MIN_FACE_AREA_RATIO` | 0.05 | Minimum face area (5%) at all times during active challenges |
 
 ---
 
@@ -293,7 +304,7 @@ It is optional but useful — when it passes, the server saves the current frame
 How it detects this:
 It looks at the nose's horizontal position within the face bounding box across the last 3 consecutive frames.
 The nose must stay between 40% and 60% of the face width (roughly centred) for all 3 of those frames.
-3 frames at 8 FPS takes about 375 milliseconds.
+3 frames at 10 FPS takes about 300 milliseconds.
 
 If the nose is too far left, the feedback says "Move slightly to YOUR right to centre."
 If the nose is too far right, the feedback says "Move slightly to YOUR left to centre."
@@ -316,7 +327,7 @@ The server looks for this sequence in the history:
 If MediaPipe EAR is not available, the system falls back to watching InsightFace's face-detection confidence score.
 A blink causes a small but measurable dip in that score because the closing eyes reduce facial feature visibility.
 
-The minimum frame count for the blink check is 3 frames (about 375 ms at 8 FPS).
+The minimum frame count for the blink check is 3 frames (about 300 ms at 10 FPS).
 This is enough to capture the baseline, dip, and reopen.
 
 ### Nod
@@ -330,7 +341,7 @@ When you bring your head back up, the pitch decreases.
 
 The system checks the last 4 frames and measures the range: (maximum pitch minus minimum pitch).
 If that range is at least 0.12 (meaning the nose moved at least 12% of the eye-to-eye distance up and down), the nod is detected.
-4 frames at 8 FPS takes about 500 milliseconds — long enough to catch a real nod.
+4 frames at 10 FPS takes about 400 milliseconds — long enough to catch a real nod.
 
 ### Turn Left
 

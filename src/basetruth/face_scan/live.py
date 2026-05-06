@@ -28,9 +28,9 @@ from basetruth.face_scan.service import (
 )
 from basetruth.kyc.liveness import (
     analyze_challenge, extract_features, face_geometry_valid,
-    is_face_stable,
+    is_face_stable, compute_face_texture_score,
     MIN_FACE_DETECTION_CONFIDENCE, MIN_FACE_AREA_RATIO,
-    FACE_STABLE_FRAMES_REQUIRED,
+    FACE_STABLE_FRAMES_REQUIRED, FACE_STABILITY_YAW_VARIANCE_MIN,
 )
 from basetruth.logger import get_logger
 from basetruth.vision.face import get_face_analyzer, get_mediapipe_faces
@@ -128,7 +128,7 @@ const CHALLENGES = __CHALLENGES_JSON__;
 const LABELS = {look_straight:'LOOK AT THE CAMERA', blink:'BLINK ONCE', turn_left:'TURN TO YOUR LEFT', turn_right:'TURN TO YOUR RIGHT', nod:'NOD ONCE'};
 const INSTR = {look_straight:'Look into the camera and hold still — your face will be captured automatically.', blink:'Blink once: slowly close both eyes completely, then open them wide.', turn_left:'Slowly turn your head to YOUR left. Hold the turn briefly, then return.', turn_right:'Slowly turn your head to YOUR right. Hold the turn briefly, then return.', nod:'Slowly nod your head down once, then look back at the camera.'};
 let ws=null, stream=null, captureTimer=null, reconnectTimer=null;
-const CAPTURE_MS = 125;
+const CAPTURE_MS = 100;
 const RECONNECT_DELAY_MS = 1200;
 const MAX_RECONNECT_ATTEMPTS = 8;
 let reconnectAttempts = 0;
@@ -315,6 +315,10 @@ class FaceScanLiveSession:
     # size, centering, single face).  Challenges only start once this reaches
     # FACE_STABLE_FRAMES_REQUIRED.  Resets to zero on any validation failure.
     face_stable_frames: int = 0
+    # Yaw values collected during the stability window.  When the window completes,
+    # variance is checked to confirm micro-movement (a real person always has small
+    # involuntary oscillations; a static screen/photo has zero variance).
+    face_stable_yaw_buffer: List[float] = field(default_factory=list)
     challenge_results: List[Dict[str, Any]] = field(default_factory=list)
     challenge_snapshots: List[Dict[str, Any]] = field(default_factory=list)
     # Each entry records one wrong-motion event: challenge name, what the user did
@@ -1374,6 +1378,7 @@ def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> 
     if not faces:
         session.frames_without_face += 1
         session.face_stable_frames = 0
+        session.face_stable_yaw_buffer.clear()
         return {
             "type": "status",
             "face_detected": False,
@@ -1394,6 +1399,7 @@ def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> 
     if not geom_valid:
         session.frames_without_face += 1
         session.face_stable_frames = 0
+        session.face_stable_yaw_buffer.clear()
         log.debug(
             "Face geometry check rejected detection; treating as no face.",
             extra={"reason": geom_reason, "session_id": session.session_id},
@@ -1440,6 +1446,7 @@ def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> 
     if metrics["detector_confidence"] < MIN_FACE_DETECTION_CONFIDENCE:
         session.frames_without_face += 1
         session.face_stable_frames = 0
+        session.face_stable_yaw_buffer.clear()
         log.debug(
             "Live frame rejected: detector confidence below threshold.",
             extra={"detector_confidence": metrics["detector_confidence"], "session_id": session.session_id},
@@ -1462,6 +1469,7 @@ def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> 
     if metrics["bbox_area_ratio"] < MIN_FACE_AREA_RATIO:
         session.frames_without_face += 1
         session.face_stable_frames = 0
+        session.face_stable_yaw_buffer.clear()
         log.debug(
             "Live frame rejected: face bounding box too small.",
             extra={"bbox_area_ratio": metrics["bbox_area_ratio"], "session_id": session.session_id},
@@ -1483,35 +1491,86 @@ def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> 
     # Challenges only start once FACE_STABLE_FRAMES_REQUIRED consecutive frames
     # all pass the stricter stability check.  Any failure resets the counter so
     # a flickering or marginal detection cannot accumulate a partial count.
+    # After the window fills, yaw variance is checked to confirm natural
+    # micro-movement — a real person always oscillates; a static source does not.
     if session.face_stable_frames < FACE_STABLE_FRAMES_REQUIRED:
+        # Compute face texture score to guard against flat screens and photos.
+        _texture = compute_face_texture_score(img, face.bbox)
         stable_ok, stable_feedback = is_face_stable(
             face=face,
             face_count=len(faces),
             bbox_area_ratio=metrics["bbox_area_ratio"],
             confidence=metrics["detector_confidence"],
             nose_rel_x=metrics["nose_rel_x"],
+            nose_rel_y=metrics.get("nose_rel_y", 0.50),
+            yaw=metrics.get("yaw", 0.0),
+            pitch=metrics.get("pitch", 0.0),
+            texture_score=_texture,
         )
-        if stable_ok:
-            session.face_stable_frames += 1
-            log.debug(
-                "Face stability progress.",
-                extra={"stable_frames": session.face_stable_frames, "required": FACE_STABLE_FRAMES_REQUIRED, "session_id": session.session_id},
-            )
-        else:
-            # Reset on any validation failure — must be a continuous window.
+        if not stable_ok:
+            # Reset on any validation failure — must be a continuous clean window.
             session.face_stable_frames = 0
-        return {
-            "type": "status",
-            "face_detected": True,
-            "face_stable": False,
-            "face_stable_progress": session.face_stable_frames,
-            "face_stable_required": FACE_STABLE_FRAMES_REQUIRED,
-            "challenge": session.current_challenge,
-            "challenges_completed": session.current_challenge_idx,
-            "total_challenges": len(session.challenges),
-            "feedback": stable_feedback if not stable_ok else f"Hold still… ({FACE_STABLE_FRAMES_REQUIRED - session.face_stable_frames} more frames)",
-            "challenge_just_passed": False,
-        }
+            session.face_stable_yaw_buffer.clear()
+            return {
+                "type": "status",
+                "face_detected": True,
+                "face_stable": False,
+                "face_stable_progress": 0,
+                "face_stable_required": FACE_STABLE_FRAMES_REQUIRED,
+                "challenge": session.current_challenge,
+                "challenges_completed": session.current_challenge_idx,
+                "total_challenges": len(session.challenges),
+                "feedback": stable_feedback,
+                "challenge_just_passed": False,
+            }
+
+        # Frame passed all validation checks — accumulate toward the quota.
+        session.face_stable_frames += 1
+        session.face_stable_yaw_buffer.append(float(metrics.get("yaw", 0.0)))
+        log.debug(
+            "Face stability progress.",
+            extra={"stable_frames": session.face_stable_frames, "required": FACE_STABLE_FRAMES_REQUIRED, "session_id": session.session_id},
+        )
+
+        if session.face_stable_frames >= FACE_STABLE_FRAMES_REQUIRED:
+            # Window complete — verify natural micro-movement via yaw variance.
+            _yaw_var = float(np.var(session.face_stable_yaw_buffer))
+            if _yaw_var < FACE_STABILITY_YAW_VARIANCE_MIN:
+                # Static source suspected — reset and demand another window.
+                session.face_stable_frames = 0
+                session.face_stable_yaw_buffer.clear()
+                log.warning(
+                    "Face stability gate: yaw variance too low — static source suspected.",
+                    extra={"yaw_var": _yaw_var, "threshold": FACE_STABILITY_YAW_VARIANCE_MIN, "session_id": session.session_id},
+                )
+                return {
+                    "type": "status",
+                    "face_detected": True,
+                    "face_stable": False,
+                    "face_stable_progress": 0,
+                    "face_stable_required": FACE_STABLE_FRAMES_REQUIRED,
+                    "challenge": session.current_challenge,
+                    "challenges_completed": session.current_challenge_idx,
+                    "total_challenges": len(session.challenges),
+                    "feedback": "No natural movement detected — ensure you are using a live camera.",
+                    "challenge_just_passed": False,
+                }
+            # Variance check passed — fall through to challenge logic on this same frame.
+        else:
+            # Still accumulating — inform the user to keep holding still.
+            _remaining = FACE_STABLE_FRAMES_REQUIRED - session.face_stable_frames
+            return {
+                "type": "status",
+                "face_detected": True,
+                "face_stable": False,
+                "face_stable_progress": session.face_stable_frames,
+                "face_stable_required": FACE_STABLE_FRAMES_REQUIRED,
+                "challenge": session.current_challenge,
+                "challenges_completed": session.current_challenge_idx,
+                "total_challenges": len(session.challenges),
+                "feedback": f"Hold still… ({_remaining} more frames)",
+                "challenge_just_passed": False,
+            }
 
     session.current_frame_history().append(metrics)
     session.all_frame_history.append(metrics)

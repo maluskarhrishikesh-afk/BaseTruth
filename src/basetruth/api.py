@@ -683,7 +683,7 @@ async function startLiveness(){
   ws.onclose=e=>{ if(!resultShown && e.code!==1000) showResult(false,0,'Session disconnected.'); stopCapture(); };
 }
 
-// Capture a JPEG frame every ~310 ms and send it to the server as base64
+// Capture a JPEG frame every ~100 ms and send it to the server as base64
 function startCapture(){
   const canvas=document.createElement('canvas');
   const ctx=canvas.getContext('2d');
@@ -710,7 +710,7 @@ function startCapture(){
       };
       fr.readAsDataURL(blob);
     },'image/jpeg',0.82);
-  },310);
+  },100);
 }
 
 function stopCapture(){
@@ -1619,9 +1619,9 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
     from basetruth.kyc.session import ALL_CHALLENGES, SessionStore
     from basetruth.kyc.liveness import (
         analyze_challenge, extract_features, run_face_match,
-        face_geometry_valid, is_face_stable,
+        face_geometry_valid, is_face_stable, compute_face_texture_score,
         MIN_FACE_DETECTION_CONFIDENCE, MIN_FACE_AREA_RATIO,
-        FACE_STABLE_FRAMES_REQUIRED,
+        FACE_STABLE_FRAMES_REQUIRED, FACE_STABILITY_YAW_VARIANCE_MIN,
     )
     from basetruth.vision.face import get_face_analyzer, get_mediapipe_faces
     from basetruth.logger import get_logger as _get_logger
@@ -1682,6 +1682,7 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
         geom_valid, geom_reason = face_geometry_valid(face)
         if not geom_valid:
             session.face_stable_frames = 0
+            session.face_stable_yaw_buffer.clear()
             _kyc_log.debug(
                 "KYC frame rejected by geometry check; treating as no face.",
                 extra={"reason": geom_reason},
@@ -1719,6 +1720,7 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
             features = extract_features(face)
         except Exception:
             session.face_stable_frames = 0
+            session.face_stable_yaw_buffer.clear()
             return {
                 "type": "status",
                 "face_detected": True,
@@ -1740,36 +1742,90 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
         # consecutive frames does challenge history start accumulating.  Any
         # frame that fails the validation resets the counter to zero, so a
         # flickering marginal detection can never accumulate a partial count.
+        #
+        # After the window fills, yaw variance is checked to confirm natural
+        # micro-movement — a real person always oscillates slightly; a static
+        # screen or printed photo has yaw values that are machine-precision flat.
         if session.face_stable_frames < FACE_STABLE_FRAMES_REQUIRED:
+            # Compute texture score lazily — cheap guard against flat screens/photos.
+            _texture = compute_face_texture_score(img, face.bbox)
             stable_ok, stable_feedback = is_face_stable(
                 face=face,
                 face_count=len(faces),
                 bbox_area_ratio=_bbox_area_ratio,
                 confidence=features["det_score"],
                 nose_rel_x=features["nose_rel_x"],
+                nose_rel_y=features.get("nose_rel_y", 0.50),
+                yaw=features.get("yaw", 0.0),
+                pitch=features.get("pitch", 0.0),
+                texture_score=_texture,
             )
-            if stable_ok:
-                session.face_stable_frames += 1
-                _kyc_log.debug(
-                    "KYC face stability progress.",
-                    extra={"stable_frames": session.face_stable_frames, "required": FACE_STABLE_FRAMES_REQUIRED},
-                )
-            else:
-                # Reset on any validation failure — must be a continuous window.
+            if not stable_ok:
+                # Reset on any validation failure — must be a continuous clean window.
                 session.face_stable_frames = 0
-            remaining = FACE_STABLE_FRAMES_REQUIRED - session.face_stable_frames
-            return {
-                "type": "status",
-                "face_detected": True,
-                "face_stable": False,
-                "face_stable_progress": session.face_stable_frames,
-                "face_stable_required": FACE_STABLE_FRAMES_REQUIRED,
-                "challenge": session.current_challenge,
-                "challenges_completed": session.current_challenge_idx,
-                "total_challenges": len(session.challenges),
-                "feedback": stable_feedback if not stable_ok else f"Hold still… ({remaining} more frames)",
-                "challenge_just_passed": False,
-            }
+                session.face_stable_yaw_buffer.clear()
+                return {
+                    "type": "status",
+                    "face_detected": True,
+                    "face_stable": False,
+                    "face_stable_progress": 0,
+                    "face_stable_required": FACE_STABLE_FRAMES_REQUIRED,
+                    "challenge": session.current_challenge,
+                    "challenges_completed": session.current_challenge_idx,
+                    "total_challenges": len(session.challenges),
+                    "feedback": stable_feedback,
+                    "challenge_just_passed": False,
+                }
+
+            # Frame passed all validation checks — accumulate toward the quota.
+            session.face_stable_frames += 1
+            session.face_stable_yaw_buffer.append(float(features.get("yaw", 0.0)))
+            _kyc_log.debug(
+                "KYC face stability progress.",
+                extra={"stable_frames": session.face_stable_frames, "required": FACE_STABLE_FRAMES_REQUIRED},
+            )
+
+            if session.face_stable_frames >= FACE_STABLE_FRAMES_REQUIRED:
+                # Window complete — verify natural micro-movement via yaw variance.
+                # A real person always has small involuntary head oscillations;
+                # a static screen or printed photo has near-zero variance.
+                import numpy as _np  # noqa: PLC0415 — lazy to avoid circular at import time
+                _yaw_var = float(_np.var(session.face_stable_yaw_buffer))
+                if _yaw_var < FACE_STABILITY_YAW_VARIANCE_MIN:
+                    session.face_stable_frames = 0
+                    session.face_stable_yaw_buffer.clear()
+                    _kyc_log.warning(
+                        "KYC stability gate: yaw variance too low — static source suspected.",
+                        extra={"yaw_var": _yaw_var, "threshold": FACE_STABILITY_YAW_VARIANCE_MIN},
+                    )
+                    return {
+                        "type": "status",
+                        "face_detected": True,
+                        "face_stable": False,
+                        "face_stable_progress": 0,
+                        "face_stable_required": FACE_STABLE_FRAMES_REQUIRED,
+                        "challenge": session.current_challenge,
+                        "challenges_completed": session.current_challenge_idx,
+                        "total_challenges": len(session.challenges),
+                        "feedback": "No natural movement detected — ensure you are using a live camera.",
+                        "challenge_just_passed": False,
+                    }
+                # Variance check passed — fall through to challenge logic on this same frame.
+            else:
+                # Still accumulating — inform the user to keep holding still.
+                _remaining = FACE_STABLE_FRAMES_REQUIRED - session.face_stable_frames
+                return {
+                    "type": "status",
+                    "face_detected": True,
+                    "face_stable": False,
+                    "face_stable_progress": session.face_stable_frames,
+                    "face_stable_required": FACE_STABLE_FRAMES_REQUIRED,
+                    "challenge": session.current_challenge,
+                    "challenges_completed": session.current_challenge_idx,
+                    "total_challenges": len(session.challenges),
+                    "feedback": f"Hold still… ({_remaining} more frames)",
+                    "challenge_just_passed": False,
+                }
 
         # Face is stable — apply the in-challenge confidence and size gates
         # before crediting this frame toward challenge progress.

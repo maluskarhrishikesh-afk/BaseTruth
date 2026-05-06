@@ -89,16 +89,13 @@ MIN_FACE_DETECTION_CONFIDENCE = 0.55
 
 # Minimum face bounding-box area as a fraction of the full frame area required
 # for ANY frame to be counted toward challenge progress.
-# When the user steps away, ducks under the table, or a background object is
-# detected as a face, the bounding box is tiny relative to the full frame.
-# A real person centred in the oval at normal selfie distance occupies roughly
-# 5–30 % of the frame; a distant or background detection is typically < 2 %.
-# 3 % is conservative enough not to penalise users who are slightly further
-# from the camera while still blocking empty-room false positives.
-# At 640×480 (307 200 px²): 3 % ≈ 9 216 px² ≈ a 96×96-pixel face crop.
+# Expert review raised this from 3% to 5%: at 3% the face bbox is only ~96×96 px
+# at 640×480, which is too small for reliable landmark extraction and causes wrong
+# turn / blink / jitter readings.  5% (≈ 156×156 px at 640×480) gives the model
+# enough landmark resolution to be confident.
 # Frames that do not carry a 'bbox_area_ratio' key (old test fixtures, paths
 # that do not compute it) are allowed through so backward compatibility holds.
-MIN_FACE_AREA_RATIO = 0.03
+MIN_FACE_AREA_RATIO = 0.05
 
 # ── Pre-liveness face stability gate ──────────────────────────────────────────
 #
@@ -107,20 +104,27 @@ MIN_FACE_AREA_RATIO = 0.03
 #
 # Before the first challenge frame is accepted, the server requires N consecutive
 # frames where the face passes ALL of:
-#   1. Geometry invariants  (face_geometry_valid)
-#   2. Detection confidence ≥ FACE_STABILITY_CONFIDENCE_MIN (stricter than runtime)
-#   3. Face area            ≥ MIN_FACE_AREA_RATIO
-#   4. Horizontal centering within FACE_STABILITY_X band
-#   5. Exactly 1 face in the frame
+#   1. Geometry invariants    (face_geometry_valid)
+#   2. Detection confidence   ≥ FACE_STABILITY_CONFIDENCE_MIN (stricter than runtime)
+#   3. Face area              ≥ FACE_STABILITY_AREA_MIN (6%, stricter than the 5% runtime gate)
+#   4. Horizontal centering   within FACE_STABILITY_X band
+#   5. Vertical centering     within FACE_STABILITY_Y band (prevents tilted/partial faces)
+#   6. Near-frontal pose      |yaw| ≤ FACE_STABILITY_YAW_MAX  (head not turned sideways)
+#   7. Near-frontal pose      |pitch| ≤ FACE_STABILITY_PITCH_MAX (head not tilted up/down)
+#   8. Texture richness       ≥ MIN_FACE_TEXTURE_SCORE (flat screen/photo guard)
+#   9. Exactly 1 face in the frame
+#
+# In addition, after all N frames have accumulated, the yaw variance across the
+# window must exceed FACE_STABILITY_YAW_VARIANCE_MIN — a real person always has
+# tiny involuntary micro-movements; a static screen or printed photo has zero.
 #
 # Only once this quota is met does the server start crediting challenge history.
 # Any frame that fails ANY condition resets the counter to zero so the user must
 # hold still for a full clean window — a flickering or marginal detection can
 # never accumulate a partial count.
 #
-# 8 frames ≈ 1 second at a typical webcam FPS of 8.  This matches the expert
-# advice of "wait ~1 second for stability before starting liveness".
-FACE_STABLE_FRAMES_REQUIRED = 8
+# 10 frames ≈ 1–1.25 seconds at 8–10 FPS.
+FACE_STABLE_FRAMES_REQUIRED = 10
 
 # Higher confidence threshold for the stability gate.  We can be more demanding
 # here because the user is stationary and well-lit before challenges start.
@@ -129,11 +133,94 @@ FACE_STABLE_FRAMES_REQUIRED = 8
 # are not inadvertently dropped mid-challenge.
 FACE_STABILITY_CONFIDENCE_MIN = 0.80
 
-# Horizontal band for the stability gate — nose_rel_x must be in this range.
-# Slightly wider than the look_straight band (0.40–0.60) so the user is not
-# forced to pixel-perfectly centre before they even start.
+# Face size threshold for the stability gate — stricter than the runtime 5% gate.
+# At 6%, the face bbox is at least ~125×125 px at 640×480, giving InsightFace
+# reliable 5-point landmarks before challenges start.
+FACE_STABILITY_AREA_MIN = 0.06
+
+# Horizontal centering band for the stability gate — nose_rel_x must be in range.
+# Slightly wider than the look_straight challenge band (0.40–0.60) so the user is
+# not forced to pixel-perfectly centre before they even start.
 FACE_STABILITY_X_MIN = 0.35
 FACE_STABILITY_X_MAX = 0.65
+
+# Vertical centering band — nose_rel_y (nose Y relative to bbox height) must be
+# within this range.  Prevents partial faces, extreme camera angles, and bad
+# landmark geometry caused by a very low or very high camera position.
+FACE_STABILITY_Y_MIN = 0.30
+FACE_STABILITY_Y_MAX = 0.70
+
+# Maximum absolute yaw/pitch during the stability accumulation phase.
+# The user must be facing roughly straight at the camera before we start
+# so that the first challenge frames are captured with a high-quality pose.
+# 0.08 is roughly ±5 degrees of head rotation.
+FACE_STABILITY_YAW_MAX   = 0.08
+FACE_STABILITY_PITCH_MAX = 0.08
+
+# Minimum yaw variance across the stability window to confirm micro-movement.
+# A real human always has tiny involuntary head oscillations (breathing, muscle
+# tremor).  Over 10 frames their yaw variance is typically 1e-4 to 1e-2.
+# A static screen or printed photo has yaw values that are machine-precision
+# constant — variance ≈ 0.  Setting the threshold at 2e-4 comfortably separates
+# the two populations while not penalising very still but genuinely live users.
+FACE_STABILITY_YAW_VARIANCE_MIN = 0.0002
+
+# Minimum local texture richness score for the stability gate.
+# compute_face_texture_score() measures the mean per-cell standard deviation
+# across a 6×6 grid of the grayscale face crop.
+# Real faces at selfie distance: typically 25–70.
+# Flat surfaces (screen/photo reproduced from a screen): typically < 15.
+# Threshold at 18 gives a comfortable margin between the two populations.
+MIN_FACE_TEXTURE_SCORE = 18.0
+
+
+def compute_face_texture_score(img: Any, bbox: Any) -> float:
+    """Measure local texture richness inside the face bounding box.
+
+    Divides the grayscale face crop into a 6×6 grid and returns the mean
+    standard deviation across all cells.  This measures LOCAL variation inside
+    small patches rather than global contrast, which makes it robust to images
+    that have high global contrast despite a flat, textureless source (e.g. a
+    white background around a printed face).
+
+    High score = organic skin texture, hair, shadow variation → real face.
+    Low score  = uniform, smooth, texture-free surface → screen or print.
+
+    Real faces at normal selfie distance: typically 25–70.
+    Flat screen/photo presented to the camera: typically < 15.
+
+    Returns 99.0 (always passes) when the crop is too small to measure reliably
+    or when cv2 is unavailable.
+    """
+    try:
+        import cv2 as _cv2  # noqa: PLC0415 — lazy import keeps module lightweight
+    except ImportError:
+        return 99.0  # cv2 not available — cannot measure, assume OK
+
+    # Clamp the bounding box to image boundaries before cropping.
+    x1 = int(max(float(bbox[0]), 0))
+    y1 = int(max(float(bbox[1]), 0))
+    x2 = int(min(float(bbox[2]), img.shape[1]))
+    y2 = int(min(float(bbox[3]), img.shape[0]))
+    if x2 <= x1 or y2 <= y1:
+        return 99.0
+
+    crop = _cv2.cvtColor(img[y1:y2, x1:x2], _cv2.COLOR_BGR2GRAY)
+    if crop.size < 64:
+        return 99.0  # too small for meaningful patch statistics
+
+    # Divide into a 6×6 grid; compute std dev inside each cell.
+    # Small cells capture local texture variation independently of global pose lighting.
+    cell_h = max(crop.shape[0] // 6, 1)
+    cell_w = max(crop.shape[1] // 6, 1)
+    stds: List[float] = []
+    for r in range(6):
+        for c in range(6):
+            cell = crop[r * cell_h:(r + 1) * cell_h, c * cell_w:(c + 1) * cell_w]
+            if cell.size > 0:
+                stds.append(float(np.std(cell)))
+
+    return float(np.mean(stds)) if stds else 99.0
 
 
 def is_face_stable(
@@ -142,6 +229,10 @@ def is_face_stable(
     bbox_area_ratio: float,
     confidence: float,
     nose_rel_x: float,
+    nose_rel_y: float = 0.50,
+    yaw: float = 0.0,
+    pitch: float = 0.0,
+    texture_score: float = 99.0,
 ) -> Tuple[bool, str]:
     """Return (True, "") if this frame qualifies as a valid stability frame, or
     (False, user_feedback) explaining what the user needs to fix.
@@ -150,15 +241,22 @@ def is_face_stable(
 
         Face Detection → Face Validation → Face Tracking (stability) → Liveness
 
-    All five conditions must be satisfied simultaneously:
+    All nine conditions must be satisfied simultaneously:
       1. Exactly one face in the frame.
-      2. Detection confidence ≥ FACE_STABILITY_CONFIDENCE_MIN.
-      3. Face bounding box ≥ MIN_FACE_AREA_RATIO of the full frame.
-      4. Nose is within the FACE_STABILITY_X horizontal band.
-      5. Geometry invariants pass (caller must pre-check with face_geometry_valid).
+      2. Detection confidence ≥ FACE_STABILITY_CONFIDENCE_MIN (0.80).
+      3. Face bounding box ≥ FACE_STABILITY_AREA_MIN (6%) of the full frame.
+      4. Nose within horizontal band FACE_STABILITY_X_MIN–MAX (35–65%).
+      5. Nose within vertical band FACE_STABILITY_Y_MIN–MAX (30–70%).
+      6. |yaw|   ≤ FACE_STABILITY_YAW_MAX (0.08) — head near-frontal.
+      7. |pitch| ≤ FACE_STABILITY_PITCH_MAX (0.08) — head near-frontal.
+      8. texture_score ≥ MIN_FACE_TEXTURE_SCORE (18) — not a flat surface.
+      9. Geometry invariants pass (caller must pre-check with face_geometry_valid).
 
-    This function is intentionally stateless — the caller (frame processor) owns
-    the consecutive-frame counter and resets it on any False return.
+    Parameters nose_rel_y, yaw, pitch, texture_score default to safe "pass"
+    values so existing callers that do not supply them are unaffected.
+
+    This function is intentionally stateless — the caller owns the consecutive-
+    frame counter and resets it on any False return.
     """
     if face_count != 1:
         if face_count == 0:
@@ -168,8 +266,9 @@ def is_face_stable(
     if confidence < FACE_STABILITY_CONFIDENCE_MIN:
         return False, "Face not clearly visible — improve lighting or move closer."
 
-    if bbox_area_ratio < MIN_FACE_AREA_RATIO:
-        return False, "Move closer to the camera — your face is too far away."
+    # Use the stricter stability-phase area threshold (6%), not the live-phase one (5%).
+    if bbox_area_ratio < FACE_STABILITY_AREA_MIN:
+        return False, "Move closer to the camera — your face is too small in the oval."
 
     if nose_rel_x < FACE_STABILITY_X_MIN:
         return False, "Move slightly to YOUR right to centre your face."
@@ -177,8 +276,23 @@ def is_face_stable(
     if nose_rel_x > FACE_STABILITY_X_MAX:
         return False, "Move slightly to YOUR left to centre your face."
 
-    return True, ""
+    # Vertical centering — prevents tilted cameras and partial/cut-off faces.
+    if nose_rel_y < FACE_STABILITY_Y_MIN or nose_rel_y > FACE_STABILITY_Y_MAX:
+        return False, "Centre your face vertically in the oval."
 
+    # Head angle restrictions — user must face roughly straight before challenges begin.
+    if abs(yaw) > FACE_STABILITY_YAW_MAX:
+        return False, "Look straight at the camera before we begin."
+
+    if abs(pitch) > FACE_STABILITY_PITCH_MAX:
+        return False, "Look straight at the camera — do not tilt your head up or down."
+
+    # Flat surface guard — a screen or printed photo has very low local texture variance.
+    # A real face has organic skin texture that scores well above the threshold.
+    if texture_score < MIN_FACE_TEXTURE_SCORE:
+        return False, "Real face not detected — ensure you are in front of the camera, not a screen."
+
+    return True, ""
 
 
 # 0.12 accepts a natural head nod; 0.28 was the original, 0.14 was already lowered once

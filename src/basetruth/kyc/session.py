@@ -48,6 +48,10 @@ class KYCSession:
     # size, centering, single face).  Challenges only start once this reaches
     # FACE_STABLE_FRAMES_REQUIRED.  Resets to zero on any validation failure.
     face_stable_frames: int = 0
+    # Yaw values collected during the stability window.  When the window completes,
+    # variance is checked to confirm micro-movement (a real person always has small
+    # involuntary oscillations; a static screen/photo has zero variance).
+    face_stable_yaw_buffer: List[float] = field(default_factory=list)
     # Per-challenge frame features: {"ch_0": [...], "ch_1": [...], ...}
     challenge_frame_history: Dict[str, List[Dict[str, float]]] = field(
         default_factory=dict

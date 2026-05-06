@@ -688,9 +688,13 @@ def _stable_call(
     bbox_area_ratio: float = 0.10,
     confidence: float = 0.90,
     nose_rel_x: float = 0.50,
+    nose_rel_y: float = 0.50,
+    yaw: float = 0.0,
+    pitch: float = 0.0,
+    texture_score: float = 99.0,
 ):
     """Build a minimal face stub and call is_face_stable with the given parameters."""
-    from basetruth.kyc.liveness import is_face_stable, MIN_FACE_AREA_RATIO
+    from basetruth.kyc.liveness import is_face_stable
 
     # Provide a face with enough kps to satisfy face_geometry_valid (not used by is_face_stable
     # itself, but we want a consistent stub).
@@ -707,6 +711,10 @@ def _stable_call(
         bbox_area_ratio=bbox_area_ratio,
         confidence=confidence,
         nose_rel_x=nose_rel_x,
+        nose_rel_y=nose_rel_y,
+        yaw=yaw,
+        pitch=pitch,
+        texture_score=texture_score,
     )
 
 
@@ -741,12 +749,12 @@ def test_is_face_stable_rejects_low_confidence() -> None:
 
 
 def test_is_face_stable_rejects_tiny_face() -> None:
-    """A face bbox smaller than MIN_FACE_AREA_RATIO must return False."""
-    from basetruth.kyc.liveness import MIN_FACE_AREA_RATIO
+    """A face bbox smaller than FACE_STABILITY_AREA_MIN must return False."""
+    from basetruth.kyc.liveness import FACE_STABILITY_AREA_MIN
 
-    ok, feedback = _stable_call(bbox_area_ratio=MIN_FACE_AREA_RATIO * 0.5)
+    ok, feedback = _stable_call(bbox_area_ratio=FACE_STABILITY_AREA_MIN * 0.5)
     assert ok is False
-    assert "closer" in feedback.lower() or "far" in feedback.lower()
+    assert "closer" in feedback.lower() or "small" in feedback.lower()
 
 
 def test_is_face_stable_rejects_face_too_far_left() -> None:
@@ -819,3 +827,133 @@ def test_face_stable_frames_requires_continuous_window() -> None:
 
     # After a reset midway, the remaining good frames should fill a new window
     assert counter == FACE_STABLE_FRAMES_REQUIRED
+
+
+# ── is_face_stable: expert-review additions ───────────────────────────────────
+
+def test_is_face_stable_rejects_face_too_high_vertically() -> None:
+    """Nose above the vertical band (nose_rel_y < FACE_STABILITY_Y_MIN) must return False."""
+    from basetruth.kyc.liveness import FACE_STABILITY_Y_MIN
+
+    ok, feedback = _stable_call(nose_rel_y=FACE_STABILITY_Y_MIN - 0.01)
+    assert ok is False
+    assert "vertically" in feedback.lower() or "centre" in feedback.lower()
+
+
+def test_is_face_stable_rejects_face_too_low_vertically() -> None:
+    """Nose below the vertical band (nose_rel_y > FACE_STABILITY_Y_MAX) must return False."""
+    from basetruth.kyc.liveness import FACE_STABILITY_Y_MAX
+
+    ok, feedback = _stable_call(nose_rel_y=FACE_STABILITY_Y_MAX + 0.01)
+    assert ok is False
+    assert "vertically" in feedback.lower() or "centre" in feedback.lower()
+
+
+def test_is_face_stable_accepts_nose_at_vertical_boundaries() -> None:
+    """Nose exactly at the Y boundary values must pass (inclusive test)."""
+    from basetruth.kyc.liveness import FACE_STABILITY_Y_MIN, FACE_STABILITY_Y_MAX
+
+    ok_low, _ = _stable_call(nose_rel_y=FACE_STABILITY_Y_MIN)
+    ok_high, _ = _stable_call(nose_rel_y=FACE_STABILITY_Y_MAX)
+    assert ok_low is True
+    assert ok_high is True
+
+
+def test_is_face_stable_rejects_yaw_too_large() -> None:
+    """Head turned too far (|yaw| > FACE_STABILITY_YAW_MAX) must return False."""
+    from basetruth.kyc.liveness import FACE_STABILITY_YAW_MAX
+
+    ok_pos, fb_pos = _stable_call(yaw=FACE_STABILITY_YAW_MAX + 0.01)
+    ok_neg, fb_neg = _stable_call(yaw=-(FACE_STABILITY_YAW_MAX + 0.01))
+    assert ok_pos is False
+    assert "straight" in fb_pos.lower() or "camera" in fb_pos.lower()
+    assert ok_neg is False
+
+
+def test_is_face_stable_accepts_yaw_within_limit() -> None:
+    """Yaw exactly at FACE_STABILITY_YAW_MAX must pass."""
+    from basetruth.kyc.liveness import FACE_STABILITY_YAW_MAX
+
+    ok, _ = _stable_call(yaw=FACE_STABILITY_YAW_MAX)
+    assert ok is True
+
+
+def test_is_face_stable_rejects_pitch_too_large() -> None:
+    """Head tilted too far (|pitch| > FACE_STABILITY_PITCH_MAX) must return False."""
+    from basetruth.kyc.liveness import FACE_STABILITY_PITCH_MAX
+
+    ok_pos, fb_pos = _stable_call(pitch=FACE_STABILITY_PITCH_MAX + 0.01)
+    ok_neg, fb_neg = _stable_call(pitch=-(FACE_STABILITY_PITCH_MAX + 0.01))
+    assert ok_pos is False
+    assert "straight" in fb_pos.lower() or "camera" in fb_pos.lower() or "tilt" in fb_pos.lower()
+    assert ok_neg is False
+
+
+def test_is_face_stable_rejects_low_texture() -> None:
+    """A face with very low texture score (flat screen/photo) must return False."""
+    from basetruth.kyc.liveness import MIN_FACE_TEXTURE_SCORE
+
+    ok, feedback = _stable_call(texture_score=MIN_FACE_TEXTURE_SCORE - 1.0)
+    assert ok is False
+    assert "screen" in feedback.lower() or "real" in feedback.lower() or "camera" in feedback.lower()
+
+
+def test_is_face_stable_accepts_high_texture() -> None:
+    """A face with texture score well above threshold must pass."""
+    from basetruth.kyc.liveness import MIN_FACE_TEXTURE_SCORE
+
+    ok, _ = _stable_call(texture_score=MIN_FACE_TEXTURE_SCORE + 20.0)
+    assert ok is True
+
+
+def test_is_face_stable_uses_stability_area_min_not_live_gate() -> None:
+    """An area between MIN_FACE_AREA_RATIO and FACE_STABILITY_AREA_MIN must fail the stability gate."""
+    from basetruth.kyc.liveness import MIN_FACE_AREA_RATIO, FACE_STABILITY_AREA_MIN
+
+    # This area is above the live-challenge gate but below the stability gate.
+    area_between = (MIN_FACE_AREA_RATIO + FACE_STABILITY_AREA_MIN) / 2.0
+    ok, feedback = _stable_call(bbox_area_ratio=area_between)
+    assert ok is False
+    assert "closer" in feedback.lower() or "small" in feedback.lower()
+
+
+# ── compute_face_texture_score tests ─────────────────────────────────────────
+
+def test_compute_face_texture_score_high_for_noisy_image() -> None:
+    """A random-noise image (high local std dev) must score above MIN_FACE_TEXTURE_SCORE."""
+    pytest.importorskip("cv2")
+    import numpy as np
+    from basetruth.kyc.liveness import compute_face_texture_score, MIN_FACE_TEXTURE_SCORE
+
+    rng = np.random.default_rng(42)
+    img_bgr = rng.integers(0, 256, (120, 100, 3), dtype=np.uint8)
+    bbox = np.array([0, 0, 100, 120], dtype=float)
+    score = compute_face_texture_score(img_bgr, bbox)
+    assert score > MIN_FACE_TEXTURE_SCORE, f"Random image should score high, got {score}"
+
+
+def test_compute_face_texture_score_low_for_flat_image() -> None:
+    """A uniform-colour image (zero variance) must score below MIN_FACE_TEXTURE_SCORE."""
+    pytest.importorskip("cv2")
+    import numpy as np
+    from basetruth.kyc.liveness import compute_face_texture_score, MIN_FACE_TEXTURE_SCORE
+
+    # Constant 128 — absolutely zero local texture.
+    img_bgr = np.full((120, 100, 3), 128, dtype=np.uint8)
+    bbox = np.array([0, 0, 100, 120], dtype=float)
+    score = compute_face_texture_score(img_bgr, bbox)
+    assert score < MIN_FACE_TEXTURE_SCORE, f"Flat image should score low, got {score}"
+
+
+def test_compute_face_texture_score_returns_99_for_tiny_bbox() -> None:
+    """A bbox that clips to zero area must return 99.0 (passes by default)."""
+    pytest.importorskip("cv2")
+    import numpy as np
+    from basetruth.kyc.liveness import compute_face_texture_score
+
+    img_bgr = np.zeros((10, 10, 3), dtype=np.uint8)
+    # bbox outside image — clips to nothing
+    bbox = np.array([20, 20, 20, 20], dtype=float)
+    score = compute_face_texture_score(img_bgr, bbox)
+    assert score == 99.0
+
