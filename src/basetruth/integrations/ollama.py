@@ -273,7 +273,12 @@ def get_provider_config_for_feature(feature: str) -> Dict[str, Any]:
         # Leave model_name empty so Ollama callers use select_ollama_model()
         # against the probe_ollama() list (which already honours OLLAMA_MODEL
         # env var and providers.ollama.model in settings.json internally).
-        provider_name = get_active_provider()
+        raw_provider = get_active_provider()
+        # "feature_models" is a routing sentinel meaning "look up per-feature config".
+        # When we arrive here it means this feature has no entry, so treat it as Ollama
+        # to avoid returning an unroutable provider name that would silently produce
+        # an empty response.
+        provider_name = raw_provider if raw_provider != _FEATURE_MODELS_KEY else "ollama"
         model_name = ""
         model_explicitly_configured = False
 

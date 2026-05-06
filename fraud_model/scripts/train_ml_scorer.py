@@ -66,9 +66,9 @@ def main() -> None:
         sys.exit(1)
 
     # Print a clean metrics summary
-    print("\n─────────────────────────────────────────────")
-    print("  ML Scorer — Training Results")
-    print("─────────────────────────────────────────────")
+    print("\n" + "-" * 45)
+    print("  ML Scorer -- Training Results")
+    print("-" * 45)
     print(f"  Rows trained  : {metrics['rows_trained']:,}")
     print(f"  Accuracy (CV) : {metrics['accuracy']:.4f}")
     print(f"  F1 Score (CV) : {metrics['f1']:.4f}")
@@ -84,12 +84,12 @@ def main() -> None:
         print("\n  Feature Importances:")
         sorted_imp = sorted(metrics["feature_importances"].items(), key=lambda x: -x[1])
         for feat, imp in sorted_imp:
-            bar = "█" * int(imp * 40)
+            bar = "#" * int(imp * 40)
             print(f"    {feat:<30} {imp:.4f}  {bar}")
 
-    print("\n─────────────────────────────────────────────")
-    print(f"  Model saved → {metrics['model_path']}")
-    print("─────────────────────────────────────────────\n")
+    print("\n" + "-" * 45)
+    print(f"  Model saved -> {metrics['model_path']}")
+    print("-" * 45 + "\n")
 
 
 if __name__ == "__main__":

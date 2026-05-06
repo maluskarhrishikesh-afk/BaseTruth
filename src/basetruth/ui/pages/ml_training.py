@@ -45,9 +45,9 @@ _PDF_PKL     = _REPO_ROOT / "fraud_model" / "models" / "ml_scorer_pdf.pkl"
 _API_PORT = 8000
 
 
-# ─── Class colours — same as the UI verdict palette ───────────────────────────
-_CLASS_COLORS  = ["#22c55e", "#3b82f6", "#ef4444", "#a855f7"]
-_CLASS_LABELS  = ["ORIGINAL", "ORIGINAL-DERIVED", "TAMPERED", "TAMPERED-DERIVED"]
+# ─── Class colours — binary palette ──────────────────────────────────────────
+_CLASS_COLORS  = ["#22c55e", "#ef4444"]
+_CLASS_LABELS  = ["ORIGINAL", "FAKE/EDITED"]
 
 # ─── Plain-English guide to the image forensic signals ───────────────────────
 # Each entry: (signal_name, emoji, one_line_summary, longer_explanation)
@@ -106,7 +106,8 @@ _SIGNAL_GUIDE = [
         "removes repetitive patterns. The entropy of a real document is typically 7.0–8.0 "
         "bits/byte. A value significantly below 7.0 suggests the file was tampered with in "
         "a way that introduced repetitive regions, or that it is an uncompressed format "
-        "masquerading as a compressed one.",
+        "masquerading as a compressed one. (Note: Currently used by the Heuristic engine; "
+        "excluded from the ML image model due to zero variance in the training dataset.)",
     ),
     (
         "noise_hotspot_ratio",
@@ -755,10 +756,12 @@ def _build_image_charts(results: Dict[str, Any]) -> None:
             "**Balanced classes** (similar bar heights) make a more reliable model.",
         )
         if "label" in df.columns:
-            counts = [int(df[df["label"] == i].shape[0]) for i in range(4)]
-            fig_a, ax_a = plt.subplots(figsize=(7, 3), facecolor="#0f172a")
+            # Binarize: 0=ORIGINAL, 1=FAKE/EDITED (labels 1,2,3 collapsed)
+            binary_labels = (df["label"] > 0).astype(int)
+            counts = [int((binary_labels == i).sum()) for i in range(2)]
+            fig_a, ax_a = plt.subplots(figsize=(7, 2.5), facecolor="#0f172a")
             ax_a.set_facecolor("#1e293b")
-            bars = ax_a.barh(_CLASS_LABELS, counts, color=_CLASS_COLORS, edgecolor="#334155", height=0.6)
+            bars = ax_a.barh(_CLASS_LABELS, counts, color=_CLASS_COLORS, edgecolor="#334155", height=0.5)
             for bar, cnt in zip(bars, counts):
                 ax_a.text(bar.get_width() + 0.5, bar.get_y() + bar.get_height() / 2,
                           str(cnt), va="center", ha="left", color="white", fontweight="bold", fontsize=10)
@@ -770,7 +773,7 @@ def _build_image_charts(results: Dict[str, Any]) -> None:
                 spine.set_edgecolor("#334155")
             ax_a.grid(axis="x", color="#334155", linewidth=0.6, alpha=0.5)
             ax_a.set_xlim(0, max(counts) * 1.2)
-            ax_a.set_title("Training Class Distribution", color="white", fontsize=11)
+            ax_a.set_title("Training Class Distribution (Binary)", color="white", fontsize=11)
             plt.tight_layout()
             st.pyplot(fig_a, use_container_width=True)
             plt.close(fig_a)
@@ -826,19 +829,23 @@ def _build_image_charts(results: Dict[str, Any]) -> None:
             df_feat = _remap_raw_csv(df)
             X = df_feat[FEATURE_NAMES].copy().astype(float)
             X.replace(-1.0, float("nan"), inplace=True)
-            X["text_alignment_score"] = 0.0
+            # No extra columns — model was trained with exactly FEATURE_NAMES
 
             imputer = pipe.named_steps["imputer"]
             X_imp = imputer.transform(X)
             X_trim = X_imp[:, :n_booster]
             dmat = xgb.DMatrix(X_trim, feature_names=active_names)
 
-            # 3-D SHAP array: (n_samples, n_classes, n_features + 1)
+            # Binary model: pred_contribs returns 2-D (n_samples, n_features+1)
             raw_shap = booster.predict(dmat, pred_contribs=True)
-            shap_3d  = raw_shap[:, :, :-1]   # drop bias column
+            # Drop bias column; result is (n_samples, n_features)
+            shap_2d = raw_shap[:, :-1]
 
-            # Average absolute SHAP per class → (4, n_features)
-            mean_abs = np.mean(np.abs(shap_3d), axis=0)
+            # Stack into shape (2, n_features) — row 0 = ORIGINAL, row 1 = FAKE/EDITED
+            # For binary XGBoost, positive SHAP → pushes toward FAKE/EDITED
+            mean_abs_fake = np.mean(np.abs(shap_2d), axis=0, keepdims=True)   # (1, n_feat)
+            mean_abs_orig = mean_abs_fake  # symmetric for binary logistic
+            mean_abs = np.vstack([mean_abs_orig, mean_abs_fake])  # (2, n_feat)
 
             # Column-normalise so colours reflect relative within-feature importance
             col_max = mean_abs.max(axis=0, keepdims=True)
@@ -852,14 +859,13 @@ def _build_image_charts(results: Dict[str, Any]) -> None:
             ]
 
             fig_c, ax_c = plt.subplots(
-                figsize=(max(8, n_booster * 0.9), 3.5),
+                figsize=(max(8, n_booster * 0.9), 2.5),
                 facecolor="#0f172a",
             )
             ax_c.set_facecolor("#1e293b")
 
             heat_cmap = LinearSegmentedColormap.from_list("heat", ["#0f172a", "#f59e0b", "#ef4444"])
-            im = ax_c.imshow(normalised[:min(4, mean_abs.shape[0])], aspect="auto",
-                             cmap=heat_cmap, vmin=0, vmax=1)
+            im = ax_c.imshow(normalised, aspect="auto", cmap=heat_cmap, vmin=0, vmax=1)
 
             # Annotate each cell with the raw mean |SHAP| value
             for row in range(normalised.shape[0]):
@@ -871,8 +877,8 @@ def _build_image_charts(results: Dict[str, Any]) -> None:
 
             ax_c.set_xticks(range(len(active_names)))
             ax_c.set_xticklabels(short_names, fontsize=8, color="white")
-            ax_c.set_yticks(range(min(4, mean_abs.shape[0])))
-            ax_c.set_yticklabels(_CLASS_LABELS[:mean_abs.shape[0]], fontsize=9, color="white")
+            ax_c.set_yticks(range(2))
+            ax_c.set_yticklabels(_CLASS_LABELS, fontsize=9, color="white")
             ax_c.set_title("Per-Verdict SHAP Influence (column-normalised)", color="white", fontsize=11)
 
             cbar = plt.colorbar(im, ax=ax_c, fraction=0.015, pad=0.01)
@@ -901,31 +907,31 @@ def _build_image_charts(results: Dict[str, Any]) -> None:
             df_feat = _remap_raw_csv(df)
             X = df_feat[FEATURE_NAMES].copy().astype(float)
             X.replace(-1.0, float("nan"), inplace=True)
-            X["text_alignment_score"] = 0.0
-            y_true = df["label"].values.astype(int)
+            # Binarize labels to match the trained model
+            y_true = (df["label"].values.astype(int) > 0).astype(int)
             y_pred = pipe.predict(X)
-            cm = confusion_matrix(y_true, y_pred, labels=[0, 1, 2, 3])
+            cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
 
             # Normalise rows → each cell = recall for that class
             with np.errstate(divide="ignore", invalid="ignore"):
                 cm_norm = cm.astype(float) / cm.sum(axis=1, keepdims=True)
                 cm_norm = np.nan_to_num(cm_norm)
 
-            fig_d, ax_d = plt.subplots(figsize=(5.5, 4.5), facecolor="#0f172a")
+            fig_d, ax_d = plt.subplots(figsize=(4.5, 3.5), facecolor="#0f172a")
             ax_d.set_facecolor("#1e293b")
             cmap_cm = LinearSegmentedColormap.from_list("cm_heat", ["#0f172a", "#22c55e"])
             im_d = ax_d.imshow(cm_norm, aspect="auto", cmap=cmap_cm, vmin=0, vmax=1)
 
-            for i in range(4):
-                for j in range(4):
+            for i in range(2):
+                for j in range(2):
                     text_col = "black" if cm_norm[i, j] > 0.6 else "white"
                     ax_d.text(j, i, f"{cm[i, j]}\n({cm_norm[i, j]:.0%})",
-                              ha="center", va="center", fontsize=9, color=text_col)
+                              ha="center", va="center", fontsize=10, color=text_col)
 
-            ax_d.set_xticks(range(4))
-            ax_d.set_xticklabels([f"Pred\n{l}" for l in _CLASS_LABELS], fontsize=7.5, color="white")
-            ax_d.set_yticks(range(4))
-            ax_d.set_yticklabels([f"True\n{l}" for l in _CLASS_LABELS], fontsize=7.5, color="white")
+            ax_d.set_xticks(range(2))
+            ax_d.set_xticklabels([f"Pred\n{l}" for l in _CLASS_LABELS], fontsize=9, color="white")
+            ax_d.set_yticks(range(2))
+            ax_d.set_yticklabels([f"True\n{l}" for l in _CLASS_LABELS], fontsize=9, color="white")
             ax_d.set_title("Confusion Matrix (row-normalised)", color="white", fontsize=11)
 
             cbar_d = plt.colorbar(im_d, ax=ax_d, fraction=0.046, pad=0.04)
@@ -955,7 +961,7 @@ def _build_image_charts(results: Dict[str, Any]) -> None:
             df_pca_feat = df_pca[active_names].copy().astype(float)
             df_pca_feat.replace(-1.0, float("nan"), inplace=True)
             df_pca_feat.fillna(df_pca_feat.median(), inplace=True)
-            df_pca_feat["text_alignment_score"] = 0.0   # pad if needed
+            # No extra columns — active_names is exactly what the model was trained with
 
             # Standardise so no single large-valued feature dominates PCA.
             X_scaled = StandardScaler().fit_transform(df_pca_feat[active_names])
@@ -963,7 +969,8 @@ def _build_image_charts(results: Dict[str, Any]) -> None:
             coords = pca.fit_transform(X_scaled)
             var_exp = pca.explained_variance_ratio_
 
-            y_lbl = df_pca["label"].values.astype(int)
+            # Binarize labels for PCA colouring
+            y_lbl = (df_pca["label"].values.astype(int) > 0).astype(int)
 
             fig_e, ax_e = plt.subplots(figsize=(7, 5), facecolor="#0f172a")
             ax_e.set_facecolor("#1e293b")

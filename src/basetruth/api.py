@@ -1466,6 +1466,38 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
             await websocket.send_json({"type": "error", "message": "Session not found or expired."})
             await websocket.close(code=1008)
             return
+        if session.status == "completed":
+            # Session already finished — a reconnect (network blip, page refresh) should
+            # show the result, not an opaque error. Replay it and close cleanly.
+            if session.result is not None:
+                _face_scan_live_log.info(
+                    "Face Scan live WebSocket: replaying result for completed session",
+                    extra={"session_id": session_id},
+                )
+                await websocket.send_json({"type": "result", **session.result})
+                await websocket.close(code=1000)
+            else:
+                await websocket.send_json({"type": "error", "message": "Session has already completed. Please start a new session."})
+                await websocket.close(code=1008)
+            return
+        if session.status == "processing":
+            # The LLM narrative is still computing in a background executor thread
+            # from the previous WebSocket connection. Poll briefly for the result
+            # (up to 15 s) then replay it so this reconnected client gets the answer.
+            _face_scan_live_log.info(
+                "Face Scan live WebSocket: reconnect during processing; waiting for result",
+                extra={"session_id": session_id},
+            )
+            for _ in range(30):  # 30 * 0.5 s = 15 s max
+                await _asyncio.sleep(0.5)
+                if session.result is not None and not bool(session.result.get("narrative_pending")):
+                    break
+            if session.result is not None and not bool(session.result.get("narrative_pending")):
+                await websocket.send_json({"type": "result", **session.result})
+            else:
+                await websocket.send_json({"type": "processing", "message": "Still verifying your results. Please wait\u2026"})
+            await websocket.close(code=1000)
+            return
         if session.status not in ("waiting", "active"):
             await websocket.send_json({"type": "error", "message": f"Session is {session.status}."})
             await websocket.close(code=1008)
@@ -1502,14 +1534,33 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
                     data.get("data", ""),
                 )
                 await websocket.send_json(result)
-                if result.get("type") == "result":
+                if result.get("type") == "processing":
+                    # All liveness challenges are done. Build the final result payload
+                    # (which includes a ~6-8 s LLM narrative call) in a second executor
+                    # step. The browser already received the 'processing' message above
+                    # and will display 'Verifying your results…' while we wait.
+                    final_result = await loop.run_in_executor(
+                        None,
+                        _face_scan_live.build_live_face_scan_result,
+                        session,
+                    )
+                    await websocket.send_json({"type": "result", **final_result})
                     _face_scan_live_log.info(
                         "Face Scan live session completed",
                         extra={
                             "session_id": session_id,
-                            "verdict": result.get("verdict"),
-                            "risk": result.get("risk_score_0_100"),
+                            "verdict": final_result.get("verdict"),
+                            "risk": final_result.get("risk_score_0_100"),
                         },
+                    )
+                    clean_exit = True
+                    break
+                if result.get("type") == "result":
+                    # Fallback: late-arriving frame after result already computed;
+                    # the guard in process_live_frame_message returned the cached result.
+                    _face_scan_live_log.info(
+                        "Face Scan live session completed (replayed)",
+                        extra={"session_id": session_id},
                     )
                     clean_exit = True
                     break
@@ -1566,7 +1617,12 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
     from fastapi.responses import HTMLResponse as _HTMLResponse
 
     from basetruth.kyc.session import ALL_CHALLENGES, SessionStore
-    from basetruth.kyc.liveness import analyze_challenge, extract_features, run_face_match
+    from basetruth.kyc.liveness import (
+        analyze_challenge, extract_features, run_face_match,
+        face_geometry_valid, is_face_stable,
+        MIN_FACE_DETECTION_CONFIDENCE, MIN_FACE_AREA_RATIO,
+        FACE_STABLE_FRAMES_REQUIRED,
+    )
     from basetruth.vision.face import get_face_analyzer, get_mediapipe_faces
     from basetruth.logger import get_logger as _get_logger
 
@@ -1620,6 +1676,34 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
             }
 
         face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
+
+        # Reject detections that do not pass human-face geometry invariants.
+        # A palm or hand placed in front of the camera can fool the detector.
+        geom_valid, geom_reason = face_geometry_valid(face)
+        if not geom_valid:
+            session.face_stable_frames = 0
+            _kyc_log.debug(
+                "KYC frame rejected by geometry check; treating as no face.",
+                extra={"reason": geom_reason},
+            )
+            return {
+                "type": "status",
+                "face_detected": False,
+                "face_stable": False,
+                "challenge": session.current_challenge,
+                "challenges_completed": session.current_challenge_idx,
+                "total_challenges": len(session.challenges),
+                "feedback": "Keep your face fully inside the oval — move hands away from the camera.",
+                "challenge_just_passed": False,
+            }
+
+        # Compute bbox_area_ratio now — needed by both the stability gate and
+        # the in-challenge confidence check that follows.
+        _frame_h, _frame_w = img.shape[:2]
+        _face_area  = float(max((face.bbox[2] - face.bbox[0]) * (face.bbox[3] - face.bbox[1]), 0.0))
+        _frame_area = float(max(_frame_h * _frame_w, 1))
+        _bbox_area_ratio = _face_area / _frame_area
+
         # Store the last clear frame for later use in PDF reports
         session.last_live_frame_bytes = raw
 
@@ -1634,16 +1718,93 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
         try:
             features = extract_features(face)
         except Exception:
-            # kps unavailable (face too small / angled) — skip this frame silently
+            session.face_stable_frames = 0
             return {
                 "type": "status",
                 "face_detected": True,
+                "face_stable": False,
                 "challenge": session.current_challenge,
                 "challenges_completed": session.current_challenge_idx,
                 "total_challenges": len(session.challenges),
                 "feedback": "Hold still — aligning to your face…",
                 "challenge_just_passed": False,
             }
+
+        features["bbox_area_ratio"] = _bbox_area_ratio
+
+        # ── Pre-liveness face stability gate ─────────────────────────────────
+        # Expert-recommended pipeline:
+        #   Detection → Validation → Tracking (stability) → Liveness Challenge
+        #
+        # Only once the face has been stable for FACE_STABLE_FRAMES_REQUIRED
+        # consecutive frames does challenge history start accumulating.  Any
+        # frame that fails the validation resets the counter to zero, so a
+        # flickering marginal detection can never accumulate a partial count.
+        if session.face_stable_frames < FACE_STABLE_FRAMES_REQUIRED:
+            stable_ok, stable_feedback = is_face_stable(
+                face=face,
+                face_count=len(faces),
+                bbox_area_ratio=_bbox_area_ratio,
+                confidence=features["det_score"],
+                nose_rel_x=features["nose_rel_x"],
+            )
+            if stable_ok:
+                session.face_stable_frames += 1
+                _kyc_log.debug(
+                    "KYC face stability progress.",
+                    extra={"stable_frames": session.face_stable_frames, "required": FACE_STABLE_FRAMES_REQUIRED},
+                )
+            else:
+                # Reset on any validation failure — must be a continuous window.
+                session.face_stable_frames = 0
+            remaining = FACE_STABLE_FRAMES_REQUIRED - session.face_stable_frames
+            return {
+                "type": "status",
+                "face_detected": True,
+                "face_stable": False,
+                "face_stable_progress": session.face_stable_frames,
+                "face_stable_required": FACE_STABLE_FRAMES_REQUIRED,
+                "challenge": session.current_challenge,
+                "challenges_completed": session.current_challenge_idx,
+                "total_challenges": len(session.challenges),
+                "feedback": stable_feedback if not stable_ok else f"Hold still… ({remaining} more frames)",
+                "challenge_just_passed": False,
+            }
+
+        # Face is stable — apply the in-challenge confidence and size gates
+        # before crediting this frame toward challenge progress.
+        if features["det_score"] < MIN_FACE_DETECTION_CONFIDENCE:
+            _kyc_log.debug(
+                "KYC frame rejected: det_score below minimum threshold.",
+                extra={"det_score": features["det_score"]},
+            )
+            return {
+                "type": "status",
+                "face_detected": False,
+                "face_stable": True,
+                "challenge": session.current_challenge,
+                "challenges_completed": session.current_challenge_idx,
+                "total_challenges": len(session.challenges),
+                "feedback": "No face detected — look directly into the camera.",
+                "challenge_just_passed": False,
+            }
+
+        if features["bbox_area_ratio"] < MIN_FACE_AREA_RATIO:
+            _kyc_log.debug(
+                "KYC frame rejected: face too small relative to frame.",
+                extra={"bbox_area_ratio": features["bbox_area_ratio"]},
+            )
+            return {
+                "type": "status",
+                "face_detected": False,
+                "face_stable": True,
+                "challenge": session.current_challenge,
+                "challenges_completed": session.current_challenge_idx,
+                "total_challenges": len(session.challenges),
+                "feedback": "No face detected — position yourself in the oval.",
+                "challenge_just_passed": False,
+            }
+
         history  = session.current_frame_history()
         history.append(features)
 
@@ -1669,6 +1830,7 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
         return {
             "type": "status",
             "face_detected": True,
+            "face_stable": True,
             "challenge": current_ch,
             "challenges_completed": session.current_challenge_idx,
             "total_challenges": len(session.challenges),

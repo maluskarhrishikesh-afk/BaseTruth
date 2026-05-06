@@ -44,6 +44,10 @@ class KYCSession:
     # ── mutable state ────────────────────────────────────────────────────
     status: str = "waiting"          # waiting | active | completed | failed | expired
     current_challenge_idx: int = 0
+    # Consecutive frames that passed all face-validation checks (geometry, confidence,
+    # size, centering, single face).  Challenges only start once this reaches
+    # FACE_STABLE_FRAMES_REQUIRED.  Resets to zero on any validation failure.
+    face_stable_frames: int = 0
     # Per-challenge frame features: {"ch_0": [...], "ch_1": [...], ...}
     challenge_frame_history: Dict[str, List[Dict[str, float]]] = field(
         default_factory=dict

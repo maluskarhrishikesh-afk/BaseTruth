@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from basetruth.kyc.liveness import analyze_challenge, extract_features, run_face_match
+from basetruth.kyc.liveness import analyze_challenge, extract_features, face_geometry_valid, run_face_match
 
 
 def _make_face(
@@ -241,19 +241,21 @@ def test_run_face_match_returns_failure_message_below_threshold() -> None:
 
 # ── look_straight challenge tests ─────────────────────────────────────────────
 
-def _straight_frame(nose_rel_x: float = 0.50, pitch: float = 0.05) -> dict:
-    return {"nose_rel_x": nose_rel_x, "pitch": pitch, "det_score": 0.95, "ear": 0.30}
+def _straight_frame(nose_rel_x: float = 0.50, pitch: float = 0.05, yaw: float = 0.0) -> dict:
+    # yaw=0.0 means the face is looking straight at the camera (nose at the eye midpoint).
+    return {"nose_rel_x": nose_rel_x, "yaw": yaw, "pitch": pitch, "det_score": 0.95, "ear": 0.30}
 
 
 def test_look_straight_passes_when_face_centred_for_required_frames() -> None:
-    # Five consecutive frames with nose centred should pass.
-    history = [_straight_frame() for _ in range(5)]
+    # Three or more consecutive frames with nose centred should pass (minimum is now 3).
+    history = [_straight_frame() for _ in range(3)]
     result = analyze_challenge(history, "look_straight")
     assert result == {"passed": True, "feedback": "✅ Frontal face captured!"}
 
 
 def test_look_straight_does_not_pass_with_fewer_than_required_frames() -> None:
-    history = [_straight_frame() for _ in range(4)]
+    # Two frames is below the 3-frame minimum; should not pass yet.
+    history = [_straight_frame() for _ in range(2)]
     result = analyze_challenge(history, "look_straight")
     assert result["passed"] is False
 
@@ -283,6 +285,143 @@ def test_turn_right_passes_when_yaw_sufficiently_negative() -> None:
     ]
     result = analyze_challenge(history, "turn_right")
     assert result == {"passed": True, "feedback": "✅ Turn detected!"}
+
+
+# ── ghost / no-face detection tests ──────────────────────────────────────────
+
+def _ghost_frame(pitch: float = 0.0, yaw: float = 0.0, nose_rel_x: float = 0.50) -> dict:
+    """A frame with det_score below the minimum threshold — simulates a background
+    object or empty room producing a marginal false-positive detection.
+    All challenges must refuse to pass on a history made up solely of such frames."""
+    return {"nose_rel_x": nose_rel_x, "yaw": yaw, "pitch": pitch, "det_score": 0.40, "ear": 0.30}
+
+
+def test_look_straight_does_not_pass_on_low_confidence_ghost_frames() -> None:
+    """look_straight must not pass when only low-confidence ghost frames are present."""
+    history = [_ghost_frame(nose_rel_x=0.50) for _ in range(5)]
+    result = analyze_challenge(history, "look_straight")
+    assert result["passed"] is False
+
+
+def test_nod_does_not_pass_on_low_confidence_ghost_frames() -> None:
+    """nod must not pass when pitch variance comes from low-confidence ghost frames.
+    This is the scenario where the user hides under the table and jitter in the
+    background detection causes pitch to vary by more than the threshold."""
+    # Pitch range of 0.20 would normally satisfy the nod threshold.
+    history = [
+        _ghost_frame(pitch=0.00),
+        _ghost_frame(pitch=0.05),
+        _ghost_frame(pitch=0.10),
+        _ghost_frame(pitch=0.20),
+        _ghost_frame(pitch=0.15),
+        _ghost_frame(pitch=0.08),
+    ]
+    result = analyze_challenge(history, "nod")
+    assert result["passed"] is False
+
+
+def test_turn_left_does_not_pass_on_low_confidence_ghost_frames() -> None:
+    """turn_left must not pass when yaw shift comes from low-confidence ghost frames."""
+    history = [
+        _ghost_frame(yaw=0.00, nose_rel_x=0.50),
+        _ghost_frame(yaw=-0.10, nose_rel_x=0.45),
+        _ghost_frame(yaw=-0.20, nose_rel_x=0.40),
+    ]
+    result = analyze_challenge(history, "turn_left")
+    assert result["passed"] is False
+
+
+def test_blink_does_not_pass_on_low_confidence_ghost_frames() -> None:
+    """blink must not pass when the EAR dip comes from low-confidence ghost frames."""
+    history = [
+        {"ear": 0.30, "det_score": 0.40},
+        {"ear": 0.30, "det_score": 0.40},
+        {"ear": 0.07, "det_score": 0.40},
+        {"ear": 0.22, "det_score": 0.40},
+    ]
+    result = analyze_challenge(history, "blink")
+    assert result["passed"] is False
+
+
+def test_challenges_pass_normally_with_mixed_ghost_and_real_frames() -> None:
+    """Challenges should still pass when high-confidence real frames are mixed with
+    low-confidence ghost frames — the ghost frames are simply ignored."""
+    # 3 real frontal frames mixed with 2 ghost frames.
+    history = [
+        _ghost_frame(nose_rel_x=0.80),  # ghost — off centre too
+        _straight_frame(nose_rel_x=0.50, yaw=0.0),
+        _ghost_frame(nose_rel_x=0.20),  # ghost
+        _straight_frame(nose_rel_x=0.50, yaw=0.0),
+        _straight_frame(nose_rel_x=0.50, yaw=0.0),
+    ]
+    result = analyze_challenge(history, "look_straight")
+    assert result == {"passed": True, "feedback": "✅ Frontal face captured!"}
+
+
+# ── face-size / empty-room gate tests ────────────────────────────────────────
+
+def _tiny_face_frame(pitch: float = 0.0, yaw: float = 0.0, nose_rel_x: float = 0.50) -> dict:
+    """A frame with bbox_area_ratio below MIN_FACE_AREA_RATIO — simulates a user who
+    has moved away from the camera or a distant background object detected as a face."""
+    from basetruth.kyc.liveness import MIN_FACE_AREA_RATIO
+    return {
+        "nose_rel_x": nose_rel_x,
+        "yaw": yaw,
+        "pitch": pitch,
+        "det_score": 0.90,   # high confidence — passes the det_score gate
+        "ear": 0.30,
+        "bbox_area_ratio": MIN_FACE_AREA_RATIO * 0.5,  # half the minimum
+    }
+
+
+def test_look_straight_does_not_pass_when_face_is_too_small() -> None:
+    """look_straight must not pass when the face bbox is too small.
+    This catches the 'user ducked under table and background object detected' case."""
+    history = [_tiny_face_frame(nose_rel_x=0.50, yaw=0.0) for _ in range(5)]
+    result = analyze_challenge(history, "look_straight")
+    assert result["passed"] is False
+
+
+def test_nod_does_not_pass_when_face_is_too_small() -> None:
+    """nod must not pass when pitch variance comes from a tiny-face detection.
+    Pitch range of 0.20 would normally satisfy the nod threshold; it must be
+    blocked when the face is too small to be a real person in the oval."""
+    history = [
+        _tiny_face_frame(pitch=0.00),
+        _tiny_face_frame(pitch=0.05),
+        _tiny_face_frame(pitch=0.10),
+        _tiny_face_frame(pitch=0.20),
+        _tiny_face_frame(pitch=0.15),
+        _tiny_face_frame(pitch=0.08),
+    ]
+    result = analyze_challenge(history, "nod")
+    assert result["passed"] is False
+
+
+def test_look_straight_passes_normally_when_face_is_large_enough() -> None:
+    """look_straight must still pass when bbox_area_ratio meets the minimum."""
+    from basetruth.kyc.liveness import MIN_FACE_AREA_RATIO
+    history = []
+    for _ in range(5):
+        frame = _straight_frame(nose_rel_x=0.50, yaw=0.0)
+        frame["bbox_area_ratio"] = MIN_FACE_AREA_RATIO * 3  # well above minimum
+        history.append(frame)
+    result = analyze_challenge(history, "look_straight")
+    assert result == {"passed": True, "feedback": "✅ Frontal face captured!"}
+
+
+def test_nod_passes_normally_when_face_is_large_enough() -> None:
+    """nod must still pass when bbox_area_ratio meets the minimum."""
+    from basetruth.kyc.liveness import MIN_FACE_AREA_RATIO
+    history = []
+    for pitch in [0.00, 0.05, 0.10, 0.20, 0.15, 0.08]:
+        history.append({
+            "nose_rel_x": 0.50, "yaw": 0.0, "pitch": pitch,
+            "det_score": 0.90, "ear": 0.30,
+            "bbox_area_ratio": MIN_FACE_AREA_RATIO * 3,
+        })
+    result = analyze_challenge(history, "nod")
+    assert result == {"passed": True, "feedback": "✅ Nod detected!"}
 
 
 # ── session challenge_results tests ───────────────────────────────────────────
@@ -325,3 +464,358 @@ def test_session_to_status_dict_includes_challenge_results() -> None:
     status = session.to_status_dict()
     assert "challenge_results" in status
     assert status["challenge_results"][0]["challenge"] == "look_straight"
+
+
+# ── wrong_motion field tests ───────────────────────────────────────────────────
+
+def test_turn_left_wrong_direction_includes_wrong_motion_and_reset() -> None:
+    """Turning right during turn_left must produce wrong_motion='turned_right' and reset_needed=True."""
+    history = [
+        {"nose_rel_x": 0.50, "yaw": 0.00, "pitch": 0.0, "det_score": 1.0, "ear": 0.30},
+        {"nose_rel_x": 0.56, "yaw": 0.11, "pitch": 0.0, "det_score": 1.0, "ear": 0.30},
+        {"nose_rel_x": 0.61, "yaw": 0.18, "pitch": 0.0, "det_score": 1.0, "ear": 0.30},
+        {"nose_rel_x": 0.65, "yaw": 0.22, "pitch": 0.0, "det_score": 1.0, "ear": 0.30},
+        {"nose_rel_x": 0.67, "yaw": 0.25, "pitch": 0.0, "det_score": 1.0, "ear": 0.30},
+    ]
+    result = analyze_challenge(history, "turn_left")
+
+    assert result["passed"] is False
+    assert result["reset_needed"] is True
+    assert result["wrong_motion"] == "turned_right"
+    assert "LEFT" in result["feedback"]
+
+
+def test_turn_right_wrong_direction_includes_wrong_motion_and_reset() -> None:
+    """Turning left during turn_right must produce wrong_motion='turned_left' and reset_needed=True."""
+    history = [
+        {"nose_rel_x": 0.50, "yaw":  0.00, "pitch": 0.0, "det_score": 1.0, "ear": 0.30},
+        {"nose_rel_x": 0.44, "yaw": -0.11, "pitch": 0.0, "det_score": 1.0, "ear": 0.30},
+        {"nose_rel_x": 0.39, "yaw": -0.18, "pitch": 0.0, "det_score": 1.0, "ear": 0.30},
+        {"nose_rel_x": 0.35, "yaw": -0.22, "pitch": 0.0, "det_score": 1.0, "ear": 0.30},
+        {"nose_rel_x": 0.33, "yaw": -0.25, "pitch": 0.0, "det_score": 1.0, "ear": 0.30},
+    ]
+    result = analyze_challenge(history, "turn_right")
+
+    assert result["passed"] is False
+    assert result["reset_needed"] is True
+    assert result["wrong_motion"] == "turned_left"
+    assert "RIGHT" in result["feedback"]
+
+
+def test_nod_side_to_side_includes_wrong_motion() -> None:
+    """A side-to-side shake during nod must include wrong_motion='side_to_side_shake'."""
+    # Yaw oscillates a lot (side-to-side), pitch barely moves.
+    history = [
+        {"nose_rel_x": 0.50, "yaw":  0.00, "pitch": 0.02, "det_score": 1.0, "ear": 0.30},
+        {"nose_rel_x": 0.44, "yaw": -0.10, "pitch": 0.03, "det_score": 1.0, "ear": 0.30},
+        {"nose_rel_x": 0.50, "yaw":  0.00, "pitch": 0.02, "det_score": 1.0, "ear": 0.30},
+        {"nose_rel_x": 0.56, "yaw":  0.10, "pitch": 0.03, "det_score": 1.0, "ear": 0.30},
+        {"nose_rel_x": 0.50, "yaw":  0.00, "pitch": 0.02, "det_score": 1.0, "ear": 0.30},
+    ]
+    result = analyze_challenge(history, "nod")
+
+    assert result["passed"] is False
+    assert result.get("wrong_motion") == "side_to_side_shake"
+    assert "nod" in result["feedback"].lower() or "DOWN" in result["feedback"]
+
+
+def test_challenge_wrong_actions_recorded_in_live_session() -> None:
+    """Wrong-direction response from analyze_challenge must be recorded in session.challenge_wrong_actions.
+
+    We test this by directly calling analyze_challenge with a wrong-direction history (as
+    process_live_frame_message would) and then simulating what process_live_frame_message
+    does with the result: append to challenge_wrong_actions and flag feedback_sticky.
+    """
+    from basetruth.face_scan.live import FaceScanLiveSession
+
+    session = FaceScanLiveSession(
+        session_id="wa-test-001",
+        challenges=["turn_left"],
+        status="active",
+    )
+
+    # Five frames turning right during a turn_left challenge — should trigger reset_needed
+    wrong_history = [
+        {"nose_rel_x": 0.62, "yaw": 0.20, "pitch": 0.0, "det_score": 0.95, "ear": 0.30},
+        {"nose_rel_x": 0.63, "yaw": 0.21, "pitch": 0.0, "det_score": 0.95, "ear": 0.30},
+        {"nose_rel_x": 0.64, "yaw": 0.22, "pitch": 0.0, "det_score": 0.95, "ear": 0.30},
+        {"nose_rel_x": 0.65, "yaw": 0.23, "pitch": 0.0, "det_score": 0.95, "ear": 0.30},
+        {"nose_rel_x": 0.66, "yaw": 0.24, "pitch": 0.0, "det_score": 0.95, "ear": 0.30},
+    ]
+
+    # Reproduce what process_live_frame_message does with a reset_needed result
+    analysis = analyze_challenge(wrong_history, "turn_left")
+    assert analysis.get("reset_needed") is True, "Precondition: wrong-direction must trigger reset"
+    assert analysis.get("wrong_motion") == "turned_right"
+
+    # Simulate the recording logic from process_live_frame_message
+    if analysis.get("reset_needed") or analysis.get("wrong_motion"):
+        session.challenge_wrong_actions.append({
+            "challenge": "turn_left",
+            "wrong_motion": analysis.get("wrong_motion", "unknown"),
+            "frame_index": 5,
+        })
+
+    assert len(session.challenge_wrong_actions) == 1
+    entry = session.challenge_wrong_actions[0]
+    assert entry["challenge"] == "turn_left"
+    assert entry["wrong_motion"] == "turned_right"
+    assert entry["frame_index"] == 5
+
+
+def test_challenge_wrong_actions_in_result_payload() -> None:
+    """build_live_face_scan_result must include wrong_actions in active_liveness."""
+    from basetruth.face_scan.live import FaceScanLiveSession, build_live_face_scan_result
+    from unittest.mock import patch, MagicMock
+
+    session = FaceScanLiveSession(
+        session_id="wa-test-002",
+        challenges=["turn_left"],
+        status="active",
+    )
+    session.current_challenge_idx = 1  # mark all challenges done
+    session.challenge_wrong_actions = [
+        {"challenge": "turn_left", "wrong_motion": "turned_right", "frame_index": 5},
+    ]
+
+    # Patch narrative so we don't call the LLM; return a valid (text, source) tuple
+    dummy_narrative = MagicMock(return_value=("Mock narrative text.", "none"))
+
+    with patch("basetruth.face_scan.live._narrative_mod.generate_face_scan_narrative", dummy_narrative):
+        result = build_live_face_scan_result(session)
+
+    al = result["checks"]["active_liveness"]
+    assert al["wrong_action_count"] == 1
+    assert len(al["wrong_actions"]) == 1
+    assert al["wrong_actions"][0]["wrong_motion"] == "turned_right"
+
+
+# ── face_geometry_valid tests ─────────────────────────────────────────────────
+
+def _frontal_face(
+    bbox=(0, 0, 100, 120),
+    left_eye=(30, 35),
+    right_eye=(70, 35),
+    nose=(50, 60),
+    mouth_l=(35, 85),
+    mouth_r=(65, 85),
+):
+    """Build a synthetic face object with plausible frontal-face geometry."""
+    return SimpleNamespace(
+        kps=np.array([left_eye, right_eye, nose, mouth_l, mouth_r], dtype=float),
+        bbox=np.array(bbox, dtype=float),
+        det_score=0.95,
+        ear=0.30,
+        normed_embedding=None,
+    )
+
+
+def test_face_geometry_valid_accepts_normal_frontal_face() -> None:
+    """A well-formed frontal face with all invariants satisfied must pass."""
+    face = _frontal_face()
+    valid, reason = face_geometry_valid(face)
+    assert valid is True, f"Expected valid face but got reason: {reason}"
+
+
+def test_face_geometry_valid_rejects_nose_above_eyes() -> None:
+    """If the nose landmark is above the eye landmarks, reject — this never happens on a real face."""
+    # Place nose above the eyes to simulate a hand/palm mis-detection
+    face = _frontal_face(nose=(50, 10))   # nose_y=10 < eye_y=35
+    valid, reason = face_geometry_valid(face)
+    assert valid is False
+    assert "Nose" in reason or "nose" in reason
+
+
+def test_face_geometry_valid_rejects_eyes_at_very_different_heights() -> None:
+    """Eyes at wildly different vertical positions are not a real face."""
+    # Spread eyes vertically by 50% of bbox height (way above the 25% threshold).
+    # Nose is placed BELOW both eyes so Check 1 (nose below eyes) passes and the
+    # function reaches the eye-gap check (Check 2).
+    face = _frontal_face(left_eye=(30, 20), right_eye=(70, 80), nose=(50, 90))
+    valid, reason = face_geometry_valid(face)
+    assert valid is False
+    assert "height" in reason or "gap" in reason
+
+
+def test_face_geometry_valid_rejects_iod_too_small() -> None:
+    """Eyes that are extremely close together are not a real face (e.g. fingertips together)."""
+    # Eyes only 5 px apart on a 100 px wide bbox → iod_ratio = 0.05 (below 0.15 threshold)
+    face = _frontal_face(left_eye=(48, 35), right_eye=(52, 35))
+    valid, reason = face_geometry_valid(face)
+    assert valid is False
+    assert "Interocular" in reason or "interocular" in reason
+
+
+def test_face_geometry_valid_rejects_iod_too_large() -> None:
+    """Eyes further apart than the face width are not a real face (e.g. wide-spread fingers)."""
+    # Eyes 95 px apart on a 100 px wide bbox → iod_ratio = 0.95 (above 0.65 threshold)
+    face = _frontal_face(left_eye=(3, 35), right_eye=(97, 35))
+    valid, reason = face_geometry_valid(face)
+    assert valid is False
+    assert "Interocular" in reason or "interocular" in reason
+
+
+def test_face_geometry_valid_rejects_eyes_too_low() -> None:
+    """Eye midpoint in the lower half of the bbox cannot be a real face."""
+    # Eyes at y=100 in a 120-tall bbox → ratio = 100/120 = 0.83 (above 0.65)
+    face = _frontal_face(left_eye=(30, 100), right_eye=(70, 100), nose=(50, 110))
+    valid, reason = face_geometry_valid(face)
+    assert valid is False
+    assert "low" in reason or "height" in reason
+
+
+def test_face_geometry_valid_rejects_missing_kps() -> None:
+    """A face object with no keypoints should be rejected cleanly."""
+    face = SimpleNamespace(kps=None, bbox=np.array([0, 0, 100, 120], dtype=float))
+    valid, reason = face_geometry_valid(face)
+    assert valid is False
+    assert "keypoints" in reason.lower() or "No face" in reason
+
+
+def test_face_geometry_valid_accepts_slightly_tilted_face() -> None:
+    """A face tilted a bit to one side (one eye ~10% bbox_h higher) should still pass."""
+    # One eye at y=30, other at y=40 → gap ratio = 10/120 = 0.083 (well under 0.25)
+    face = _frontal_face(left_eye=(30, 30), right_eye=(70, 40), nose=(50, 60))
+    valid, reason = face_geometry_valid(face)
+    assert valid is True, f"Slightly tilted face should be accepted, got: {reason}"
+
+
+# ── is_face_stable tests ──────────────────────────────────────────────────────
+
+def _stable_call(
+    *,
+    face_count: int = 1,
+    bbox_area_ratio: float = 0.10,
+    confidence: float = 0.90,
+    nose_rel_x: float = 0.50,
+):
+    """Build a minimal face stub and call is_face_stable with the given parameters."""
+    from basetruth.kyc.liveness import is_face_stable, MIN_FACE_AREA_RATIO
+
+    # Provide a face with enough kps to satisfy face_geometry_valid (not used by is_face_stable
+    # itself, but we want a consistent stub).
+    face = SimpleNamespace(
+        kps=np.array([[30, 35], [70, 35], [50, 60], [35, 85], [65, 85]], dtype=float),
+        bbox=np.array([0, 0, 100, 120], dtype=float),
+        det_score=confidence,
+        ear=0.30,
+        normed_embedding=None,
+    )
+    return is_face_stable(
+        face=face,
+        face_count=face_count,
+        bbox_area_ratio=bbox_area_ratio,
+        confidence=confidence,
+        nose_rel_x=nose_rel_x,
+    )
+
+
+def test_is_face_stable_passes_all_conditions_met() -> None:
+    """A well-positioned, high-confidence, single face must pass."""
+    ok, feedback = _stable_call()
+    assert ok is True
+    assert feedback == ""
+
+
+def test_is_face_stable_rejects_no_face() -> None:
+    """Zero detected faces must return False with an appropriate message."""
+    ok, feedback = _stable_call(face_count=0)
+    assert ok is False
+    assert "No face detected" in feedback
+
+
+def test_is_face_stable_rejects_multiple_faces() -> None:
+    """More than one face must return False with a multi-face message."""
+    ok, feedback = _stable_call(face_count=2)
+    assert ok is False
+    assert "Multiple faces" in feedback
+
+
+def test_is_face_stable_rejects_low_confidence() -> None:
+    """Confidence below FACE_STABILITY_CONFIDENCE_MIN must return False."""
+    from basetruth.kyc.liveness import FACE_STABILITY_CONFIDENCE_MIN
+
+    ok, feedback = _stable_call(confidence=FACE_STABILITY_CONFIDENCE_MIN - 0.01)
+    assert ok is False
+    assert "not clearly visible" in feedback.lower() or "visible" in feedback.lower()
+
+
+def test_is_face_stable_rejects_tiny_face() -> None:
+    """A face bbox smaller than MIN_FACE_AREA_RATIO must return False."""
+    from basetruth.kyc.liveness import MIN_FACE_AREA_RATIO
+
+    ok, feedback = _stable_call(bbox_area_ratio=MIN_FACE_AREA_RATIO * 0.5)
+    assert ok is False
+    assert "closer" in feedback.lower() or "far" in feedback.lower()
+
+
+def test_is_face_stable_rejects_face_too_far_left() -> None:
+    """Nose too far to the image-left must return False with a centering message."""
+    from basetruth.kyc.liveness import FACE_STABILITY_X_MIN
+
+    ok, feedback = _stable_call(nose_rel_x=FACE_STABILITY_X_MIN - 0.01)
+    assert ok is False
+    assert "centre" in feedback.lower() or "right" in feedback.lower()
+
+
+def test_is_face_stable_rejects_face_too_far_right() -> None:
+    """Nose too far to the image-right must return False with a centering message."""
+    from basetruth.kyc.liveness import FACE_STABILITY_X_MAX
+
+    ok, feedback = _stable_call(nose_rel_x=FACE_STABILITY_X_MAX + 0.01)
+    assert ok is False
+    assert "centre" in feedback.lower() or "left" in feedback.lower()
+
+
+def test_face_stable_frames_accumulates_to_required() -> None:
+    """Simulated session counter: N good frames → reaches FACE_STABLE_FRAMES_REQUIRED."""
+    from basetruth.kyc.liveness import FACE_STABLE_FRAMES_REQUIRED
+
+    stable_count = 0
+    for _ in range(FACE_STABLE_FRAMES_REQUIRED):
+        ok, _ = _stable_call()
+        if ok:
+            stable_count += 1
+
+    assert stable_count == FACE_STABLE_FRAMES_REQUIRED
+
+
+def test_face_stable_frames_resets_on_low_confidence() -> None:
+    """Simulated counter: interrupting good frames with one bad frame must reset the count."""
+    from basetruth.kyc.liveness import FACE_STABLE_FRAMES_REQUIRED, FACE_STABILITY_CONFIDENCE_MIN
+
+    # Good frames accumulate
+    counter = 0
+    for _ in range(4):
+        ok, _ = _stable_call()
+        if ok:
+            counter += 1
+    assert counter == 4
+
+    # One bad frame resets counter
+    ok, _ = _stable_call(confidence=FACE_STABILITY_CONFIDENCE_MIN - 0.05)
+    if not ok:
+        counter = 0
+    assert counter == 0
+
+
+def test_face_stable_frames_requires_continuous_window() -> None:
+    """Counter must only reach threshold if N frames are consecutive without a reset."""
+    from basetruth.kyc.liveness import FACE_STABLE_FRAMES_REQUIRED, FACE_STABILITY_CONFIDENCE_MIN
+
+    counter = 0
+    for i in range(FACE_STABLE_FRAMES_REQUIRED * 2):
+        # Inject a bad frame halfway through to force a reset
+        if i == FACE_STABLE_FRAMES_REQUIRED - 1:
+            ok, _ = _stable_call(confidence=FACE_STABILITY_CONFIDENCE_MIN - 0.05)
+            if not ok:
+                counter = 0
+        else:
+            ok, _ = _stable_call()
+            if ok:
+                counter += 1
+            else:
+                counter = 0
+
+    # After a reset midway, the remaining good frames should fill a new window
+    assert counter == FACE_STABLE_FRAMES_REQUIRED

@@ -33,6 +33,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 import streamlit as st
@@ -53,8 +54,30 @@ from basetruth.ui.components import (
 # Streamlit runs inside the UI container; it talks to the API container via
 # Docker DNS.  In local development both default to localhost.
 _API_INTERNAL = os.getenv("BT_API_INTERNAL_URL", "http://localhost:8000")
-_API_EXTERNAL = os.getenv("BT_API_EXTERNAL_URL", "http://localhost:8000")
 _API_PORT = 8000
+
+
+def _normalize_external_api_url(url: str) -> str:
+    """Return a browser-safe external API base URL for customer-facing links.
+
+    On some Windows Docker setups another process binds ::1:8000, so links that
+    use localhost hang even though 127.0.0.1 reaches the published API port
+    immediately. Rewriting loopback hostnames avoids that ambiguity while leaving
+    real hostnames untouched.
+    """
+    parts = urlsplit(str(url or "").strip() or "http://localhost:8000")
+    hostname = (parts.hostname or "").strip().lower()
+    if hostname not in {"localhost", "::1"}:
+        return url
+
+    port = f":{parts.port}" if parts.port else ""
+    netloc = f"127.0.0.1{port}"
+    return urlunsplit((parts.scheme or "http", netloc, parts.path, parts.query, parts.fragment))
+
+
+_API_EXTERNAL = _normalize_external_api_url(
+    os.getenv("BT_API_EXTERNAL_URL", "http://localhost:8000")
+)
 
 
 @st.cache_resource

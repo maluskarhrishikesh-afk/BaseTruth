@@ -34,6 +34,13 @@ def _metric_frame(index: int, yaw: float, pitch: float, nose_rel_x: float, frame
         "frame_hash": frame_hash,
         "detector_confidence": 0.98,
         "face_box": [12, 16, 116, 152],
+        # New liveness signal fields — defaults represent a healthy, organic live session
+        "left_eye_x_norm":  0.28 + 0.003 * (index % 3),   # slight natural jitter
+        "left_eye_y_norm":  0.42 + 0.002 * (index % 5),
+        "right_eye_x_norm": 0.72 + 0.003 * (index % 4),
+        "right_eye_y_norm": 0.41 + 0.002 * (index % 3),
+        "interocular_px_norm": 0.44,
+        "server_recv_mono": 10.0 + index * 0.125 + (index % 3) * 0.018,  # organic jitter
     }
 
 
@@ -272,7 +279,7 @@ def test_process_live_frame_message_recovers_from_detector_error(monkeypatch) ->
     session = live.FaceScanLiveSession(session_id="session-live-2", challenges=["look_straight", "blink"])
     payload = base64.b64encode(encoded.tobytes()).decode()
 
-    monkeypatch.setattr(live, "_detect_faces", lambda _img: (_ for _ in ()).throw(RuntimeError("detector crashed")))
+    monkeypatch.setattr(live, "_detect_faces", lambda _img, **_kw: (_ for _ in ()).throw(RuntimeError("detector crashed")))
 
     result = live.process_live_frame_message(session, payload)
 
@@ -281,3 +288,405 @@ def test_process_live_frame_message_recovers_from_detector_error(monkeypatch) ->
     assert "temporary issue" in result["feedback"].lower()
     assert session.status == "waiting"
     assert session.frames_without_face == 1
+
+
+# ── Signal 1: Saccade / Eye Micro-Jitter ──────────────────────────────────────
+
+def test_saccade_analysis_passes_organic_eye_jitter() -> None:
+    """Frames with natural, low-amplitude eye variance should produce a low risk score."""
+    from basetruth.face_scan import live
+
+    # Simulate 10 frames with small, varied eye micro-movements (organic jitter)
+    history = []
+    import math
+    for i in range(10):
+        f = _metric_frame(i, yaw=0.01 * i, pitch=0.0, nose_rel_x=0.50, frame_hash=_frame_hashes()[i % len(_frame_hashes())])
+        # Organic jitter: sinusoidal at amplitude 0.010 — well above the stillness
+        # detection threshold so the function reliably returns low risk
+        f["left_eye_x_norm"]  = 0.28 + 0.010 * math.sin(i * 1.3)
+        f["left_eye_y_norm"]  = 0.42 + 0.009 * math.sin(i * 0.9)
+        f["right_eye_x_norm"] = 0.72 + 0.010 * math.sin(i * 1.1)
+        f["right_eye_y_norm"] = 0.41 + 0.009 * math.sin(i * 0.7)
+        history.append(f)
+
+    result = live._compute_saccade_analysis(history)
+
+    assert result["score_0_100"] < 50.0, "Organic jitter should not be flagged as suspicious"
+    assert result["mean_eye_jitter"] > 0.0
+
+
+def test_saccade_analysis_flags_frozen_eyes() -> None:
+    """Eye positions that never change across frames indicate a static photo replay."""
+    from basetruth.face_scan import live
+
+    history = []
+    for i in range(10):
+        f = _metric_frame(i, yaw=0.01 * i, pitch=0.0, nose_rel_x=0.50, frame_hash=_frame_hashes()[i % len(_frame_hashes())])
+        # Perfectly frozen eye positions — no micro-jitter at all (photo / static render)
+        f["left_eye_x_norm"]  = 0.280
+        f["left_eye_y_norm"]  = 0.420
+        f["right_eye_x_norm"] = 0.720
+        f["right_eye_y_norm"] = 0.410
+        history.append(f)
+
+    result = live._compute_saccade_analysis(history)
+
+    assert result["score_0_100"] >= 60.0, "Frozen eyes must be flagged with high risk"
+    assert result["eye_stillness_risk"] >= 60.0
+
+
+def test_saccade_analysis_returns_neutral_for_insufficient_frames() -> None:
+    """Fewer than 6 frames with eye data should return a non-zero neutral score."""
+    from basetruth.face_scan import live
+
+    history = [_metric_frame(i, 0.0, 0.0, 0.50, _frame_hashes()[0]) for i in range(3)]
+    # Remove eye fields so the function treats them as missing
+    for f in history:
+        f.pop("left_eye_x_norm", None)
+        f.pop("right_eye_x_norm", None)
+
+    result = live._compute_saccade_analysis(history)
+
+    assert result["score_0_100"] == 20.0  # neutral sentinel
+    assert result["mean_eye_jitter"] == 0.0
+
+
+# ── Signal 2: FFT Screen-Frequency Analysis ───────────────────────────────────
+
+def test_screen_frequency_analysis_low_risk_for_organic_peaks() -> None:
+    """Mean FFT peak concentration below 0.20 (organic texture) should produce zero risk."""
+    from basetruth.face_scan import live
+
+    # 0.12 represents a real face with diffuse mid-frequency energy (well below 0.20 threshold)
+    history = [
+        {**_metric_frame(i, 0.0, 0.0, 0.50, _frame_hashes()[i % len(_frame_hashes())]), "fft_grid_peak_ratio": 0.12}
+        for i in range(8)
+    ]
+    result = live._compute_screen_frequency_analysis(history)
+
+    assert result["score_0_100"] == 0.0
+    assert abs(result["mean_fft_grid_peak"] - 0.12) < 0.001
+
+
+def test_screen_frequency_analysis_high_risk_for_screen_peaks() -> None:
+    """Mean FFT peak concentration above 0.40 (Moiré screen grid) should produce near-maximum risk."""
+    from basetruth.face_scan import live
+
+    # 0.55 represents a filmed screen with concentrated spectral peaks (above 0.40 high threshold)
+    history = [
+        {**_metric_frame(i, 0.0, 0.0, 0.50, _frame_hashes()[i % len(_frame_hashes())]), "fft_grid_peak_ratio": 0.55}
+        for i in range(8)
+    ]
+    result = live._compute_screen_frequency_analysis(history)
+
+    assert result["score_0_100"] >= 90.0
+
+
+def test_screen_frequency_analysis_neutral_when_no_fft_data() -> None:
+    """Sessions without any fft_grid_peak_ratio key return zero risk (neutral)."""
+    from basetruth.face_scan import live
+
+    history = [_metric_frame(i, 0.0, 0.0, 0.50, _frame_hashes()[0]) for i in range(6)]
+    result = live._compute_screen_frequency_analysis(history)
+
+    assert result["score_0_100"] == 0.0
+    assert result["mean_fft_grid_peak"] == 0.0
+
+
+# ── Signal 3: Frame Timing Jitter ────────────────────────────────────────────
+
+def test_frame_timing_jitter_flags_uniform_delivery() -> None:
+    """Perfectly uniform inter-frame intervals (injection tool) must produce high risk."""
+    from basetruth.face_scan import live
+
+    # Simulate 10 frames arriving at exactly 125 ms intervals — no variance
+    history = []
+    for i in range(10):
+        f = _metric_frame(i, 0.0, 0.0, 0.50, _frame_hashes()[i % len(_frame_hashes())])
+        f["server_recv_mono"] = 0.0 + i * 0.125  # perfectly uniform
+        history.append(f)
+
+    result = live._compute_frame_timing_jitter(history)
+
+    assert result["score_0_100"] >= 60.0, "Perfectly uniform delivery must be flagged"
+    assert result["interval_cv"] < 0.05
+
+
+def test_frame_timing_jitter_passes_organic_variance() -> None:
+    """Frames with natural timing variance (real browser) should produce low risk."""
+    from basetruth.face_scan import live
+
+    import math
+    history = []
+    t = 0.0
+    for i in range(12):
+        f = _metric_frame(i, 0.0, 0.0, 0.50, _frame_hashes()[i % len(_frame_hashes())])
+        # Organic jitter: vary intervals between ~80 ms and ~200 ms
+        interval = 0.125 + 0.04 * math.sin(i * 2.1) + 0.025 * (i % 3)
+        t += interval
+        f["server_recv_mono"] = t
+        history.append(f)
+
+    result = live._compute_frame_timing_jitter(history)
+
+    assert result["score_0_100"] < 50.0, "Organically varied timing must not be flagged"
+    assert result["interval_cv"] >= 0.10
+
+
+def test_frame_timing_jitter_neutral_for_insufficient_frames() -> None:
+    """Fewer than 6 frames with timestamps should return a neutral zero score."""
+    from basetruth.face_scan import live
+
+    history = [_metric_frame(i, 0.0, 0.0, 0.50, _frame_hashes()[0]) for i in range(3)]
+    for f in history:
+        f.pop("server_recv_mono", None)
+
+    result = live._compute_frame_timing_jitter(history)
+
+    assert result["score_0_100"] == 0.0
+    assert result["interval_cv"] == 0.0
+
+
+# ── Signal 4: 3D Depth Consistency ───────────────────────────────────────────
+
+def _turn_session_with_iod(iod_constant: bool) -> "live.FaceScanLiveSession":
+    """Build a session that completed a turn_left challenge.
+
+    When iod_constant=True, the interocular distance never decreases during the
+    turn — simulating a flat 2D photo. When False, it decreases as expected from
+    a 3D face (more yaw → lower iod).
+    """
+    from basetruth.face_scan import live
+
+    session = live.FaceScanLiveSession(session_id="session-depth-1", challenges=["look_straight", "turn_left"])
+    session.current_challenge_idx = 2
+    session.challenge_results = [
+        {"index": 0, "challenge": "look_straight", "passed": True},
+        {"index": 1, "challenge": "turn_left",     "passed": True},
+    ]
+
+    turn_frames = []
+    for i in range(8):
+        # Yaw goes from 0.0 to -0.20 (turning left)
+        yaw = -(i * 0.025)
+        # 3D face: iod decreases as yaw grows; flat photo: iod stays at 0.44
+        iod = 0.44 if iod_constant else 0.44 - abs(yaw) * 0.6
+        turn_frames.append({
+            "frame_index": i, "yaw": yaw, "pitch": 0.0, "nose_rel_x": 0.50 + yaw * 0.5,
+            "interocular_px_norm": iod, "frame_hash": "abc", "brightness_mean": 128.0,
+            "laplacian_var": 150.0, "bbox_area_ratio": 0.18, "detector_confidence": 0.97,
+            "face_box": [10, 10, 110, 150], "edge_density": 0.2, "ear": 0.28,
+        })
+
+    session.challenge_frame_history = {"ch_0": [], "ch_1": turn_frames}
+    session.all_frame_history = turn_frames
+    session.frames_received = len(turn_frames)
+    session.best_live_frame_bytes = b"jpeg"
+    session.last_face_box = [10, 10, 110, 150]
+    return session
+
+
+def test_depth_consistency_passes_for_real_3d_face() -> None:
+    """IOD that decreases during turns (3D face) should produce a near-zero risk score."""
+    from basetruth.face_scan import live
+
+    session = _turn_session_with_iod(iod_constant=False)
+    result = live._compute_depth_consistency(session)
+
+    assert result["score_0_100"] < 35.0, "3D face geometry must not be flagged"
+    assert result["iod_yaw_correlation"] < 0.0, "Correlation must be negative for 3D face"
+
+
+def test_depth_consistency_flags_flat_photo() -> None:
+    """Constant IOD during head turns (flat photo) should produce a high risk score."""
+    from basetruth.face_scan import live
+
+    session = _turn_session_with_iod(iod_constant=True)
+    result = live._compute_depth_consistency(session)
+
+    assert result["score_0_100"] >= 35.0, "Flat photo geometry must be flagged"
+
+
+def test_depth_consistency_skips_without_turn_challenges() -> None:
+    """Sessions without turn challenges return a neutral zero score."""
+    from basetruth.face_scan import live
+
+    session = live.FaceScanLiveSession(session_id="session-depth-2", challenges=["look_straight", "blink"])
+    session.current_challenge_idx = 2
+    session.challenge_results = [
+        {"index": 0, "challenge": "look_straight", "passed": True},
+        {"index": 1, "challenge": "blink",          "passed": True},
+    ]
+    session.challenge_frame_history = {"ch_0": [], "ch_1": []}
+    session.all_frame_history = []
+
+    result = live._compute_depth_consistency(session)
+
+    assert result["score_0_100"] == 0.0
+    assert result["iod_yaw_correlation"] == 0.0
+
+
+# ── Signal 5: Extended Virtual Camera Fingerprinting ─────────────────────────
+
+def test_virtual_camera_extended_labels_are_flagged() -> None:
+    """Device labels matching any extended token must set virtual_camera_suspected=True."""
+    from basetruth.face_scan import live
+
+    new_tokens = [
+        "DroidCam Source",
+        "EpocCam Virtual Camera",
+        "iVCam Webcam",
+        "XSplit VCam",
+        "mmhmm Camera",
+        "Iriun Webcam",
+        "Camo (Reincubate)",
+        "NDI Virtual Input",
+        "Wirecast Virtual Camera",
+        "Logitech Capture",
+    ]
+    for label in new_tokens:
+        session = live.FaceScanLiveSession(session_id="virt-test", challenges=["blink"])
+        live.handle_live_meta(session, {
+            "camera_width": 640, "camera_height": 480, "observed_fps": 8.0,
+            "user_agent": "Mozilla/5.0", "platform": "Win32", "device_label": label,
+        })
+        assert session.environment["virtual_camera_suspected"] is True, \
+            f"Expected virtual_camera_suspected=True for device label: {label!r}"
+
+
+def test_real_camera_label_is_not_flagged() -> None:
+    """A generic camera label must NOT set virtual_camera_suspected."""
+    from basetruth.face_scan import live
+
+    session = live.FaceScanLiveSession(session_id="real-cam-test", challenges=["blink"])
+    live.handle_live_meta(session, {
+        "camera_width": 1280, "camera_height": 720, "observed_fps": 30.0,
+        "user_agent": "Mozilla/5.0", "platform": "Win32",
+        "device_label": "FaceTime HD Camera (Built-in)",
+    })
+    assert session.environment["virtual_camera_suspected"] is False
+
+
+# ── Integration: result payload includes all new check keys ──────────────────
+
+def test_build_live_result_includes_all_new_check_keys() -> None:
+    """The result payload must include all four new signal check blocks."""
+    from basetruth.face_scan import live
+
+    hashes = _frame_hashes()
+    history = [
+        _metric_frame(idx, yaw=0.02 * idx, pitch=0.01 * idx, nose_rel_x=0.50, frame_hash=hashes[idx % len(hashes)])
+        for idx in range(12)
+    ]
+    session = _completed_session(history)
+    result = live.build_live_face_scan_result(session)
+
+    checks = result["checks"]
+    assert "saccade_analysis"  in checks, "saccade_analysis check block must be present"
+    assert "screen_frequency"  in checks, "screen_frequency check block must be present"
+    assert "frame_timing"      in checks, "frame_timing check block must be present"
+    assert "depth_consistency" in checks, "depth_consistency check block must be present"
+
+    for key in ("saccade_analysis", "screen_frequency", "frame_timing", "depth_consistency"):
+        block = checks[key]
+        assert "status"      in block, f"{key} must have a status field"
+        assert "score_0_100" in block, f"{key} must have a score_0_100 field"
+        assert block["status"] in ("pass", "review"), f"{key} status must be pass or review"
+
+
+# ── Perceptual hash / difference hash ────────────────────────────────────────
+
+def test_phash_and_dhash_produce_different_fingerprints_for_different_crops() -> None:
+    """pHash and dHash of two structurally different images must differ significantly."""
+    import numpy as np
+    from basetruth.face_scan import live
+
+    # pHash is frequency-based and brightness-invariant, so two uniform-colour images
+    # (differing only in brightness) produce the same hash. Use structurally different
+    # images (checkerboard vs gradient) to trigger genuine hash differences.
+    checker = np.indices((32, 32)).sum(axis=0).astype(np.uint8) % 2 * 255  # checkerboard
+    gradient = np.tile(np.linspace(0, 255, 32), (32, 1)).astype(np.uint8)   # left-to-right gradient
+
+    ph_checker  = live._perceptual_hash(checker)
+    ph_gradient = live._perceptual_hash(gradient)
+    dh_checker  = live._difference_hash(checker)
+    dh_gradient = live._difference_hash(gradient)
+
+    # Structurally different images must produce different hashes for at least one type
+    assert ph_checker != ph_gradient or dh_checker != dh_gradient, (
+        "Structurally different images must produce different pHash or dHash"
+    )
+    assert isinstance(ph_checker, str) and len(ph_checker) > 0
+    assert isinstance(dh_checker, str) and len(dh_checker) > 0
+
+
+def test_is_repeat_frame_pair_uses_phash_when_available() -> None:
+    """A pair of frames that share identical pHash should be flagged as a repeat."""
+    from basetruth.face_scan import live
+
+    # Build two frames with the same pHash (same image) but different aHash strings
+    # to confirm the new logic picks up the pHash signal even when aHash differs.
+    same_phash = "aaaa1111bbbbcccc"
+    frame_a = _metric_frame(0, 0.0, 0.0, 0.50, frame_hash="0f0f0f0f0f0f0f0f")
+    frame_b = _metric_frame(1, 0.0, 0.0, 0.50, frame_hash="f0f0f0f0f0f0f0f0")
+    frame_a["frame_hash_phash"] = same_phash
+    frame_b["frame_hash_phash"] = same_phash  # identical pHash → should be a repeat
+
+    assert live._is_repeat_frame_pair(frame_a, frame_b) is True, (
+        "Frames with identical pHash should be classified as a repeat pair"
+    )
+
+
+def test_is_repeat_frame_pair_legacy_fallback_uses_ahash_only() -> None:
+    """When pHash/dHash fields are absent, falls back to aHash comparison."""
+    from basetruth.face_scan import live
+
+    # Both frames share the same aHash (no pHash fields present)
+    same_ahash = "aaaaaaaaaaaaaaaa"
+    frame_a = _metric_frame(0, 0.0, 0.0, 0.50, frame_hash=same_ahash)
+    frame_b = _metric_frame(1, 0.0, 0.0, 0.50, frame_hash=same_ahash)
+    # Confirm no new hash fields are present
+    assert "frame_hash_phash" not in frame_a
+    assert "frame_hash_phash" not in frame_b
+
+    assert live._is_repeat_frame_pair(frame_a, frame_b) is True, (
+        "Legacy frames with only aHash should still be caught as repeats"
+    )
+
+
+def test_is_repeat_frame_pair_different_frames_not_flagged() -> None:
+    """Frames with clearly different hashes across all types should not be flagged."""
+    from basetruth.face_scan import live
+
+    frame_a = _metric_frame(0, 0.0, 0.0, 0.50, frame_hash="0f0f0f0f0f0f0f0f")
+    frame_b = _metric_frame(1, 0.0, 0.0, 0.50, frame_hash="f0f0f0f0f0f0f0f0")
+    frame_a["frame_hash_phash"] = "0000111122223333"
+    frame_b["frame_hash_phash"] = "ffffeeeeddddcccc"
+    frame_a["frame_hash_dhash"] = "aaaa0000ffff0000"
+    frame_b["frame_hash_dhash"] = "0000ffffaaaa1111"
+
+    assert live._is_repeat_frame_pair(frame_a, frame_b) is False, (
+        "Clearly different frames should not be classified as a repeat pair"
+    )
+
+
+def test_build_live_face_scan_result_carries_narrative_source(monkeypatch) -> None:
+    """build_live_face_scan_result must include narrative_source in its returned dict."""
+    from basetruth.face_scan import live, narrative
+
+    monkeypatch.setattr(
+        narrative, "generate_face_scan_narrative",
+        lambda _result: ("Fake LLM live review.", "gemma4 (test-model)"),
+    )
+
+    hashes = _frame_hashes()
+    history = [
+        _metric_frame(idx, yaw=0.02 * idx, pitch=0.01 * idx, nose_rel_x=0.50, frame_hash=hashes[idx % len(hashes)])
+        for idx in range(12)
+    ]
+    session = _completed_session(history)
+    result = live.build_live_face_scan_result(session)
+
+    assert "narrative_source" in result, "narrative_source must be present in live scan result"
+    assert result["honest_review"] == "Fake LLM live review."
+    assert result["narrative_source"] == "gemma4 (test-model)"

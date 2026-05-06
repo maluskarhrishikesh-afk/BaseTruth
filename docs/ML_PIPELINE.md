@@ -9,7 +9,7 @@
 BaseTruth has two scoring paths:
 
 1. **Heuristic scoring** — fixed rules from the forensic engines
-2. **ML scoring** — trained XGBoost models for image/scanned documents and PDFs
+2. **ML scoring** — trained binary XGBoost models for image/scanned documents and PDFs (0: ORIGINAL, 1: FAKE/EDITED)
 
 If a trained model exists, BaseTruth uses ML.
 If a model is missing or fails to load, BaseTruth falls back to the heuristic path.
@@ -72,7 +72,7 @@ The two models do not use the same features.
 
 ### Image model
 
-The image model currently uses **19 signals** such as:
+The image model currently uses **18 signals** such as:
 
 - ELA values
 - metadata flags

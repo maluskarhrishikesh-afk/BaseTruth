@@ -73,7 +73,8 @@ services:
       # Must use the Docker service name, NOT localhost (each container has its own network namespace).
       BT_API_INTERNAL_URL: http://basetruth-api:8000
       # External URL embedded in session links shared with customers (reachable from their browser).
-      BT_API_EXTERNAL_URL: http://localhost:8000
+      # Use 127.0.0.1 instead of localhost to avoid Windows IPv6 loopback conflicts on port 8000.
+      BT_API_EXTERNAL_URL: http://127.0.0.1:8000
       # Enable the CRUD panel in the Database Viewer (dev mode only — disable in production).
       BASETRUTH_ENABLE_DB_VIEWER_CRUD: "true"
     depends_on:

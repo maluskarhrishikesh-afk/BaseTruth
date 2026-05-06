@@ -150,17 +150,24 @@ You get a verdict, risk score, confidence score, evidence, and a downloadable JS
                     status_data = status_resp.json()
                     status = status_data.get("status", "waiting")
                     
-                    if status in ["completed", "failed"]:
+                    if status in ["completed", "failed", "processing"]:
                         st.subheader("Live Session Result")
                         result = status_data.get("result")
-                        if status == "completed" and result:
+                        # Determine if challenges are done but the LLM narrative is still running
+                        narrative_pending = bool(result.get("narrative_pending", False)) if result else False
+                        is_verifying = (status == "processing") or narrative_pending
+                        if status == "completed" and result and not is_verifying:
                             st.success("✅ Live Face Scan completed successfully.")
                             _render_static_result(result, result.get("filename", f"face_scan_live_{sid}.jpg"))
+                        elif is_verifying:
+                            # Challenges done, LLM narrative still being generated
+                            st.info("⏳ Verifying results and generating response…")
+                            _should_auto_refresh = True
                         else:
                             st.error("❌ Live Face Scan failed or ended before completion.")
                             st.json(status_data)
                         
-                        if st.button("Start New Session"):
+                        if not _should_auto_refresh and st.button("Start New Session"):
                             del st.session_state.face_scan_live_sid
                             st.session_state.pop("face_scan_live_url", None)
                             st.rerun()

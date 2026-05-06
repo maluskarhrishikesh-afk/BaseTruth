@@ -298,7 +298,7 @@ The customer opens this URL on their phone or PC. The page is a self-contained 4
 |---|---|---|
 | Challenge selector | Choose one or more challenges | Builds a dedicated Face Scan live session; `look_straight` is always inserted first even when the operator does not select it |
 | Generate Live Challenge Link | Click | Calls `POST /api/v1/face-scan/sessions`; stores the Face Scan session id and customer URL in Streamlit state |
-| Open Live Face Scan | Click | Opens the dedicated customer-facing live page at `GET /face-scan/live/{session_id}` in a new tab |
+| Open Live Face Scan | Click | Opens the dedicated customer-facing live page at `GET /face-scan/live/{session_id}` using the configured external API base URL; local Docker runs use `http://127.0.0.1:8000` to avoid Windows `localhost` loopback hangs |
 | Session status area | Auto-refreshes while session is active | Polls `GET /api/v1/face-scan/sessions/{session_id}` and shows progress, current challenge, and current instruction |
 | Live session result | Auto-renders on completion | Shows the canonical Face Scan live payload with verdict, risk score, confidence score, evidence, `temporal_consistency`, `replay_heuristics`, and `active_liveness` checks |
 

@@ -26,9 +26,15 @@ from basetruth.face_scan.service import (
     FACE_SCAN_RULES_VERSION,
     FACE_SCAN_SCHEMA_VERSION,
 )
-from basetruth.kyc.liveness import analyze_challenge, extract_features
+from basetruth.kyc.liveness import (
+    analyze_challenge, extract_features, face_geometry_valid,
+    is_face_stable,
+    MIN_FACE_DETECTION_CONFIDENCE, MIN_FACE_AREA_RATIO,
+    FACE_STABLE_FRAMES_REQUIRED,
+)
 from basetruth.logger import get_logger
 from basetruth.vision.face import get_face_analyzer, get_mediapipe_faces
+from basetruth.face_scan import narrative as _narrative_mod
 
 log = get_logger(__name__)
 
@@ -46,22 +52,31 @@ FACE_SCAN_LIVE_SESSION_TTL = timedelta(minutes=20)
 DEFAULT_FACE_SCAN_CHALLENGES: List[str] = ["blink", "turn_left", "nod"]
 FACE_SCAN_CHALLENGE_LABELS: Dict[str, str] = {
     "look_straight": "LOOK AT THE CAMERA",
-    "blink": "CLOSE YOUR EYES",
-    "turn_left": "TURN YOUR HEAD LEFT",
-    "turn_right": "TURN YOUR HEAD RIGHT",
-    "nod": "NOD YOUR HEAD",
+    "blink": "BLINK ONCE",
+    "turn_left": "TURN TO YOUR LEFT",
+    "turn_right": "TURN TO YOUR RIGHT",
+    "nod": "NOD ONCE",
 }
 FACE_SCAN_CHALLENGE_INSTRUCTIONS: Dict[str, str] = {
-    "look_straight": "Look directly into the camera and hold still.",
-    "blink": "Slowly close both eyes fully, then open them again.",
-    "turn_left": "Slowly turn your head to your left.",
-    "turn_right": "Slowly turn your head to your right.",
-    "nod": "Slowly nod your head down and then back up.",
+    "look_straight": "Look into the camera and hold still — your face will be captured automatically.",
+    "blink": "Blink once: slowly close both eyes completely, then open them wide.",
+    "turn_left": "Slowly turn your head to YOUR left. Hold the turn briefly, then return.",
+    "turn_right": "Slowly turn your head to YOUR right. Hold the turn briefly, then return.",
+    "nod": "Slowly nod your head down once, then look back at the camera.",
 }
 
 _LIVE_FRAME_RUNTIME_ERRORS = (AttributeError, RuntimeError, TypeError, ValueError, OSError)
 
 _face_lock = threading.Lock()
+
+# Known virtual / software camera device-label substrings used for injection attacks.
+# Matched case-insensitively against the video track label reported by the browser.
+_VIRTUAL_CAMERA_TOKENS: frozenset = frozenset({
+    "obs", "virtual", "manycam", "snap camera",
+    "droidcam", "epoccam", "ivcam", "xsplit",
+    "mmhmm", "iriun", "camo", "e2esim",
+    "ndi virtual input", "wirecast", "logitech capture",
+})
 
 _FACE_SCAN_LIVE_PAGE_HTML = """<!DOCTYPE html>
 <html lang=\"en\">
@@ -110,14 +125,19 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
 <script>
 const SESSION_ID = '__SESSION_ID__';
 const CHALLENGES = __CHALLENGES_JSON__;
-const LABELS = {look_straight:'LOOK AT THE CAMERA', blink:'CLOSE YOUR EYES', turn_left:'TURN YOUR HEAD LEFT', turn_right:'TURN YOUR HEAD RIGHT', nod:'NOD YOUR HEAD'};
-const INSTR = {look_straight:'Look directly into the camera and hold still.', blink:'Slowly close both eyes fully, then open them again.', turn_left:'Slowly turn your head to your left.', turn_right:'Slowly turn your head to your right.', nod:'Slowly nod your head down and then back up.'};
+const LABELS = {look_straight:'LOOK AT THE CAMERA', blink:'BLINK ONCE', turn_left:'TURN TO YOUR LEFT', turn_right:'TURN TO YOUR RIGHT', nod:'NOD ONCE'};
+const INSTR = {look_straight:'Look into the camera and hold still — your face will be captured automatically.', blink:'Blink once: slowly close both eyes completely, then open them wide.', turn_left:'Slowly turn your head to YOUR left. Hold the turn briefly, then return.', turn_right:'Slowly turn your head to YOUR right. Hold the turn briefly, then return.', nod:'Slowly nod your head down once, then look back at the camera.'};
 let ws=null, stream=null, captureTimer=null, reconnectTimer=null;
 const CAPTURE_MS = 125;
 const RECONNECT_DELAY_MS = 1200;
 const MAX_RECONNECT_ATTEMPTS = 8;
 let reconnectAttempts = 0;
 let sessionFinished = false;
+// Sticky feedback: when the server sends feedback_sticky=true (e.g. wrong-direction
+// correction), lock the displayed feedback for STICKY_HOLD_MS so the user has time
+// to read it before the next frame status overwrites it.
+const STICKY_HOLD_MS = 2500;
+let stickyFeedbackUntil = 0;
 
 function show(id){['intro','live','result'].forEach(x=>{const el=document.getElementById(x); if(el) el.style.display = x===id ? 'block' : 'none';});}
 function feedback(msg){const el=document.getElementById('fb'); if(el) el.textContent = msg || '';}
@@ -154,7 +174,15 @@ function connectSocket(){
     ws.onopen = () => {
         reconnectAttempts = 0;
         const vid=document.getElementById('vid');
-        ws.send(JSON.stringify({type:'meta', camera_width: vid.videoWidth || 0, camera_height: vid.videoHeight || 0, observed_fps: 1000 / CAPTURE_MS, user_agent:navigator.userAgent, platform:navigator.platform || '', device_label:''}));
+        // Read the actual camera device label from the active video track.
+        // Virtual / software cameras (OBS, Snap Camera, etc.) report their tool name
+        // here, which the server uses for virtual-camera detection.
+        let deviceLabel = '';
+        try {
+            const tracks = stream ? stream.getVideoTracks() : [];
+            if (tracks.length > 0) deviceLabel = tracks[0].label || '';
+        } catch(_) {}
+        ws.send(JSON.stringify({type:'meta', camera_width: vid.videoWidth || 0, camera_height: vid.videoHeight || 0, observed_fps: 1000 / CAPTURE_MS, user_agent:navigator.userAgent, platform:navigator.platform || '', device_label: deviceLabel}));
         startCapture();
     };
     ws.onmessage = (event) => { try{ handle(JSON.parse(event.data)); }catch(_err){} };
@@ -191,7 +219,9 @@ function startCapture(){
             const fr=new FileReader();
             fr.onloadend=()=>{
                 const b64=String(fr.result).split(',')[1];
-                if(ws && ws.readyState===1) ws.send(JSON.stringify({type:'frame', data:b64}));
+                // Include a high-resolution client-side timestamp so the server can
+                // cross-check frame capture timing against its own receive timestamps
+                if(ws && ws.readyState===1) ws.send(JSON.stringify({type:'frame', data:b64, captured_at_ms:performance.now()}));
             };
             fr.readAsDataURL(blob);
         }, 'image/jpeg', 0.82);
@@ -213,7 +243,26 @@ function handle(msg){
         const total = Math.max(1, msg.total_challenges || CHALLENGES.length || 1);
         const done = msg.challenges_completed || 0;
         document.getElementById('prog-fill').style.width = ((done / total) * 100) + '%';
-        feedback(msg.feedback || '');
+        // Sticky feedback: if the server flags a correction message, lock it for
+        // STICKY_HOLD_MS so the very next frame status does not overwrite it.
+        if(msg.feedback_sticky && msg.feedback){
+            feedback(msg.feedback);
+            stickyFeedbackUntil = performance.now() + STICKY_HOLD_MS;
+        } else if(performance.now() >= stickyFeedbackUntil){
+            feedback(msg.feedback || '');
+        }
+        // If the lock just expired, clear it so future messages flow normally.
+        return;
+    }
+    if(msg.type==='processing'){
+        // All challenges passed — server is now running the result computation
+        // (LLM narrative call). Stop sending frames and show a waiting message.
+        stopCapture();
+        document.getElementById('face-badge').textContent = 'All done!';
+        document.getElementById('ch-label').textContent = 'CHALLENGES COMPLETE';
+        document.getElementById('ch-inst').textContent = msg.message || 'Verifying your results\u2026 Please wait.';
+        document.getElementById('prog-fill').style.width = '100%';
+        feedback('');
         return;
     }
     if(msg.type==='result'){
@@ -262,8 +311,17 @@ class FaceScanLiveSession:
     current_challenge_idx: int = 0
     challenge_frame_history: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
     all_frame_history: List[Dict[str, Any]] = field(default_factory=list)
+    # Consecutive frames that passed all face-validation checks (geometry, confidence,
+    # size, centering, single face).  Challenges only start once this reaches
+    # FACE_STABLE_FRAMES_REQUIRED.  Resets to zero on any validation failure.
+    face_stable_frames: int = 0
     challenge_results: List[Dict[str, Any]] = field(default_factory=list)
     challenge_snapshots: List[Dict[str, Any]] = field(default_factory=list)
+    # Each entry records one wrong-motion event: challenge name, what the user did
+    # wrong, and the frame index at which it was detected. This is a forensic signal:
+    # genuine real-time interaction produces self-corrections; scripted attacks are
+    # typically robotically perfect with zero wrong attempts.
+    challenge_wrong_actions: List[Dict[str, Any]] = field(default_factory=list)
     frames_received: int = 0
     frames_without_face: int = 0
     last_live_frame_bytes: Optional[bytes] = None
@@ -385,11 +443,89 @@ def _average_hash(gray: np.ndarray, size: int = 8) -> str:
     return format(int(bits, 2), f"0{width}x")
 
 
+def _perceptual_hash(gray: np.ndarray, size: int = 8) -> str:
+    """Compute a DCT-based perceptual hash (pHash) of a grayscale face crop.
+
+    Unlike average hash, pHash uses the Discrete Cosine Transform to capture the
+    dominant frequency structure of the image. Because it works in the frequency
+    domain rather than on raw pixel values, it is robust to tiny noise additions,
+    small brightness shifts, and minor pixel shifts — all tricks an attacker might
+    use to defeat average-hash similarity checks while replaying the same recording.
+    The top-left 8×8 block of a 32×32 DCT contains the lowest (most stable) spatial
+    frequencies, so two visually identical frames produce almost the same hash even
+    after re-encoding or adding imperceptible noise.
+    """
+    # Resize to 32×32 first to give the DCT room to separate low from high frequencies.
+    resized = _CV2_RESIZE(gray, (32, 32), interpolation=_CV2_INTER_AREA).astype(np.float32)
+    # 2-D DCT: concentrates signal energy in the top-left corner.
+    dct_block = cv2.dct(resized)
+    # Keep only the top-left size×size block (lowest frequencies).
+    dct_low = dct_block[:size, :size].flatten()
+    # Skip index 0 (DC coefficient — raw average brightness) which swamps everything else.
+    mean_val = float(np.mean(dct_low[1:]))
+    bits = "".join("1" if v >= mean_val else "0" for v in dct_low)
+    width = max(1, len(bits) // 4)
+    return format(int(bits, 2), f"0{width}x")
+
+
+def _difference_hash(gray: np.ndarray, size: int = 8) -> str:
+    """Compute a difference hash (dHash) of a grayscale face crop.
+
+    dHash encodes the horizontal gradient pattern of the image: each bit records
+    whether a pixel is brighter or darker than its right-side neighbour. This makes
+    it sensitive to structural / spatial differences while being largely insensitive
+    to uniform brightness changes or mild compression artefacts. Combining dHash
+    with pHash gives a second independent structural check so an attacker would need
+    to simultaneously defeat both to avoid detection.
+    """
+    # 9 wide × 8 tall: comparing each pixel to its right neighbour produces 8×8 = 64 bits.
+    resized = _CV2_RESIZE(gray, (size + 1, size), interpolation=_CV2_INTER_AREA)
+    # Bit is 1 where the left pixel is brighter than its right neighbour.
+    diff = resized[:, :-1] > resized[:, 1:]
+    bits = "".join("1" if b else "0" for b in diff.flatten())
+    width = max(1, len(bits) // 4)
+    return format(int(bits, 2), f"0{width}x")
+
+
 def _hamming_distance(hash_a: str, hash_b: str) -> int:
     """Return the Hamming distance between two hex-encoded average hashes."""
     a_bits = bin(int(hash_a, 16))[2:].zfill(len(hash_a) * 4)
     b_bits = bin(int(hash_b, 16))[2:].zfill(len(hash_b) * 4)
     return sum(ch_a != ch_b for ch_a, ch_b in zip(a_bits, b_bits))
+
+
+def _is_repeat_frame_pair(frame_a: Dict[str, Any], frame_b: Dict[str, Any]) -> bool:
+    """Return True if two frames are suspiciously similar across all available hash types.
+
+    We check three independent fingerprints: average hash (aHash), perceptual hash
+    (pHash), and difference hash (dHash). Each one attacks the similarity check from
+    a different angle. An attacker who adds tiny noise to defeat aHash will still be
+    caught by pHash (frequency domain) and dHash (gradient domain). A pair counts as
+    a suspected repeat if pHash agrees when available, or if aHash alone matches when
+    the newer hashes are absent (backward-compatible fallback for existing sessions
+    and test fixtures that only carry the legacy frame_hash field).
+    """
+    ahash_a = str(frame_a["frame_hash"])
+    ahash_b = str(frame_b["frame_hash"])
+    a_repeat = _hamming_distance(ahash_a, ahash_b) <= 1
+
+    phash_a = str(frame_a.get("frame_hash_phash", ""))
+    phash_b = str(frame_b.get("frame_hash_phash", ""))
+    has_phash = bool(phash_a and phash_b)
+    p_repeat = _hamming_distance(phash_a, phash_b) <= 1 if has_phash else False
+
+    dhash_a = str(frame_a.get("frame_hash_dhash", ""))
+    dhash_b = str(frame_b.get("frame_hash_dhash", ""))
+    has_dhash = bool(dhash_a and dhash_b)
+    d_repeat = _hamming_distance(dhash_a, dhash_b) <= 1 if has_dhash else False
+
+    if has_phash:
+        # pHash is the most noise-robust signal; trust it as the primary check.
+        # If pHash agrees, the frames are very likely identical in content.
+        # Fall back to aHash+dHash consensus when pHash alone doesn't fire.
+        return p_repeat or (a_repeat and (not has_dhash or d_repeat))
+    # Legacy path: only aHash available (test fixtures, pre-upgrade sessions).
+    return a_repeat
 
 
 def _clip_box(box: np.ndarray, img: np.ndarray) -> tuple[int, int, int, int]:
@@ -422,8 +558,13 @@ def _attach_ear_if_possible(img: np.ndarray, faces: List[Any]) -> None:
         face.ear = ear
 
 
-def _detect_faces(img: np.ndarray) -> List[Any]:
-    """Detect faces for the live Face Scan frame."""
+def _detect_faces(img: np.ndarray, attach_ear: bool = True) -> List[Any]:
+    """Detect faces for the live Face Scan frame.
+
+    attach_ear controls whether MediaPipe is run to compute EAR (Eye Aspect Ratio).
+    EAR is only needed for the blink challenge. Skipping it for other challenges halves
+    per-frame processing time because it avoids running a second detector pipeline.
+    """
     try:
         app = get_face_analyzer()
     except ImportError:
@@ -433,7 +574,8 @@ def _detect_faces(img: np.ndarray) -> List[Any]:
             with _face_lock:
                 faces = list(app.get(img))
             if faces:
-                _attach_ear_if_possible(img, faces)
+                if attach_ear:
+                    _attach_ear_if_possible(img, faces)
                 return faces
         except _LIVE_FRAME_RUNTIME_ERRORS as exc:  # noqa: BLE001
             log.warning(
@@ -460,9 +602,11 @@ def _extract_live_frame_metrics(img: np.ndarray, face: Any, frame_index: int) ->
     brightness_mean = float(np.mean(face_crop_gray))
     edge_density = float(_CV2_CANNY(face_crop_gray, 80, 160).mean() / 255.0)
     frame_hash = _average_hash(face_crop_gray)
+    frame_hash_phash = _perceptual_hash(face_crop_gray)
+    frame_hash_dhash = _difference_hash(face_crop_gray)
     det_score = float(getattr(face, "det_score", 0.95) or 0.95)
 
-    return {
+    metrics: Dict[str, Any] = {
         **features,
         "frame_index": frame_index,
         "laplacian_var": laplacian_var,
@@ -470,9 +614,19 @@ def _extract_live_frame_metrics(img: np.ndarray, face: Any, frame_index: int) ->
         "edge_density": edge_density,
         "bbox_area_ratio": bbox_area_ratio,
         "frame_hash": frame_hash,
+        "frame_hash_phash": frame_hash_phash,
+        "frame_hash_dhash": frame_hash_dhash,
         "detector_confidence": det_score,
         "face_box": [x1, y1, x2, y2],
     }
+
+    # Run FFT screen-frequency analysis on every 5th frame only to limit CPU usage.
+    # A real face produces low mid-frequency energy; a filmed screen shows periodic
+    # Moiré peaks from the display pixel grid (see _compute_fft_grid_peak_ratio).
+    if frame_index % 5 == 0:
+        metrics["fft_grid_peak_ratio"] = _compute_fft_grid_peak_ratio(face_crop_gray)
+
+    return metrics
 
 
 def handle_live_meta(session: FaceScanLiveSession, data: Dict[str, Any]) -> None:
@@ -494,9 +648,12 @@ def handle_live_meta(session: FaceScanLiveSession, data: Dict[str, Any]) -> None
     if platform:
         session.environment["os"] = platform[:80]
 
+    # Check the video track label for known virtual/software camera tool names.
+    # Any match flags the session for review — these tools are commonly used to
+    # inject pre-recorded or deepfake video instead of a live camera stream.
     device_label = str(data.get("device_label") or "")
-    suspicious_virtual = any(token in device_label.lower() for token in ("obs", "virtual", "manycam", "snap camera"))
-    if suspicious_virtual:
+    label_lower = device_label.lower()
+    if any(token in label_lower for token in _VIRTUAL_CAMERA_TOKENS):
         session.environment["virtual_camera_suspected"] = True
 
 
@@ -542,17 +699,63 @@ def _compute_temporal_consistency(history_groups: List[List[Dict[str, Any]]]) ->
 
 
 def _compute_replay_heuristics(history: List[Dict[str, Any]]) -> Dict[str, float]:
-    """Estimate replay risk from repeated frames and brightness flicker."""
+    """Estimate replay risk from repeated frames and brightness flicker.
+
+    Frames are compared at a ~300 ms gap (not consecutive) using the server-side
+    receive timestamps recorded on every processed frame. At typical webcam FPS
+    (8–15 fps), consecutive frames are naturally near-identical for any real person
+    who is momentarily still; waiting 300 ms gives organic micro-movements time to
+    accumulate and create measurable visual change.
+
+    The Hamming threshold is tightened to ≤ 1 (≥ 98.4% bit-identical). Real people
+    produce at least 2–4 bit flips over 300 ms from breathing, micro-expressions, and
+    detector landmark noise. A looped or injected pre-recorded stream produces Hamming 0
+    nearly every pair because the identical encoded frames repeat on a fixed clock.
+    """
     if len(history) < 4:
         return {"score_0_100": 10.0, "repeat_frame_score": 0.0, "flicker_score": 0.0, "brightness_instability": 0.0}
 
-    hashes = [str(frame["frame_hash"]) for frame in history]
+    hashes = [str(frame["frame_hash"]) for frame in history]  # kept for flicker / future use
+    times = [float(f.get("server_recv_mono", 0.0)) for f in history]
+    has_timestamps = any(t != 0.0 for t in times)
+
+    TARGET_DELTA_S = 0.30  # compare frames ~300 ms apart
     low_distance_pairs = 0
-    for idx in range(1, len(hashes)):
-        if _hamming_distance(hashes[idx - 1], hashes[idx]) <= 3:
-            low_distance_pairs += 1
-    repeat_ratio = low_distance_pairs / max(len(hashes) - 1, 1)
-    repeat_frame_score = repeat_ratio * 100.0
+    n_pairs = 0
+
+    if has_timestamps:
+        # For each frame, find the closest frame approximately 300 ms later.
+        # Search up to 20 frames ahead to handle varying FPS without missing the target.
+        for i in range(len(history) - 1):
+            t_target = times[i] + TARGET_DELTA_S
+            best_j = -1
+            best_diff = float("inf")
+            for j in range(i + 1, min(i + 20, len(history))):
+                diff = abs(times[j] - t_target)
+                if diff < best_diff:
+                    best_diff = diff
+                    best_j = j
+                if times[j] > t_target + TARGET_DELTA_S:
+                    break  # overshot by a full extra step — stop searching
+            if best_j != -1 and best_diff <= 0.20:  # within ±200 ms of the 300 ms target
+                n_pairs += 1
+                # Use all available hash types so noise-added replays are still caught.
+                if _is_repeat_frame_pair(history[i], history[best_j]):
+                    low_distance_pairs += 1
+    else:
+        # No timestamps available: fall back to comparing every 3rd frame
+        # (approximates ~375 ms at 8 FPS, ~200 ms at 15 FPS)
+        step = 3
+        for idx in range(len(history) - step):
+            n_pairs += 1
+            if _is_repeat_frame_pair(history[idx], history[idx + step]):
+                low_distance_pairs += 1
+
+    if n_pairs == 0:
+        repeat_frame_score = 0.0
+    else:
+        repeat_ratio = low_distance_pairs / n_pairs
+        repeat_frame_score = repeat_ratio * 100.0
 
     brightness = np.asarray([float(frame["brightness_mean"]) for frame in history], dtype=np.float32)
     brightness_instability = float(np.std(np.diff(brightness))) if len(brightness) >= 2 else 0.0
@@ -564,6 +767,237 @@ def _compute_replay_heuristics(history: List[Dict[str, Any]]) -> Dict[str, float
         "repeat_frame_score": round(repeat_frame_score, 2),
         "flicker_score": round(flicker_score, 2),
         "brightness_instability": round(brightness_instability, 4),
+    }
+
+
+def _compute_fft_grid_peak_ratio(gray_crop: np.ndarray) -> float:
+    """Compute the spectral peak-concentration in the mid-frequency ring of a face crop.
+
+    When a camera films a digital screen (phone, laptop, tablet), the LCD/OLED pixel
+    grid produces a Moiré interference pattern. In the 2D FFT of the face region, this
+    shows up as 2–4 bright, localised spots in the mid-frequency ring (corresponding to
+    the horizontal and vertical pixel pitches of the screen).
+
+    A real human face has organic, irregular texture. Even JPEG's 8×8 DCT compression
+    blocks add energy in this same mid-frequency region — but that energy is spread
+    broadly across many ring pixels, not concentrated in a few sharp spikes.
+
+    We therefore measure PEAK CONCENTRATION: what fraction of the mid-frequency ring
+    energy is held by just the top 2% of ring pixels? A filmed screen produces very
+    concentrated energy (ratio ≈ 0.35–0.70); organic skin or JPEG artefacts produce
+    diffusely spread energy (ratio ≈ 0.05–0.18).
+
+    A Hanning window is applied before the FFT to suppress boundary leakage.
+    """
+    if gray_crop.size < 400:
+        # Face crop too small for a meaningful frequency analysis
+        return 0.0
+    try:
+        # Resize to 64×64 for fast, consistent FFT bin resolution across all frame sizes
+        resized = _CV2_RESIZE(gray_crop, (64, 64), interpolation=_CV2_INTER_AREA).astype(np.float32)
+        # Apply Hanning window to suppress spectral leakage from the image border
+        win = np.outer(np.hanning(64), np.hanning(64))
+        f = np.fft.fft2(resized * win)
+        fshift = np.fft.fftshift(f)
+        mag = np.abs(fshift)
+        # Zero out the DC component (centre, always the largest single peak)
+        cx, cy = 32, 32
+        mag[cy - 3:cy + 3, cx - 3:cx + 3] = 0.0
+        # Mid-frequency ring: radii 6–22 pixels in the 64×64 transform.
+        # This range matches LCD/OLED pixel-grid spatial periods at typical selfie distances.
+        y_g, x_g = np.ogrid[:64, :64]
+        dist = np.sqrt((y_g - cy) ** 2 + (x_g - cx) ** 2)
+        ring = (dist >= 6) & (dist <= 22)
+        ring_pixels = mag[ring]
+        ring_total = float(ring_pixels.sum())
+        if ring_total < 1e-6:
+            return 0.0
+        # Peak concentration: fraction of ring energy in the top 2% of ring pixels.
+        # Moiré from a screen concentrates energy in ~4 bright spots → high ratio.
+        # Organic skin texture or JPEG blocks spread energy across all ring pixels → low ratio.
+        sorted_ring = np.sort(ring_pixels)[::-1]
+        top_n = max(1, int(len(sorted_ring) * 0.02))  # top 2% of ring pixels
+        peak_concentration = float(sorted_ring[:top_n].sum() / ring_total)
+        return float(np.clip(peak_concentration, 0.0, 1.0))
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+def _compute_screen_frequency_analysis(history: List[Dict[str, Any]]) -> Dict[str, float]:
+    """Aggregate per-frame FFT grid-peak ratios to estimate screen-replay risk.
+
+    Each frame contributes one `fft_grid_peak_ratio` value (computed in
+    `_extract_live_frame_metrics` on every 5th frame to save CPU). We average
+    those values across the session. A high mean indicates that most frames showed
+    the periodic spectral signature of a digital screen; a low mean is consistent
+    with a real human face filmed by a camera.
+
+    Threshold basis: organic skin texture produces mean ratios of ~0.14–0.22;
+    screen replays typically produce ~0.28–0.50, depending on camera resolution
+    and the angle at which the screen is being filmed.
+    """
+    peaks = [float(f["fft_grid_peak_ratio"]) for f in history if "fft_grid_peak_ratio" in f]
+    if not peaks:
+        # No FFT measurements available — return neutral (no additional risk added)
+        return {"score_0_100": 0.0, "mean_fft_grid_peak": 0.0}
+    mean_peak = float(np.mean(peaks))
+    # _scale_risk maps [0.20, 0.40] → [0, 100]; below 0.20 = organic / no screen risk.
+    # These thresholds are calibrated for the peak-concentration metric:
+    # organic faces + JPEG blocks: ~0.05–0.18; filmed screen Moiré: ~0.35–0.70.
+    score = _scale_risk(mean_peak, 0.20, 0.40)
+    return {
+        "score_0_100": round(score, 2),
+        "mean_fft_grid_peak": round(mean_peak, 4),
+    }
+
+
+def _compute_saccade_analysis(history: List[Dict[str, Any]]) -> Dict[str, float]:
+    """Detect eye micro-jitter (saccades) to distinguish a live face from a static replay.
+
+    Human eyes are never perfectly still — they continuously make tiny involuntary
+    micro-movements called saccades (roughly every 100–200 ms). These appear as small,
+    random fluctuations in the eye landmark positions even when the head is not moving.
+    In a static photo, printed mask, or loop-replayed video, the eye positions are
+    either frozen (near-zero variance) or repeat the same smooth pattern every cycle.
+
+    We measure how much each eye landmark moves between consecutive frames, after
+    removing the head-motion trend by linear detrending. The residual variance
+    (standard deviation) captures the micro-jitter signal. Very low variance means
+    the eyes are suspiciously still — consistent with a non-live source.
+
+    Thresholds are tuned for InsightFace / MediaPipe 5-point landmarks at 640px
+    width and 5–15 FPS (where detector noise alone contributes ~0.003–0.008 std).
+    """
+    # Need at least 6 frames to estimate variance reliably
+    usable = [f for f in history if "left_eye_x_norm" in f and "right_eye_x_norm" in f]
+    if len(usable) < 6:
+        # Not enough eye data — return a neutral score that adds no risk
+        return {"score_0_100": 20.0, "mean_eye_jitter": 0.0, "eye_stillness_risk": 0.0}
+
+    # Collect normalised eye coordinates across the session
+    lx = np.array([float(f["left_eye_x_norm"])  for f in usable], dtype=np.float32)
+    rx = np.array([float(f["right_eye_x_norm"]) for f in usable], dtype=np.float32)
+    ly = np.array([float(f["left_eye_y_norm"])  for f in usable], dtype=np.float32)
+    ry = np.array([float(f["right_eye_y_norm"]) for f in usable], dtype=np.float32)
+
+    # Remove the linear head-motion trend from each coordinate so that only the
+    # micro-jitter component remains (head turns / nods move eyes as a rigid block)
+    t = np.linspace(0.0, 1.0, len(usable))
+    for coords in (lx, rx, ly, ry):
+        p = np.polyfit(t, coords, 1)
+        coords -= np.polyval(p, t)
+
+    # Mean standard deviation across all four detrended eye-coordinate series
+    mean_std = float(np.mean([lx.std(), rx.std(), ly.std(), ry.std()]))
+
+    # Eye stillness risk: std < 0.0005 → frozen (likely static photo)
+    # Normal detector noise + saccades for a live face: std > 0.003–0.005
+    stillness_risk = _scale_risk(mean_std, 0.0005, 0.004, inverse=True)
+    # Final score is dominated by stillness (too-still eyes = high risk)
+    score = _clamp(stillness_risk)
+    return {
+        "score_0_100": round(score, 2),
+        "mean_eye_jitter": round(mean_std, 5),
+        "eye_stillness_risk": round(stillness_risk, 2),
+    }
+
+
+def _compute_frame_timing_jitter(history: List[Dict[str, Any]]) -> Dict[str, float]:
+    """Detect suspiciously uniform frame delivery intervals using server-side timestamps.
+
+    Real browsers on real hardware deliver frames with organic timing variance: the
+    browser event loop, OS scheduling, JPEG encoding time, and WebSocket buffering all
+    add unpredictable, variable delays. The Coefficient of Variation (CV = std / mean)
+    of inter-frame intervals for a genuine session is typically 0.15–0.50.
+
+    Replay injection tools (OBS virtual camera, pre-recorded video injectors) send
+    frames at a perfectly uniform rate matching their configured capture interval.
+    This produces a CV below 0.05 — the frames arrive with metronomic regularity that
+    no real browser produces.
+
+    Server-side monotonic clock timestamps are used (not client-reported) to prevent
+    timestamp spoofing from the client.
+    """
+    times = [float(f["server_recv_mono"]) for f in history if "server_recv_mono" in f]
+    if len(times) < 6:
+        # Too few frames to measure timing statistics reliably
+        return {"score_0_100": 0.0, "interval_std_ms": 0.0, "interval_cv": 0.0}
+
+    intervals = np.diff(np.array(times)) * 1000.0  # convert seconds → milliseconds
+    # Discard intervals longer than 2 s — these reflect reconnects or tab switches,
+    # not the baseline delivery rhythm, and would inflate the variance artificially
+    intervals = intervals[intervals < 2000.0]
+    if len(intervals) < 5:
+        return {"score_0_100": 0.0, "interval_std_ms": 0.0, "interval_cv": 0.0}
+
+    mean_interval = float(np.mean(intervals))
+    std_interval = float(np.std(intervals))
+    # CV = std / mean; high CV = organic (real); low CV = robotic (injection tool)
+    cv = std_interval / max(mean_interval, 1.0)
+
+    # Risk: low CV (< 0.03) = almost perfect timer = injection tool
+    # _scale_risk with inverse=True maps [0.03, 0.15] → 100→0; below 0.03 = max risk
+    timing_risk = _scale_risk(cv, 0.03, 0.15, inverse=True)
+    return {
+        "score_0_100": round(timing_risk, 2),
+        "interval_std_ms": round(std_interval, 2),
+        "interval_cv": round(cv, 4),
+    }
+
+
+def _compute_depth_consistency(session: "FaceScanLiveSession") -> Dict[str, float]:
+    """Verify 3D face depth by checking that eye separation decreases during head turns.
+
+    When a real 3D face turns left or right, the nose moves toward the turned side
+    and the far eye is progressively occluded behind the nose. This reduces the
+    visible (apparent) interocular distance (IOD) relative to the face bounding-box
+    width — the effect of perspective projection on a three-dimensional object.
+
+    A flat 2D photo or printed mask that is physically rotated has no depth: both
+    'eyes' are on the same plane, so their apparent separation stays constant no
+    matter how much the object is tilted. The IOD / bbox-width ratio remains flat.
+
+    We compute the Pearson correlation between |yaw| and IOD/bbox ratio across all
+    frames captured during turn challenges. A real 3D face yields a NEGATIVE
+    correlation (more yaw → smaller IOD). A flat source yields a correlation near
+    zero or positive (IOD does not decrease with yaw).
+
+    This check only activates when turn challenges are present and enough frames
+    (≥ 6 with IOD data) were captured during those challenges.
+    """
+    # Gather frames from every turn challenge that was successfully passed
+    turn_frames: List[Dict[str, Any]] = []
+    for result in session.challenge_results:
+        if result.get("challenge") in ("turn_left", "turn_right") and result.get("passed"):
+            group = session.challenge_frame_history.get(f"ch_{result['index']}", [])
+            turn_frames.extend(group)
+
+    # Only use frames that have the interocular_px_norm field (set via extract_features)
+    usable = [f for f in turn_frames if "interocular_px_norm" in f and "yaw" in f]
+    if len(usable) < 6:
+        # No turn challenges, or not enough landmark data — skip with neutral result
+        return {"score_0_100": 0.0, "iod_yaw_correlation": 0.0, "flat_face_risk": 0.0}
+
+    yaws = np.array([abs(float(f["yaw"]))              for f in usable], dtype=np.float32)
+    iods = np.array([float(f["interocular_px_norm"])   for f in usable], dtype=np.float32)
+
+    if float(iods.std()) < 1e-5:
+        # IOD never changed at all during the turn — very suspicious (flat source)
+        return {"score_0_100": 80.0, "iod_yaw_correlation": 0.0, "flat_face_risk": 80.0}
+
+    # Pearson correlation: negative = 3D face (IOD shrinks as yaw grows)
+    corr = float(np.corrcoef(yaws, iods)[0, 1])
+
+    # Map the correlation [-1, +1] to a flat-face risk [0, 100]:
+    #   corr  ≤ -0.30 → expected 3D behavior → risk ≈ 0
+    #   corr  ≥ +0.20 → flat source (IOD grows or stays flat with yaw) → risk ≈ 100
+    # _scale_risk(corr + 1.0) shifts range: corr=-0.30 → 0.70, corr=+0.20 → 1.20
+    flat_face_risk = _scale_risk(corr + 1.0, 0.70, 1.20)
+    score = _clamp(flat_face_risk)
+    return {
+        "score_0_100": round(score, 2),
+        "iod_yaw_correlation": round(corr, 4),
+        "flat_face_risk": round(flat_face_risk, 2),
     }
 
 
@@ -615,6 +1049,10 @@ def _build_evidence(
     temporal: Dict[str, float],
     replay: Dict[str, float],
     quality: Dict[str, float],
+    saccade: Dict[str, float],
+    screen_fft: Dict[str, float],
+    timing: Dict[str, float],
+    depth: Dict[str, float],
     confidence: float,
 ) -> List[str]:
     """Build operator-facing evidence bullets for the live result."""
@@ -622,14 +1060,42 @@ def _build_evidence(
     completed = [item["challenge"] for item in session.challenge_results if item.get("passed")]
     if completed:
         evidence.append(f"Completed live challenges: {', '.join(completed)}.")
+    # Self-correction forensic note: report wrong actions and what they tell us.
+    # A genuine human occasionally misreads an instruction and self-corrects after
+    # seeing the feedback. Scripted attacks are robotically perfect. Neither extreme
+    # is definitive on its own, but it is useful context for an operator.
+    wrong_actions = session.challenge_wrong_actions
+    if wrong_actions:
+        counts: Dict[str, int] = {}
+        for wa in wrong_actions:
+            counts[wa["challenge"]] = counts.get(wa["challenge"], 0) + 1
+        summary = "; ".join(f"{ch} x{n}" for ch, n in counts.items())
+        evidence.append(
+            f"User made {len(wrong_actions)} wrong-motion attempt(s) before self-correcting ({summary}) "
+            f"\u2014 consistent with genuine real-time interaction with challenge feedback."
+        )
     if replay["score_0_100"] >= 60.0:
         evidence.append("Replay heuristics found repeated frames or unstable brightness patterns consistent with a screen attack.")
     elif replay["score_0_100"] <= 20.0:
         evidence.append("No strong repeated-frame or replay-screen pattern was found in the live capture.")
-    if temporal["score_0_100"] >= 45.0:
+    if temporal["score_0_100"] >= 50.0:
         evidence.append("Face movement across frames showed elevated temporal instability during challenge responses.")
     else:
         evidence.append("Head and eye motion stayed reasonably consistent across the live challenge sequence.")
+    # Saccade / eye micro-jitter
+    if saccade["score_0_100"] >= 50.0:
+        evidence.append("Eye landmark positions were unusually still across frames — consistent with a static photo or looped replay rather than a live face.")
+    # Screen frequency (FFT Moiré)
+    if screen_fft["score_0_100"] >= 35.0:
+        evidence.append(f"FFT screen-frequency analysis detected periodic spectral peaks (mean grid ratio {screen_fft['mean_fft_grid_peak']:.3f}) consistent with a filmed digital display.")
+    # Frame timing uniformity
+    if timing["score_0_100"] >= 35.0:
+        evidence.append(f"Frame delivery intervals were suspiciously uniform (CV={timing['interval_cv']:.3f}) — indicative of a replay injection tool rather than a live browser session.")
+    # 3D depth from turn geometry
+    if depth["score_0_100"] >= 35.0:
+        evidence.append("Interocular distance did not decrease during head turns as expected for a 3D face — consistent with a flat 2D photo or printed mask.")
+    elif depth["score_0_100"] > 0.0 and depth["iod_yaw_correlation"] < -0.2:
+        evidence.append("Eye separation decreased appropriately during head turns, confirming 3D face depth.")
     if quality["blur_risk_0_100"] >= 60.0 or quality["brightness_risk_0_100"] >= 60.0:
         evidence.append("Frame quality reduced confidence in the live decision.")
     if confidence < 35.0:
@@ -672,15 +1138,54 @@ def build_live_face_scan_result(session: FaceScanLiveSession) -> Dict[str, Any]:
         if item.get("passed")
     ]
     completed_groups = [group for group in completed_groups if group]
-    temporal = _compute_temporal_consistency(completed_groups or [history])
+
+    # Temporal consistency should only be evaluated on STILL challenges (look_straight,
+    # blink). During motion challenges (turn_left, turn_right, nod) the person is
+    # intentionally accelerating and decelerating — the second-derivative (jerk) of yaw
+    # and pitch will naturally be large even for a completely genuine person, and would
+    # produce false SUSPICIOUS verdicts. A static photo or replay, by contrast, shows
+    # near-zero jerk even during a look_straight hold because nothing moves at all.
+    _STILL_CHALLENGES = frozenset({"look_straight", "blink"})
+    still_groups = [
+        list(session.challenge_frame_history.get(f"ch_{item['index']}", []))
+        for item in session.challenge_results
+        if item.get("passed") and item.get("challenge") in _STILL_CHALLENGES
+    ]
+    still_groups = [group for group in still_groups if group]
+    # Fall back to all completed groups if no still-challenge data is available
+    # (e.g. a session that only had turn challenges)
+    temporal = _compute_temporal_consistency(still_groups or completed_groups or [history])
+
     replay = _compute_replay_heuristics(history)
     quality = _compute_quality_metrics(history)
+
+    # ── New authenticity signals ────────────────────────────────────────────────
+    saccade    = _compute_saccade_analysis(history)
+    screen_fft = _compute_screen_frequency_analysis(history)
+    timing     = _compute_frame_timing_jitter(history)
+    depth      = _compute_depth_consistency(session)
 
     quality_risk = round(
         (0.5 * quality["blur_risk_0_100"]) + (0.3 * quality["brightness_risk_0_100"]) + (0.2 * quality["face_size_risk_0_100"]),
         2,
     )
-    risk_score = round(_clamp((0.5 * replay["score_0_100"]) + (0.35 * temporal["score_0_100"]) + (0.15 * quality_risk)), 2)
+    # Risk-score formula — weights revised to incorporate the 4 new signals.
+    # replay and temporal remain the dominant factors; depth (3D flat-face check)
+    # is raised from 2% to 8% because it is the most physically meaningful signal
+    # against photo/palm/printed-mask attacks. Temporal and screen_fft are reduced
+    # slightly to keep the total at 100%.
+    risk_score = round(
+        _clamp(
+            (0.50 * replay["score_0_100"])
+            + (0.22 * temporal["score_0_100"])
+            + (0.10 * quality_risk)
+            + (0.05 * saccade["score_0_100"])
+            + (0.04 * screen_fft["score_0_100"])
+            + (0.01 * timing["score_0_100"])
+            + (0.08 * depth["score_0_100"])
+        ),
+        2,
+    )
     no_face_ratio = session.frames_without_face / max(session.frames_received, 1)
     frame_count_penalty = _scale_risk(len(history), 10.0, 30.0, inverse=True)
     tracking_penalty = _clamp(no_face_ratio * 100.0)
@@ -703,7 +1208,17 @@ def build_live_face_scan_result(session: FaceScanLiveSession) -> Dict[str, Any]:
         verdict = "INCONCLUSIVE"
     elif replay["score_0_100"] > 80.0:
         verdict = "DEEPFAKE"
-    elif max(replay["score_0_100"], temporal["score_0_100"]) >= 35.0:
+    elif max(replay["score_0_100"], temporal["score_0_100"]) >= 50.0:
+        # 50.0 threshold: temporal alone (computed only on still challenges) must be
+        # clearly elevated to trigger SUSPICIOUS. A score of 35-49 on still frames is
+        # borderline and not strong enough standalone evidence without replay support.
+        verdict = "SUSPICIOUS"
+    elif depth["score_0_100"] >= 65.0:
+        # Hard flat-face gate: the 3D depth check strongly indicates a flat source
+        # (photo, printed mask, or palm held flat). The geometry guard above blocks
+        # most palm attacks at the per-frame level, but a partial or edge-on palm
+        # may still produce a high depth score. Any session where turn challenges
+        # were passed but the IOD correlation shows zero 3D depth must be escalated.
         verdict = "SUSPICIOUS"
     else:
         verdict = "GENUINE"
@@ -716,7 +1231,7 @@ def build_live_face_scan_result(session: FaceScanLiveSession) -> Dict[str, Any]:
         frame_drop_rate = _clamp(max(0.0, float(fps) - len(history) / max(len(completed), 1)) * 10.0)
         session.environment["frame_drop_rate"] = round(frame_drop_rate, 2)
 
-    return {
+    result = {
         "filename": f"face_scan_live_{session.session_id}.jpg",
         "scan_type": "face_scan",
         "mode": "live",
@@ -727,7 +1242,7 @@ def build_live_face_scan_result(session: FaceScanLiveSession) -> Dict[str, Any]:
         "confidence_reason": _confidence_reason(quality, session),
         "overall_explanation": _overall_explanation(verdict),
         "honest_review": _honest_review(verdict),
-        "evidence": _build_evidence(session, temporal, replay, quality, confidence),
+        "evidence": _build_evidence(session, temporal, replay, quality, saccade, screen_fft, timing, depth, confidence),
         "trace": {
             "decision_trace_id": f"fs_live_{uuid.uuid4().hex[:12]}",
             "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
@@ -763,6 +1278,29 @@ def build_live_face_scan_result(session: FaceScanLiveSession) -> Dict[str, Any]:
                 "completed_challenges": completed,
                 "challenge_count": len(session.challenges),
                 "best_frame_available": bool(session.best_live_frame_bytes),
+                # Wrong-action events recorded during the session. Presence of
+                # self-corrections is a mild positive authenticity signal (genuine
+                # real-time interaction with feedback); zero wrong attempts in a
+                # complex session can hint at scripted execution.
+                "wrong_action_count": len(session.challenge_wrong_actions),
+                "wrong_actions": session.challenge_wrong_actions,
+            },
+            # ── New signals ────────────────────────────────────────────────────
+            "saccade_analysis": {
+                "status": "review" if saccade["score_0_100"] >= 35.0 else "pass",
+                **saccade,
+            },
+            "screen_frequency": {
+                "status": "review" if screen_fft["score_0_100"] >= 35.0 else "pass",
+                **screen_fft,
+            },
+            "frame_timing": {
+                "status": "review" if timing["score_0_100"] >= 35.0 else "pass",
+                **timing,
+            },
+            "depth_consistency": {
+                "status": "review" if depth["score_0_100"] >= 35.0 else "pass",
+                **depth,
             },
         },
         "artifacts": {
@@ -771,10 +1309,38 @@ def build_live_face_scan_result(session: FaceScanLiveSession) -> Dict[str, Any]:
         },
     }
 
+    # Assign session.result NOW — before the LLM narrative call — so that any
+    # Streamlit status-poll that fires during the ~6-8 s LLM call sees a non-null
+    # result immediately once status becomes "completed". The dict is mutable, so
+    # the honest_review key we update below propagates automatically to whatever
+    # already holds a reference to this dict (including the caller's session.result).
+    # Mark narrative_pending=True so the UI can display a "generating..." message
+    # while the LLM call is still in progress.
+    result["narrative_pending"] = True
+    session.result = result
+
+    # Enrich the honest_review with a plain-English narrative from Gemma4.
+    # If Ollama is offline the function returns the existing rule-based text unchanged.
+    narrative, narrative_source = _narrative_mod.generate_face_scan_narrative(result)
+    result["honest_review"] = narrative
+    result["narrative_source"] = narrative_source
+    # Clear the flag — the UI will stop showing the spinner on the next poll.
+    result["narrative_pending"] = False
+    # Mark the session as fully completed so Streamlit polls pick up the right status
+    # even when this function ran in a background executor after the WS handler exited.
+    session.status = "completed"
+
+    return result
+
 
 def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> Dict[str, Any]:
     """Process one live Face Scan frame and return the current status or result."""
     session.frames_received += 1
+    # Record server-side monotonic time at the moment this frame is received.
+    # Used by _compute_frame_timing_jitter to detect suspiciously uniform delivery
+    # intervals (a hallmark of injection tools that replay at a fixed clock rate).
+    server_recv_ts = time.monotonic()
+
     if not isinstance(b64_frame, str):
         return {"type": "status", "face_detected": False, "feedback": "Decode error."}
 
@@ -788,7 +1354,10 @@ def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> 
         return {"type": "status", "face_detected": False, "feedback": "Decode error."}
 
     try:
-        faces = _detect_faces(img)
+        # Only run the MediaPipe EAR pipeline when processing a blink challenge.
+        # For all other challenges EAR is unused; skipping it roughly halves the
+        # per-frame detection time because it avoids a full second detector run.
+        faces = _detect_faces(img, attach_ear=(session.current_challenge == "blink"))
     except _LIVE_FRAME_RUNTIME_ERRORS as exc:  # noqa: BLE001
         log.error("Live frame detection raised unexpectedly.", extra={"error": str(exc), "session_id": session.session_id})
         session.frames_without_face += 1
@@ -804,6 +1373,7 @@ def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> 
 
     if not faces:
         session.frames_without_face += 1
+        session.face_stable_frames = 0
         return {
             "type": "status",
             "face_detected": False,
@@ -815,6 +1385,29 @@ def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> 
         }
 
     face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
+
+    # Validate that the detected object is geometrically consistent with a human
+    # face before doing anything with it.  Face detectors occasionally accept a
+    # palm, hand, or printed object — this guard rejects those early so no
+    # challenge progress is credited and the frame is counted as "no face".
+    geom_valid, geom_reason = face_geometry_valid(face)
+    if not geom_valid:
+        session.frames_without_face += 1
+        session.face_stable_frames = 0
+        log.debug(
+            "Face geometry check rejected detection; treating as no face.",
+            extra={"reason": geom_reason, "session_id": session.session_id},
+        )
+        return {
+            "type": "status",
+            "face_detected": False,
+            "challenge": session.current_challenge,
+            "challenges_completed": session.current_challenge_idx,
+            "total_challenges": len(session.challenges),
+            "feedback": "Keep your face fully inside the oval — move hands away from the camera.",
+            "challenge_just_passed": False,
+        }
+
     session.last_live_frame_bytes = raw
     try:
         metrics = _extract_live_frame_metrics(img, face, session.frames_received)
@@ -834,14 +1427,104 @@ def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> 
         }
 
     session.last_face_box = metrics["face_box"]
+    # Tag the frame with the server receive time so timing-jitter analysis can
+    # measure inter-frame interval variance later (see _compute_frame_timing_jitter)
+    metrics["server_recv_mono"] = server_recv_ts
+
+    # Reject frames where the detector confidence is too low to trust.
+    # Even after passing the geometry invariant check, a background object can
+    # still produce a marginal detection with low confidence.  The pitch/yaw
+    # features extracted from such frames are unreliable noise: their variance
+    # across 4 frames is enough to spuriously satisfy the nod challenge.  Only
+    # frames where the detector was sufficiently confident are added to history.
+    if metrics["detector_confidence"] < MIN_FACE_DETECTION_CONFIDENCE:
+        session.frames_without_face += 1
+        session.face_stable_frames = 0
+        log.debug(
+            "Live frame rejected: detector confidence below threshold.",
+            extra={"detector_confidence": metrics["detector_confidence"], "session_id": session.session_id},
+        )
+        return {
+            "type": "status",
+            "face_detected": False,
+            "challenge": session.current_challenge,
+            "challenges_completed": session.current_challenge_idx,
+            "total_challenges": len(session.challenges),
+            "feedback": "No face detected — look directly into the camera.",
+            "challenge_just_passed": False,
+        }
+
+    # Reject frames where the face is too small relative to the full frame.
+    # When the user steps back, ducks away, or a background object is detected,
+    # the bbox_area_ratio is very small.  The person must be close enough to
+    # the camera to fill a meaningful fraction of the frame (the oval acts as
+    # the visual guide for this on the frontend).
+    if metrics["bbox_area_ratio"] < MIN_FACE_AREA_RATIO:
+        session.frames_without_face += 1
+        session.face_stable_frames = 0
+        log.debug(
+            "Live frame rejected: face bounding box too small.",
+            extra={"bbox_area_ratio": metrics["bbox_area_ratio"], "session_id": session.session_id},
+        )
+        return {
+            "type": "status",
+            "face_detected": False,
+            "challenge": session.current_challenge,
+            "challenges_completed": session.current_challenge_idx,
+            "total_challenges": len(session.challenges),
+            "feedback": "No face detected \u2014 position yourself in the oval.",
+            "challenge_just_passed": False,
+        }
+
+    # ── Pre-liveness face stability gate ─────────────────────────────────────
+    # Expert-recommended pipeline:
+    #   Detection → Validation → Tracking (stability) → Liveness Challenge
+    #
+    # Challenges only start once FACE_STABLE_FRAMES_REQUIRED consecutive frames
+    # all pass the stricter stability check.  Any failure resets the counter so
+    # a flickering or marginal detection cannot accumulate a partial count.
+    if session.face_stable_frames < FACE_STABLE_FRAMES_REQUIRED:
+        stable_ok, stable_feedback = is_face_stable(
+            face=face,
+            face_count=len(faces),
+            bbox_area_ratio=metrics["bbox_area_ratio"],
+            confidence=metrics["detector_confidence"],
+            nose_rel_x=metrics["nose_rel_x"],
+        )
+        if stable_ok:
+            session.face_stable_frames += 1
+            log.debug(
+                "Face stability progress.",
+                extra={"stable_frames": session.face_stable_frames, "required": FACE_STABLE_FRAMES_REQUIRED, "session_id": session.session_id},
+            )
+        else:
+            # Reset on any validation failure — must be a continuous window.
+            session.face_stable_frames = 0
+        return {
+            "type": "status",
+            "face_detected": True,
+            "face_stable": False,
+            "face_stable_progress": session.face_stable_frames,
+            "face_stable_required": FACE_STABLE_FRAMES_REQUIRED,
+            "challenge": session.current_challenge,
+            "challenges_completed": session.current_challenge_idx,
+            "total_challenges": len(session.challenges),
+            "feedback": stable_feedback if not stable_ok else f"Hold still… ({FACE_STABLE_FRAMES_REQUIRED - session.face_stable_frames} more frames)",
+            "challenge_just_passed": False,
+        }
+
     session.current_frame_history().append(metrics)
     session.all_frame_history.append(metrics)
 
     current_challenge = session.current_challenge
     if current_challenge is None:
-        session.status = "completed"
-        session.result = build_live_face_scan_result(session)
-        return {"type": "result", **session.result}
+        # All challenges already passed in a previous frame — replay the result if
+        # it is ready, otherwise tell the browser to keep waiting. This guard fires
+        # when the browser sends extra frames before it receives the 'processing'
+        # message and stops capture.
+        if session.result is not None and not bool(session.result.get("narrative_pending")):
+            return {"type": "result", **session.result}
+        return {"type": "processing", "message": "All challenges completed. Verifying your results\u2026"}
 
     try:
         analysis = analyze_challenge(session.current_frame_history(), current_challenge)
@@ -864,6 +1547,37 @@ def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> 
             "challenge_just_passed": False,
         }
 
+    if analysis.get("reset_needed") or analysis.get("wrong_motion"):
+        wrong_motion = analysis.get("wrong_motion", "unknown")
+        # Record this wrong-action event with enough context for the forensic report.
+        session.challenge_wrong_actions.append({
+            "challenge": current_challenge,
+            "wrong_motion": wrong_motion,
+            "frame_index": metrics["frame_index"],
+        })
+        if analysis.get("reset_needed"):
+            ch_key = f"ch_{session.current_challenge_idx}"
+            current_history = session.challenge_frame_history.get(ch_key, [])
+            # Keep only the last 2 frames — they represent the face near neutral
+            # (just returned from the wrong-direction peak) and are a clean baseline.
+            session.challenge_frame_history[ch_key] = current_history[-2:] if len(current_history) >= 2 else []
+            log.info(
+                "Wrong-direction motion detected; challenge frame history reset.",
+                extra={"session_id": session.session_id, "challenge": current_challenge, "wrong_motion": wrong_motion},
+            )
+        # feedback_sticky=True tells the browser to hold this message for 2.5 s so
+        # the user has time to read it before the next frame status overwrites it.
+        return {
+            "type": "status",
+            "face_detected": True,
+            "challenge": current_challenge,
+            "challenges_completed": session.current_challenge_idx,
+            "total_challenges": len(session.challenges),
+            "feedback": analysis["feedback"],
+            "feedback_sticky": True,
+            "challenge_just_passed": False,
+        }
+
     just_passed = False
     if analysis["passed"]:
         if current_challenge == "look_straight" and not session.best_live_frame_bytes:
@@ -879,9 +1593,12 @@ def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> 
         session.advance_challenge(snapshot=snapshot)
         just_passed = True
         if session.all_done:
-            session.status = "completed"
-            session.result = build_live_face_scan_result(session)
-            return {"type": "result", **session.result}
+            # Signal the WebSocket handler to build the result payload outside
+            # this executor call so the browser gets an immediate acknowledgement
+            # (and stops performing the last challenge) while the LLM narrative
+            # (~6-8 s) runs in a separate step.
+            session.status = "processing"
+            return {"type": "processing", "message": "All challenges completed! Verifying your results\u2026"}
 
     return {
         "type": "status",

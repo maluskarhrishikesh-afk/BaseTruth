@@ -66,12 +66,16 @@ def empty_layers() -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_feature_vector_shape(minimal_layers):
-    """extract_feature_vector must return a numpy array of exactly 19 floats."""
+    """extract_feature_vector must return a numpy array of exactly 18 floats.
+
+    file_entropy_bits (Layer 3) was removed from FEATURE_NAMES because all
+    values in the training dataset were 0.0 — it carried no predictive signal.
+    """
     fv = extract_feature_vector(minimal_layers)
     assert isinstance(fv, np.ndarray), "result should be a numpy ndarray"
-    assert fv.shape == (19,), f"expected shape (19,), got {fv.shape}"
+    assert fv.shape == (18,), f"expected shape (18,), got {fv.shape}"
     assert fv.dtype == np.float32, f"expected float32 dtype, got {fv.dtype}"
-    assert len(FEATURE_NAMES) == 19, "FEATURE_NAMES must have exactly 19 entries"
+    assert len(FEATURE_NAMES) == 18, "FEATURE_NAMES must have exactly 18 entries"
 
 
 def test_feature_vector_all_finite(minimal_layers):
@@ -91,10 +95,11 @@ def test_feature_vector_values_in_range(minimal_layers):
     fv = extract_feature_vector(minimal_layers)
     feat_dict = dict(zip(FEATURE_NAMES, fv))
 
-    # Ratios and fractions must be non-negative
+    # Ratios and fractions must be non-negative.
+    # Note: file_entropy_bits was removed from FEATURE_NAMES (all-zero in dataset).
     ratio_features = {
         "ela_mean", "ela_max", "ela_std", "ela_suspicious_block_ratio",
-        "metadata_flag_count", "file_entropy_bits", "noise_hotspot_ratio",
+        "metadata_flag_count", "noise_hotspot_ratio",
         "dct_comb_ratio", "color_anomaly_ratio",
         "edge_high_density_ratio", "saturation_ratio",
         "font_stroke_cv", "font_suspicious_regions", "font_sharpness_outlier_ratio",
@@ -125,7 +130,7 @@ def test_feature_vector_values_in_range(minimal_layers):
 def test_feature_vector_empty_layers(empty_layers):
     """Empty dict must produce all zeros (no sentinels any more)."""
     fv = extract_feature_vector(empty_layers)
-    assert fv.shape == (19,), "shape must still be (19,) for empty input"
+    assert fv.shape == (18,), "shape must still be (18,) for empty input"
     assert np.all(fv == 0.0), (
         f"expected all zeros for empty layers, non-zero positions: "
         f"{[(FEATURE_NAMES[i], float(v)) for i, v in enumerate(fv) if v != 0.0]}"
@@ -265,7 +270,7 @@ def test_ml_score_used_when_model_available(minimal_layers):
         c_score, c_verdict, c_evidence, c_method, c_contribs = _compute_score(minimal_layers, 100_000)
         assert c_method == "ML", f"expected 'ML', got '{c_method}'"
         assert c_score == pytest.approx(90.0, abs=0.1)
-        assert c_verdict == "TAMPERED"
+        assert c_verdict == "FAKE/EDITED"  # ML binary model returns FAKE/EDITED (not the heuristic TAMPERED)
         # Evidence strings must still come from the heuristic regardless of scorer
         assert isinstance(c_evidence, list)
     finally:

@@ -17,12 +17,27 @@ import numpy as np
 
 from basetruth.logger import get_logger
 from basetruth.vision.face import get_face_analyzer, get_mediapipe_faces
+from basetruth.face_scan import narrative as _narrative_mod
 
 log = get_logger(__name__)
 
 FACE_SCAN_SCHEMA_VERSION = "1.0.0"
 FACE_SCAN_RULES_VERSION = "face-scan-rules-1.0.0"
 FACE_SCAN_MODEL_VERSION = "heuristics-only"
+
+# --- Static scan threshold constants ---
+# These define the operating points for each quality and fraud signal. Values are
+# tuned for typical webcam / phone selfie images at standard resolutions. They may
+# be recalibrated per deployment environment — see docs/FACE_SCAN_WORKING.md for
+# guidance on when and how to adjust them.
+_BLUR_SHARP_THRESHOLD: float = 140.0    # Laplacian variance above this → sharp (no blur risk)
+_BLUR_BLURRY_THRESHOLD: float = 25.0    # Laplacian variance below this → very blurry (max risk)
+_BRIGHTNESS_OK_DEVIATION: float = 18.0  # |mean − 128| below this → balanced lighting (no risk)
+_BRIGHTNESS_BAD_DEVIATION: float = 90.0 # |mean − 128| above this → too dark / overexposed
+_FACE_SIZE_GOOD_RATIO: float = 0.18     # face covers >18% of image → adequate size (no risk)
+_FACE_SIZE_SMALL_RATIO: float = 0.06    # face covers <6% of image → too small (max risk)
+_EXTREME_BLUR_THRESHOLD: float = 12.0   # confidence hard-capped at 25 below this value
+_EXTREME_SMALL_RATIO: float = 0.03      # confidence hard-capped at 25 below this ratio
 
 
 def _clamp(value: float, low: float = 0.0, high: float = 100.0) -> float:
@@ -267,9 +282,9 @@ def run_face_scan_static(
     brightness_mean = float(np.mean(face_crop_gray))
     det_score = float(getattr(primary_face, "det_score", 0.95) or 0.95)
 
-    blur_risk = _scale_risk(laplacian_var, 25.0, 140.0, inverse=True)
-    brightness_risk = _scale_risk(abs(brightness_mean - 128.0), 18.0, 90.0)
-    face_size_risk = _scale_risk(face_area_ratio, 0.06, 0.18, inverse=True)
+    blur_risk = _scale_risk(laplacian_var, _BLUR_BLURRY_THRESHOLD, _BLUR_SHARP_THRESHOLD, inverse=True)
+    brightness_risk = _scale_risk(abs(brightness_mean - 128.0), _BRIGHTNESS_OK_DEVIATION, _BRIGHTNESS_BAD_DEVIATION)
+    face_size_risk = _scale_risk(face_area_ratio, _FACE_SIZE_SMALL_RATIO, _FACE_SIZE_GOOD_RATIO, inverse=True)
     edge_halo_score = _edge_halo_score(face_crop_gray)
     compression_score = _compression_residual_score(face_crop_gray)
     asymmetry_score = _landmark_asymmetry_score(primary_face, float(y2 - y1))
@@ -277,19 +292,59 @@ def run_face_scan_static(
     presentation_risk = round((0.6 * edge_halo_score) + (0.4 * compression_score), 2)
     synthetic_risk = round(asymmetry_score, 2)
     multi_face_risk = 85.0 if len(faces) > 1 else 0.0
-    risk_score = round(
-        _clamp((0.45 * presentation_risk) + (0.20 * synthetic_risk) + (0.35 * multi_face_risk)),
-        2,
-    )
+
+    # When only one face is detected, the multi-face signal is always 0 — a 35%
+    # dead-weight term that permanently caps real max risk at 65, making DEEPFAKE
+    # (threshold 75) unreachable for single-face images. We fix this by normalising
+    # the weights depending on whether multiple faces were found:
+    #   - Single face: distribute full weight across the two active signals
+    #     (presentation 70%, synthetic 30%) to keep the 0–100 scale honest.
+    #   - Multi-face: all three signals are active so the original weights apply.
+    if len(faces) > 1:
+        risk_score = round(
+            _clamp((0.45 * presentation_risk) + (0.20 * synthetic_risk) + (0.35 * multi_face_risk)),
+            2,
+        )
+    else:
+        risk_score = round(
+            _clamp((0.70 * presentation_risk) + (0.30 * synthetic_risk)),
+            2,
+        )
 
     detection_penalty = _scale_risk(max(0.0, 0.85 - det_score), 0.02, 0.25)
+
+    # Quality component: how good is the image for reliable analysis?
+    # Penalties for blur, poor lighting, tiny face, and low detector certainty.
+    quality_confidence = (
+        100.0
+        - (0.35 * blur_risk)
+        - (0.30 * brightness_risk)
+        - (0.20 * face_size_risk)
+        - (0.15 * detection_penalty)
+    )
+
+    # Signal agreement component: do the independent fraud signals agree with each other?
+    # When presentation_risk and synthetic_risk both point in the same direction (both
+    # high or both low), the system has a coherent picture → high confidence is warranted.
+    # When they disagree (one high, one low), the evidence is conflicting → lower confidence.
+    # We measure disagreement as the standard deviation of active sub-scores:
+    #   spread = 0   → perfect agreement → signal_agreement = 100
+    #   spread = 50  → maximum disagreement (e.g. 0 vs 100) → signal_agreement = 0
+    if len(faces) > 1:
+        signal_scores = [presentation_risk, synthetic_risk, multi_face_risk]
+    else:
+        signal_scores = [presentation_risk, synthetic_risk]
+    signal_mean = sum(signal_scores) / len(signal_scores)
+    signal_spread = (sum((s - signal_mean) ** 2 for s in signal_scores) / len(signal_scores)) ** 0.5
+    # Normalise spread to a 0-100 agreement score (max spread ≈ 50 for two signals)
+    signal_agreement = _clamp(100.0 - signal_spread * 2.0)
+
+    # Blend quality (70%) and signal agreement (30%). Quality dominates because it gates
+    # the reliability of the measurement. Agreement modulates to avoid giving high
+    # confidence when the sub-signals contradict each other.
     confidence = round(
         _clamp(
-            100.0
-            - (0.35 * blur_risk)
-            - (0.30 * brightness_risk)
-            - (0.20 * face_size_risk)
-            - (0.15 * detection_penalty),
+            (0.70 * quality_confidence) + (0.30 * signal_agreement),
             5.0,
             99.0,
         ),
@@ -297,7 +352,7 @@ def run_face_scan_static(
     )
     if len(faces) > 1:
         confidence = min(confidence, 55.0)
-    if laplacian_var < 12.0 or face_area_ratio < 0.03:
+    if laplacian_var < _EXTREME_BLUR_THRESHOLD or face_area_ratio < _EXTREME_SMALL_RATIO:
         confidence = min(confidence, 25.0)
 
     if confidence < 35.0:
@@ -321,7 +376,7 @@ def run_face_scan_static(
     if environment:
         env.update(environment)
 
-    return {
+    result = {
         "filename": filename,
         "scan_type": "face_scan",
         "mode": "static",
@@ -399,3 +454,11 @@ def run_face_scan_static(
             "challenge_snapshots_available": False,
         },
     }
+
+    # Enrich the honest_review with a plain-English narrative from Gemma4.
+    # If Ollama is offline the function returns the existing rule-based text unchanged.
+    narrative, narrative_source = _narrative_mod.generate_face_scan_narrative(result)
+    result["honest_review"] = narrative
+    result["narrative_source"] = narrative_source
+
+    return result

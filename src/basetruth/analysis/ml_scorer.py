@@ -42,31 +42,27 @@ _MODEL_CACHE: Any = None
 _MODEL_LOAD_ATTEMPTED: bool = False
 
 
-# ── 4-class verdict taxonomy ──────────────────────────────────────────────────
-# The ML model is a 4-class multiclass XGBoost classifier.
-# Each integer label maps to one of these human-readable verdict strings.
+# ── Binary verdict taxonomy ───────────────────────────────────────────────────
+# The ML model is a binary XGBoost classifier.
 #
-#   0  ORIGINAL          — phone-fresh genuine document (no re-save)
-#   1  ORIGINAL-DERIVED  — save-as copy of a genuine document (still authentic,
-#                          but carries an extra JPEG re-compression cycle)
-#   2  TAMPERED          — directly manipulated/forged document
-#   3  TAMPERED-DERIVED  — save-as copy of a tampered document; the edit signals
-#                          are softer ("laundered") because re-compression partially
-#                          masks ELA and clone artefacts — the hardest class to catch
+#   0  ORIGINAL    — genuine document with no manipulation of any kind
+#   1  FAKE/EDITED — covers re-saved originals (ORIGINAL-DERIVED), directly
+#                    tampered documents (TAMPERED), and re-saved tampered
+#                    documents (TAMPERED-DERIVED).
 #
-# The "fraud score" (0-100) is derived as (p[2] + p[3]) × 100, so it continues
-# to represent overall probability of being in either tampered class.
+# Re-saves of genuine documents are treated as suspicious in a KYC fraud context
+# because legitimate users do not re-encode their bank statements or ID scans.
+#
+# The "fraud score" (0-100) is p[FAKE/EDITED] × 100.
 ML_VERDICT_LABELS: Dict[int, str] = {
     0: "ORIGINAL",
-    1: "ORIGINAL-DERIVED",
-    2: "TAMPERED",
-    3: "TAMPERED-DERIVED",
+    1: "FAKE/EDITED",
 }
 
-# ── Feature names — 19 raw engine signals, one per CSV column (same order) ───
-# These are the exact column names produced by collect_training_samples.py and
-# by extract_feature_vector() below.  XGBoost is scale-invariant so raw
-# fractions and raw pixel counts work fine without manual normalisation.
+# ── Feature names — 18 signals used for training ─────────────────────────────
+# file_entropy_bits (Layer 3) was removed — all values are 0.0 in the dataset.
+# XGBoost is scale-invariant so raw fractions and raw pixel counts work fine
+# without manual normalisation.
 FEATURE_NAMES: List[str] = [
     # Layer 1: ELA — all 4 sub-signals kept separately so the model can learn
     # their individual contribution rather than a hard-coded weighted sum.
@@ -76,9 +72,7 @@ FEATURE_NAMES: List[str] = [
     "ela_suspicious_block_ratio",
     # Layer 2: Metadata
     "metadata_flag_count",
-    # Layer 3: File entropy — real PDFs/images have entropy ≥ 7.0 bits/byte
-    "file_entropy_bits",
-    # Layer 4: Noise
+    # Layer 4: Noise  (Layer 3 file_entropy_bits dropped — all values 0.0 in dataset)
     "noise_hotspot_ratio",
     # Layer 5: DCT double-compression
     "dct_comb_ratio",
@@ -123,7 +117,7 @@ def extract_feature_vector(layers: Dict[str, Any]) -> "np.ndarray":  # type: ign
     # Pull the metrics sub-dict from each forensic layer result.
     ela   = layers.get("layer_1_ela", {}).get("metrics", {})
     meta  = layers.get("layer_2_metadata", {})
-    ent   = layers.get("layer_3_entropy", {}).get("metrics", {})   # was never read before
+    # layer_3_entropy (file_entropy_bits) dropped — all values are 0.0 in real scans
     noise = layers.get("layer_4_noise", {}).get("metrics", {})
     dct   = layers.get("layer_5_dct", {}).get("metrics", {})
     clone = layers.get("layer_6_clone", {}).get("metrics", {})
@@ -150,10 +144,7 @@ def extract_feature_vector(layers: Dict[str, Any]) -> "np.ndarray":  # type: ign
         # Layer 2 — Metadata flag count
         float(len(meta.get("suspicious_flags", []))),
 
-        # Layer 3 — File entropy (bits/byte; real documents typically ≥ 7.0)
-        float(ent.get("entropy_bits", 0.0)),
-
-        # Layer 4 — Noise hotspot fraction
+        # Layer 4 — Noise hotspot fraction  (Layer 3 entropy removed — always 0.0)
         float(noise.get("hotspot_tile_ratio", 0.0)),
 
         # Layer 5 — DCT double-compression ratio and skip flag
@@ -232,22 +223,19 @@ def _load_model() -> Any:
 
 
 def predict(feature_vector: "np.ndarray") -> Optional[Dict[str, Any]]:  # type: ignore[name-defined]
-    """Score a feature vector using the trained 4-class XGBoost model.
+    """Score a feature vector using the trained binary XGBoost model.
 
     Returns a dict with keys:
-        score          float (0–100)  — fraud probability: (p[TAMPERED] + p[TAMPERED-DERIVED]) × 100
+        score          float (0–100)  — fraud probability: P(FAKE/EDITED) × 100
         confidence     float (0–1)    — same value in 0–1 range
         scoring_method str            — always "ML"
         ml_verdict     str            — predicted class name from ML_VERDICT_LABELS
-                                        (ORIGINAL | ORIGINAL-DERIVED | TAMPERED | TAMPERED-DERIVED)
+                                        (ORIGINAL | FAKE/EDITED)
 
     Returns None when the model is not loaded, so the caller can fall back to
     the heuristic without any special handling.
 
-    The ml_verdict is the argmax of the 4-class probability distribution —
-    the class the model is most confident about.  The score (0–100) is kept as
-    the combined tampered probability so existing score-based UI thresholds
-    continue to work while the model is being retrained on the 4-class dataset.
+    The score (0–100) is the probability of the FAKE/EDITED class.
     """
     model = _load_model()
     if model is None:
@@ -262,21 +250,25 @@ def predict(feature_vector: "np.ndarray") -> Optional[Dict[str, Any]]:  # type: 
         vec[vec == -1.0] = float("nan")
 
         # predict_proba returns shape (1, n_classes).
-        # For 4-class: [[P(ORIGINAL), P(ORIGINAL-DERIVED), P(TAMPERED), P(TAMPERED-DERIVED)]]
-        # For legacy 2-class models: [[P(genuine), P(tampered)]]
+        # For binary: [[P(ORIGINAL), P(FAKE/EDITED)]]
         proba = model.predict_proba(vec)[0]
         n_classes = len(proba)
 
-        if n_classes == 4:
-            # 4-class mode: fraud = probability of being in either tampered class
-            p_fraud = float(proba[2]) + float(proba[3])
-            ml_class = int(np.argmax(proba))
-            ml_verdict = ML_VERDICT_LABELS.get(ml_class, "TAMPERED")
-        else:
-            # Legacy 2-class model — treat class 1 as tampered; no derived distinction
+        if n_classes == 2:
+            # Binary model — class 1 = FAKE/EDITED
             p_fraud = float(proba[1])
             ml_class = int(np.argmax(proba))
-            ml_verdict = "TAMPERED" if ml_class == 1 else "ORIGINAL"
+            ml_verdict = ML_VERDICT_LABELS.get(ml_class, "FAKE/EDITED")
+        elif n_classes == 4:
+            # Legacy 4-class mode support
+            p_fraud = float(proba[2]) + float(proba[3])
+            ml_class = int(np.argmax(proba))
+            # Fallback to names if labels dict was updated
+            _old_labels = {0: "ORIGINAL", 1: "ORIGINAL-DERIVED", 2: "TAMPERED", 3: "TAMPERED-DERIVED"}
+            ml_verdict = _old_labels.get(ml_class, "TAMPERED")
+        else:
+            p_fraud = float(proba[-1])
+            ml_verdict = "FAKE/EDITED" if np.argmax(proba) > 0 else "ORIGINAL"
 
         score = round(p_fraud * 100, 1)
 
@@ -306,14 +298,14 @@ def explain(feature_vector: "np.ndarray") -> Optional[Dict[str, float]]:  # type
     """Compute per-feature SHAP contribution values for a single image scan.
 
     Uses XGBoost's built-in tree SHAP — no separate 'shap' package required.
-    Each value shows how much a feature pushed the prediction toward TAMPERED
-    (positive) or GENUINE (negative) in log-odds units.
+    Each value shows how much a feature pushed the prediction toward FAKE/EDITED
+    (positive) or ORIGINAL (negative) in log-odds units.
 
     signature_mismatch sentinels (-1) are replaced with NaN before imputation
     so the pipeline's SimpleImputer fills them with the training-set median,
     exactly as predict() does.
 
-    Returns a dict {feature_name: shap_value} with 11 entries, or None if
+    Returns a dict {feature_name: shap_value} with 18 entries, or None if
     the model is unavailable or the booster raises any error.
     """
     model = _load_model()
@@ -349,25 +341,22 @@ def explain(feature_vector: "np.ndarray") -> Optional[Dict[str, float]]:  # type
         dmat = xgb.DMatrix(imputed_trimmed, feature_names=active_names)
 
         # pred_contribs=True triggers XGBoost tree SHAP.
-        # For 4-class models XGBoost returns a 3-D array:
-        #   shape (n_samples, n_classes, n_booster + 1)
-        # For legacy 2-class models it returns a 2-D array:
+        # For binary models it returns a 2-D array:
         #   shape (n_samples, n_booster + 1)
-        # We handle both here.
+        # For legacy 4-class models it returns a 3-D array:
+        #   shape (n_samples, n_classes, n_booster + 1)
         shap_matrix = booster.predict(dmat, pred_contribs=True)
 
-        if shap_matrix.ndim == 3:
-            # 4-class multiclass: combine the SHAP values for the two tampered classes
-            # (class 2 = TAMPERED, class 3 = TAMPERED-DERIVED) minus the two genuine
-            # classes (class 0 = ORIGINAL, class 1 = ORIGINAL-DERIVED).
-            # A positive result means the feature pushed toward fraud; negative means
-            # it pushed toward genuine — matching the existing red/green bar chart semantics.
+        if shap_matrix.ndim == 2:
+            # Binary model — last column is bias, drop it.
+            shap_values = shap_matrix[0, :-1]
+        elif shap_matrix.ndim == 3:
+            # Legacy 4-class multiclass support
             tampered_shap = shap_matrix[0, 2, :-1] + shap_matrix[0, 3, :-1]
             genuine_shap  = shap_matrix[0, 0, :-1] + shap_matrix[0, 1, :-1]
             shap_values = tampered_shap - genuine_shap
         else:
-            # Legacy 2-class model — last column is bias, drop it.
-            shap_values = shap_matrix[0, :-1]
+            shap_values = shap_matrix[0, ..., :-1].flatten()
 
         contributions = {
             name: round(float(v), 4)
@@ -395,15 +384,15 @@ def explain(feature_vector: "np.ndarray") -> Optional[Dict[str, float]]:  # type
 # so they must NOT be listed here.
 _DROP_COLS = {
     "doc_id", "filename",
-    "hard_case",           # data-collection flag, not a forensic signal
-    "heuristic_score",     # derived from the same signals — would be target leakage
-    "heuristic_verdict",   # same reason
-    "file_size_bytes",     # file size alone is not a reliable fraud signal
-    "metadata_flag_count_raw",  # raw pre-dedup version; metadata_flag_count is used instead
-    "source",              # present in the production dataset CSV; not a feature
-    "sample_weight",       # sampling weight; not a forensic signal
-    "file_format",         # categorical string; not currently encoded
-    "hard_case",
+    "hard_case",               # data-collection flag, not a forensic signal
+    "heuristic_score",         # derived from the same signals — would be target leakage
+    "heuristic_verdict",       # same reason
+    "file_size_bytes",         # file size alone is not a reliable fraud signal
+    "file_entropy_bits",       # all values are 0.0 — entropy layer not populating correctly
+    "metadata_flag_count_raw", # raw pre-dedup version; metadata_flag_count is used instead
+    "source",                  # present in the production dataset CSV; not a feature
+    "sample_weight",           # sampling weight; not a forensic signal
+    "file_format",             # categorical string; not currently encoded
     "signature_mismatch_score",   # not implemented; always -1
     "text_alignment_score",       # not implemented; always 0
     "compression_mismatch_score", # derived aggregate; raw sub-signals already present
@@ -460,24 +449,20 @@ def train(csv_paths: List[str], output_pkl: str, progress_cb: Optional[Any] = No
         frames.append(df)
 
     combined = pd.concat(frames, ignore_index=True)
-    unique_labels = sorted(combined["label"].astype(int).unique().tolist())
-    _emit(f"Loaded {len(combined)} samples across {len(unique_labels)} classes  ({', '.join(ML_VERDICT_LABELS[l] for l in unique_labels)})", 8)
+
+    # Show original raw-label distribution before binarising
+    _raw_label_names = {0: "ORIGINAL", 1: "ORIGINAL-DERIVED", 2: "TAMPERED", 3: "TAMPERED-DERIVED"}
+    raw_labels = sorted(combined["label"].astype(int).unique().tolist())
+    _emit(
+        f"Loaded {len(combined)} samples  —  raw classes: "
+        + ", ".join(_raw_label_names.get(l, str(l)) for l in raw_labels)
+        + "  →  binarising to ORIGINAL / FAKE/EDITED",
+        8,
+    )
     log.info(
         "ml_scorer: training on combined dataset",
-        extra={"rows": len(combined), "sources": len(frames), "unique_labels": unique_labels},
+        extra={"rows": len(combined), "sources": len(frames), "raw_labels": raw_labels},
     )
-
-    # Validate labels — warn if the full 4-class set is not yet present so the
-    # operator knows which folders still need samples before the verdict taxonomy
-    # is fully accurate.
-    expected_labels = {0, 1, 2, 3}
-    missing_labels = expected_labels - set(unique_labels)
-    if missing_labels:
-        missing_names = [ML_VERDICT_LABELS.get(lbl, str(lbl)) for lbl in sorted(missing_labels)]
-        log.warning(
-            "ml_scorer: missing label(s) in training data — these classes will have no examples",
-            extra={"missing_labels": missing_names},
-        )
 
     # Drop identity / leakage columns that are present in some CSVs
     drop_present = [c for c in _DROP_COLS if c in combined.columns]
@@ -490,39 +475,26 @@ def train(csv_paths: List[str], output_pkl: str, progress_cb: Optional[Any] = No
         if col not in combined.columns:
             combined[col] = 0.0
     X = combined[FEATURE_NAMES].copy().astype(float)
-    y = combined["label"].astype(int)
 
-    # Determine whether to use 4-class multiclass or binary mode based on
-    # what labels are actually present in the training data.
-    n_classes = len(unique_labels)
-    is_multiclass = n_classes > 2 or max(unique_labels) > 1
+    # ── Binary label conversion ──────────────────────────────────────────────────
+    # 0 = ORIGINAL    (phone-fresh genuine document)
+    # 1 = FAKE/EDITED (ORIGINAL-DERIVED re-saves + TAMPERED + TAMPERED-DERIVED)
+    # Re-saved genuine documents are suspicious in a KYC context and the dataset
+    # is too small (~470 rows) to reliably learn four separate classes.
+    y = (combined["label"].astype(int) > 0).astype(int)
+    unique_labels = [0, 1]
+    is_multiclass = False
 
-    # Build a pipeline: median imputation (handles -1/NaN) → XGBoost
+    # Build a pipeline: median imputation (handles -1/NaN) → XGBoost (binary)
     try:
         from xgboost import XGBClassifier as _XGB  # noqa: PLC0415
-        if is_multiclass:
-            # 4-class multiclass mode — uses softmax probability output.
-            # num_class must be 4 (not len(unique_labels)) so the index→label
-            # mapping in ML_VERDICT_LABELS stays stable even if some classes
-            # have no training examples yet.
-            model_step = _XGB(
-                n_estimators=300,
-                max_depth=6,
-                learning_rate=0.05,
-                objective="multi:softprob",
-                num_class=4,
-                eval_metric="mlogloss",
-                random_state=42,
-            )
-        else:
-            # Binary mode (legacy: only labels 0 and 1 present)
-            model_step = _XGB(
-                n_estimators=300,
-                max_depth=6,
-                learning_rate=0.05,
-                eval_metric="logloss",
-                random_state=42,
-            )
+        model_step = _XGB(
+            n_estimators=300,
+            max_depth=6,
+            learning_rate=0.05,
+            eval_metric="logloss",
+            random_state=42,
+        )
     except ImportError:
         from sklearn.ensemble import RandomForestClassifier as _RF  # noqa: PLC0415
         model_step = _RF(n_estimators=300, class_weight="balanced", random_state=42)
@@ -552,23 +524,8 @@ def train(csv_paths: List[str], output_pkl: str, progress_cb: Optional[Any] = No
         fold_y     = y.iloc[val_idx]
 
         fold_acc = float(accuracy_score(fold_y, fold_pred))
-        fold_f1  = float(f1_score(fold_y, fold_pred,
-                                  average="weighted" if is_multiclass else "binary",
-                                  zero_division=0))
-
-        if is_multiclass:
-            # Build a dense (n_val × 4) one-hot matrix so roc_auc_score handles
-            # folds where some classes may be absent from the validation split.
-            n_val = len(fold_y)
-            y_ohe = np.zeros((n_val, 4), dtype=float)
-            for i, lbl in enumerate(fold_y.values):
-                y_ohe[i, lbl] = 1.0
-            try:
-                fold_auc = float(roc_auc_score(y_ohe, fold_proba, multi_class="ovr", average="weighted"))
-            except Exception:
-                fold_auc = 0.0
-        else:
-            fold_auc = float(roc_auc_score(fold_y, fold_proba[:, 1]))
+        fold_f1  = float(f1_score(fold_y, fold_pred, average="binary", zero_division=0))
+        fold_auc = float(roc_auc_score(fold_y, fold_proba[:, 1]))
 
         fold_accuracies.append(fold_acc)
         fold_f1s.append(fold_f1)
@@ -588,7 +545,7 @@ def train(csv_paths: List[str], output_pkl: str, progress_cb: Optional[Any] = No
             "accuracy": round(mean_accuracy, 4),
             "f1": round(mean_f1, 4),
             "roc_auc": round(mean_roc_auc, 4),
-            "mode": "4-class" if is_multiclass else "binary",
+            "mode": "binary (ORIGINAL vs FAKE/EDITED)",
         },
     )
     _emit(
@@ -607,13 +564,13 @@ def train(csv_paths: List[str], output_pkl: str, progress_cb: Optional[Any] = No
                 if "ela_suspicious_block_ratio" in hard.columns:
                     hard = _remap_raw_csv(hard)
                 hard_X = hard[FEATURE_NAMES].copy().astype(float).replace(-1.0, float("nan"))
-                hard_X["text_alignment_score"] = 0.0
-                hard_y = hard["label"].astype(int)
+                # Binarize hard-case labels to match the training scheme
+                hard_y = (hard["label"].astype(int) > 0).astype(int)
                 # Fit on full data, evaluate on hard cases
                 pipe.fit(X, y)
                 hard_pred = pipe.predict(hard_X)
                 # Use weighted averaging so hard-case F1 works in both binary and multiclass
-                avg = "weighted" if is_multiclass else "binary"
+                avg = "binary"
                 hard_case_metrics = {
                     "n_hard": len(hard),
                     "accuracy": round(float(accuracy_score(hard_y, hard_pred)), 4),
