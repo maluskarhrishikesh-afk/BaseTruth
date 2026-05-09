@@ -427,7 +427,7 @@ def is_face_stable(
 # Direction is not assumed — we detect deviation in either direction so the
 # challenge works regardless of which way pitch changes for "chin down" on
 # each user's camera setup.
-_NOD_HOLD_FRAMES    = 40    # frames of sustained head-down position ≈ 4 s at 10 FPS
+_NOD_HOLD_FRAMES    = 10    # frames of sustained head-down position ≈ 1 s at 10 FPS
 _NOD_DOWN_DELTA     = 0.12  # pitch must deviate this much from neutral to count as "down"
 _NOD_RETURN_DELTA   = 0.08  # pitch must return within this of neutral = "looking back up"
 _NOD_BASELINE_FRAMES = 3    # first N challenge frames used to estimate neutral pitch
@@ -435,7 +435,7 @@ _NOD_BASELINE_FRAMES = 3    # first N challenge frames used to estimate neutral 
 # Blink: number of distinct eye-close/open cycles required to pass the challenge.
 # Two blinks are sufficient proof of liveness and are easier for users than
 # performing a single precisely-timed blink at the right moment.
-_BLINK_COUNT_REQUIRED = 2
+_BLINK_COUNT_REQUIRED = 1
 
 _BLINK_BASELINE_MIN      = 0.880   # baseline (open-eye) confidence
 
@@ -646,7 +646,8 @@ def analyze_challenge(
     # When this challenge passes, api.py saves the current frame as the best selfie.
     if challenge == "look_straight":
         if len(recent) < _STRAIGHT_STABLE_FRAMES:
-            return {"passed": False, "feedback": "Look directly into the camera…"}
+            remaining = _STRAIGHT_STABLE_FRAMES - len(recent)
+            return {"passed": False, "feedback": f"Look directly into the camera… ({remaining} frames remaining)"}
         last_n = recent[-_STRAIGHT_STABLE_FRAMES:]
         xs     = [f["nose_rel_x"] for f in last_n]
         yaws   = [f["yaw"]        for f in last_n]
@@ -825,7 +826,7 @@ def analyze_challenge(
         # Use the full filtered history to detect the complete down→hold→return arc.
         nod_hist = filtered_history
         if len(nod_hist) < 3:
-            return {"passed": False, "feedback": "Slowly look DOWN — tilt your chin toward your chest…"}
+            return {"passed": False, "feedback": "Look DOWN..."}
 
         # Wrong-motion guard runs immediately (even with few frames) so the user
         # gets corrective feedback before the hold timer starts.
@@ -838,7 +839,7 @@ def analyze_challenge(
             return {"passed": False, "feedback": "That's a turn, not a nod — tilt your chin DOWN, not sideways.", "wrong_motion": "side_to_side_shake"}
 
         if len(nod_hist) < _NOD_BASELINE_FRAMES + 3:
-            return {"passed": False, "feedback": "Slowly look DOWN — tilt your chin toward your chest…"}
+            return {"passed": False, "feedback": "Look DOWN..."}
 
         # Phase 1: baseline pitch from the first frames (user was frontal/straight).
         baseline_pitch = (
@@ -867,18 +868,17 @@ def analyze_challenge(
             if after_hold and any(abs(p - baseline_pitch) <= _NOD_RETURN_DELTA for p in after_hold):
                 return {"passed": True, "feedback": "✅ Nod completed!"}
             if after_hold:
-                return {"passed": False, "feedback": "Now look back UP at the camera…"}
-            held_sec   = best_len / 10.0
-            target_sec = _NOD_HOLD_FRAMES / 10.0
-            return {"passed": False, "feedback": f"Hold it… ({held_sec:.0f}s / {target_sec:.0f}s) — then look back up"}
+                return {"passed": False, "feedback": "Look UP again..."}
+            return {"passed": False, "feedback": "Look UP again..."}
 
-        if best_len > 5:
-            # Partial hold — show progress.
-            held_sec   = best_len / 10.0
-            target_sec = _NOD_HOLD_FRAMES / 10.0
-            return {"passed": False, "feedback": f"Hold it… ({held_sec:.0f}s / {target_sec:.0f}s)"}
+        if best_len > 0:
+            # Partial hold — show countdown.
+            remaining = max(_NOD_HOLD_FRAMES - best_len, 0)
+            if remaining == 0:
+                return {"passed": False, "feedback": "Good! Now look UP again..."}
+            return {"passed": False, "feedback": f"Keep looking down... ({remaining} frames remaining)"}
 
-        return {"passed": False, "feedback": "Slowly look DOWN — tilt your chin toward your chest…"}
+        return {"passed": False, "feedback": f"Look DOWN... ({_NOD_HOLD_FRAMES} frames remaining)"}
 
     # ─── Blink ────────────────────────────────────────────────────────────────
     if challenge == "blink":
@@ -904,7 +904,7 @@ def analyze_challenge(
             # We have genuine EAR data. Count distinct blink events using a
             # state machine: open → dipping (EAR below threshold) → open again.
             # Each complete dip-recovery cycle counts as one blink.
-            # Two blinks are required to pass.
+            # One blink is required to pass (_BLINK_COUNT_REQUIRED = 1).
             baseline_window = ears[:-2] if len(ears) > 2 else ears
             baseline_open   = max(baseline_window or ears)
 
@@ -930,12 +930,9 @@ def analyze_challenge(
                         blink_count += 1
                         eye_state = "open"
                         if blink_count >= _BLINK_COUNT_REQUIRED:
-                            return {"passed": True, "feedback": "✅ Blinks detected!"}
+                            return {"passed": True, "feedback": "✅ Blink detected!"}
 
             # Give progressive feedback so the user knows how many more blinks are needed.
-            remaining = _BLINK_COUNT_REQUIRED - blink_count
-            if blink_count > 0:
-                return {"passed": False, "feedback": f"Good! {remaining} more blink{'s' if remaining > 1 else ''} — close and open your eyes naturally…"}
             return {"passed": False, "feedback": "Blink naturally — close both eyes fully, then open them…"}
 
         else:

@@ -170,41 +170,40 @@ def test_analyze_challenge_nod_passes_with_hold_and_return() -> None:
     assert result == {"passed": True, "feedback": "✅ Nod completed!"}
 
 
-def test_analyze_challenge_blink_does_not_pass_on_single_blink() -> None:
-    # Under the new requirement (_BLINK_COUNT_REQUIRED = 2), a single EAR dip-recovery
-    # cycle is no longer sufficient to pass the blink challenge.
+def test_analyze_challenge_blink_passes_on_single_blink() -> None:
+    # _BLINK_COUNT_REQUIRED = 1 — a single complete EAR dip-recovery cycle is
+    # sufficient to pass the blink challenge.
     history = [
         {"ear": 0.30, "det_score": 0.95},
         {"ear": 0.31, "det_score": 0.95},
         {"ear": 0.29, "det_score": 0.95},
         {"ear": 0.30, "det_score": 0.95},
         {"ear": 0.30, "det_score": 0.95},
-        {"ear": 0.07, "det_score": 0.95},
-        {"ear": 0.22, "det_score": 0.95},
+        {"ear": 0.07, "det_score": 0.95},  # eyes close
+        {"ear": 0.22, "det_score": 0.95},  # eyes reopen → one blink complete
         {"ear": 0.26, "det_score": 0.95},
     ]
 
     result = analyze_challenge(history, "blink")
 
-    assert result["passed"] is False
-    assert "more" in result["feedback"].lower() or "blink" in result["feedback"].lower()
+    assert result == {"passed": True, "feedback": "\u2705 Blink detected!"}
 
 
-def test_analyze_challenge_blink_passes_on_two_distinct_blinks() -> None:
-    # Two full dip-recovery EAR cycles should pass the challenge.
+def test_analyze_challenge_blink_passes_when_two_distinct_blinks_present() -> None:
+    # With _BLINK_COUNT_REQUIRED = 1, two blinks also pass (on the first complete cycle).
     history = [
         {"ear": 0.30, "det_score": 0.95},  # open baseline
         {"ear": 0.31, "det_score": 0.95},
         {"ear": 0.07, "det_score": 0.95},  # blink 1: eyes close
-        {"ear": 0.26, "det_score": 0.95},  # blink 1: eyes reopen
-        {"ear": 0.30, "det_score": 0.95},  # back to baseline
+        {"ear": 0.26, "det_score": 0.95},  # blink 1: eyes reopen → passes here
+        {"ear": 0.30, "det_score": 0.95},
         {"ear": 0.07, "det_score": 0.95},  # blink 2: eyes close
         {"ear": 0.28, "det_score": 0.95},  # blink 2: eyes reopen
     ]
 
     result = analyze_challenge(history, "blink")
 
-    assert result == {"passed": True, "feedback": "✅ Blinks detected!"}
+    assert result == {"passed": True, "feedback": "✅ Blink detected!"}
 
 
 def test_analyze_challenge_blink_does_not_pass_without_eye_reopening() -> None:

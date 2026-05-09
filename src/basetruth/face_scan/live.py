@@ -2009,7 +2009,19 @@ def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> 
     # Early-exit replay check: once enough frames are in history, run a quick
     # repeat-frame analysis. A score this high this early means the session is a
     # clear replay attack — terminate immediately rather than letting it continue.
-    if len(session.all_frame_history) == REPLAY_ABORT_FRAME_THRESHOLD:
+    #
+    # IMPORTANT: skip this check during hold-based challenges (nod, turn_left,
+    # turn_right).  These challenges require the user to hold a static pose for
+    # ~4 seconds (40 frames), so consecutive frames are intentionally very similar.
+    # Running the replay check during a hold phase produces a false-positive abort
+    # because the repeat_frame_score rises even for a genuine live user.  The
+    # stability gate (which fires BEFORE challenges start) has already confirmed
+    # live yaw variance, so a replay could not have reached this point undetected.
+    _HOLD_CHALLENGES = {"nod", "turn_left", "turn_right"}
+    if (
+        len(session.all_frame_history) == REPLAY_ABORT_FRAME_THRESHOLD
+        and session.current_challenge not in _HOLD_CHALLENGES
+    ):
         _early_replay = _compute_replay_heuristics(session.all_frame_history)
         if _early_replay["repeat_frame_score"] >= REPLAY_ABORT_SCORE_THRESHOLD:
             log.warning(
