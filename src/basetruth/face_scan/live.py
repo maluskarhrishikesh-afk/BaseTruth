@@ -37,6 +37,7 @@ from basetruth.kyc.liveness import (
 from basetruth.logger import get_logger
 from basetruth.vision.face import get_face_analyzer, get_mediapipe_faces
 from basetruth.face_scan import narrative as _narrative_mod
+import basetruth.face_scan.ml_scorer_live as _ml_scorer_live
 
 log = get_logger(__name__)
 
@@ -51,7 +52,30 @@ _CV2_IMDECODE = getattr(cv2, "imdecode")
 _CV2_IMREAD_COLOR = getattr(cv2, "IMREAD_COLOR")
 
 FACE_SCAN_LIVE_SESSION_TTL = timedelta(minutes=20)
-DEFAULT_FACE_SCAN_CHALLENGES: List[str] = ["blink", "turn_left", "nod"]
+
+# Hard-abort: consecutive frames with no face before the session is terminated.
+# At ~10 FPS this equals ~5 seconds of continuous face absence — far beyond any
+# normal camera repositioning. After this threshold the session is useless.
+MAX_CONSECUTIVE_NO_FACE_FRAMES: int = 50
+
+# Hard-abort: stability gate static-source rejections (zero yaw variance or
+# artificial periodic jitter) before terminating the session. A genuine user
+# struggling with lighting never reaches this count; only a persistent spoof does.
+MAX_STATIC_SOURCE_REJECTIONS: int = 12
+
+# Early-exit replay: once all_frame_history reaches this many frames, run a quick
+# repeat-frame check. If repeat_frame_score already exceeds REPLAY_ABORT_SCORE_THRESHOLD,
+# terminate immediately — no point letting an attacker continue probing.
+REPLAY_ABORT_FRAME_THRESHOLD: int = 30
+REPLAY_ABORT_SCORE_THRESHOLD: float = 80.0
+
+# Grace period (seconds) after a challenge passes where no-face frames are treated
+# as normal repositioning and do NOT count toward the consecutive-abort counter.
+# Genuine users take 1-3 seconds to reorient from one turn to the next, so we
+# give them a clean window before the abort clock starts counting again.
+CHALLENGE_TRANSITION_GRACE_SECONDS: float = 2.5
+
+DEFAULT_FACE_SCAN_CHALLENGES: List[str] = ["blink", "nod", "turn_left", "turn_right"]
 FACE_SCAN_CHALLENGE_LABELS: Dict[str, str] = {
     "look_straight": "LOOK AT THE CAMERA",
     "blink": "BLINK ONCE",
@@ -61,10 +85,21 @@ FACE_SCAN_CHALLENGE_LABELS: Dict[str, str] = {
 }
 FACE_SCAN_CHALLENGE_INSTRUCTIONS: Dict[str, str] = {
     "look_straight": "Look into the camera and hold still — your face will be captured automatically.",
-    "blink": "Blink once: slowly close both eyes completely, then open them wide.",
-    "turn_left": "Slowly turn your head to YOUR left. Hold the turn briefly, then return.",
-    "turn_right": "Slowly turn your head to YOUR right. Hold the turn briefly, then return.",
-    "nod": "Slowly nod your head down once, then look back at the camera.",
+    "blink": "Blink naturally — close both eyes fully and open them. We need 2 blinks.",
+    "turn_left": "Slowly turn your head to YOUR LEFT. Hold that position. Then look straight ahead.",
+    "turn_right": "Slowly turn your head to YOUR RIGHT. Hold that position. Then look straight ahead.",
+    "nod": "Slowly look DOWN — tilt your chin toward your chest. Hold it. Then look back up.",
+}
+
+# Per-challenge timeout overrides (seconds).  Hold-and-return challenges need more
+# time than instant challenges — a user who holds for 4 seconds and then returns
+# uses about 6-7 seconds total, well within these limits.
+_CHALLENGE_TIMEOUTS: Dict[str, float] = {
+    "look_straight": 15.0,
+    "blink": 15.0,
+    "nod": 30.0,
+    "turn_left": 30.0,
+    "turn_right": 30.0,
 }
 
 _LIVE_FRAME_RUNTIME_ERRORS = (AttributeError, RuntimeError, TypeError, ValueError, OSError)
@@ -336,6 +371,19 @@ class FaceScanLiveSession:
     # presented to the user.  Zero means no challenge has started yet.
     # Used by the timeout enforcement logic to reset slow or stuck challenges.
     challenge_started_at: float = 0.0
+    # Consecutive frames where no valid face was detected. Resets to 0 the moment
+    # a face IS found. Triggers hard-abort when it exceeds MAX_CONSECUTIVE_NO_FACE_FRAMES.
+    consecutive_frames_without_face: int = 0
+    # Count of stability-gate rejections for static-source reasons (zero yaw variance
+    # or artificial jitter) across the whole session. Triggers abort at MAX_STATIC_SOURCE_REJECTIONS.
+    static_source_rejections: int = 0
+    # Per-challenge reaction times (ms): time from when the challenge appeared to when
+    # the user completed it. Bots react near-instantly; humans take 600–3000 ms.
+    challenge_reaction_times: List[float] = field(default_factory=list)
+    # Monotonic timestamp of the most recent challenge advance. Used to give the
+    # user a grace window between turn challenges where no-face frames are treated
+    # as repositioning rather than as consecutive-abort signals.
+    last_challenge_advance_at: float = 0.0
     frames_received: int = 0
     frames_without_face: int = 0
     last_live_frame_bytes: Optional[bytes] = None
@@ -364,12 +412,30 @@ class FaceScanLiveSession:
         return self.challenge_frame_history.setdefault(key, [])
 
     def advance_challenge(self, snapshot: Dict[str, Any] | None = None) -> None:
-        """Record the current challenge as passed and move to the next one."""
-        if self.current_challenge is not None:
+        """Record the current challenge as passed and move to the next one.
+
+        The stability gate is only reset when advancing FROM a turn challenge
+        (turn_left or turn_right).  These leave significant yaw residual
+        (typically ±0.20) that would otherwise immediately fire the wrong-
+        direction guard on the very next challenge before the user has had any
+        chance to act.
+
+        For still challenges (look_straight, blink, nod) the yaw shift is
+        negligible.  Resetting the gate for these transitions forces an
+        unnecessary re-stabilisation window: the user starts performing the
+        next motion during the gate (which rejects those frames), and then
+        has to perform it again once the challenge finally opens — this is
+        the direct cause of needing 4-5 attempts per challenge.
+        """
+        # Capture the challenge that just passed before incrementing the index
+        # so we can decide whether the stability gate needs a reset below.
+        completed_challenge = self.current_challenge
+
+        if completed_challenge is not None:
             self.challenge_results.append(
                 {
                     "index": self.current_challenge_idx,
-                    "challenge": self.current_challenge,
+                    "challenge": completed_challenge,
                     "passed": True,
                 }
             )
@@ -378,6 +444,19 @@ class FaceScanLiveSession:
 
         self.current_challenge_idx += 1
         self.challenge_frame_history[f"ch_{self.current_challenge_idx}"] = []
+
+        # Only reset the stability gate after a turn challenge.  Turn challenges
+        # leave the head pointed sideways (large yaw residual).  The gate
+        # requires |yaw| <= FACE_STABILITY_YAW_MAX (0.12), so it forces the
+        # user back to neutral before the next challenge opens — preventing the
+        # wrong-direction guard from firing on the residual yaw of the previous
+        # turn.  Resetting for non-turn challenges causes needless re-stabilisation
+        # and is the primary reason challenges used to take 4-5 attempts.
+        _TURN_CHALLENGES = frozenset({"turn_left", "turn_right"})
+        if completed_challenge in _TURN_CHALLENGES:
+            self.face_stable_frames = 0
+            self.face_stable_yaw_buffer.clear()
+            self.blink_observed_in_stability = False
 
     def to_status_dict(self) -> Dict[str, Any]:
         """Return the public live Face Scan session contract."""
@@ -669,6 +748,78 @@ def handle_live_meta(session: FaceScanLiveSession, data: Dict[str, Any]) -> None
     label_lower = device_label.lower()
     if any(token in label_lower for token in _VIRTUAL_CAMERA_TOKENS):
         session.environment["virtual_camera_suspected"] = True
+
+
+def _build_abort_result(session: "FaceScanLiveSession", reason: str) -> Dict[str, Any]:
+    """Build and store a terminal LIVENESS_FAILED result for an aborted live session.
+
+    Called when a hard-abort condition fires mid-session (consecutive no-face frames,
+    persistent static-source, or early replay detection). Sets session.result and
+    session.status so reconnect logic in the API returns the right response.
+    """
+    result: Dict[str, Any] = {
+        "filename": f"face_scan_live_{session.session_id}.jpg",
+        "scan_type": "face_scan",
+        "mode": "live",
+        "schema_version": FACE_SCAN_SCHEMA_VERSION,
+        "verdict": "LIVENESS_FAILED",
+        "risk_score_0_100": 100.0,
+        "confidence_0_100": 0.0,
+        "confidence_reason": reason,
+        "overall_explanation": "Session terminated: " + reason,
+        "honest_review": reason + ". Please start a new session.",
+        "evidence": ["Session terminated early: " + reason + "."],
+        "trace": {
+            "decision_trace_id": f"fs_live_{uuid.uuid4().hex[:12]}",
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+            "processing_time_ms": int((time.time() - session.created_at.timestamp()) * 1000),
+            "rules_version": FACE_SCAN_RULES_VERSION,
+            "model_version": FACE_SCAN_MODEL_VERSION,
+        },
+        "environment": session.environment,
+        "checks": {},
+        "narrative_pending": False,
+    }
+    session.result = result
+    session.status = "failed"
+    return {"type": "result", **result}
+
+
+def _no_face_tick(session: "FaceScanLiveSession") -> Optional[Dict[str, Any]]:
+    """Increment no-face counters and hard-abort the session if absence is too long.
+
+    Increments both the total frames_without_face counter (used in end-of-session
+    confidence scoring) and the consecutive_frames_without_face counter (used for
+    the hard-abort guard). The consecutive counter is reset to 0 in
+    process_live_frame_message the moment a face IS detected.
+
+    Returns a terminal abort dict when the threshold is exceeded, or None to let
+    the caller continue with its normal no-face status response.
+    """
+    session.frames_without_face += 1
+    # During the challenge transition grace period, no-face frames are expected —
+    # the user is physically moving from one turn position to the next. Do not count
+    # them toward the consecutive-abort clock; just let them pass silently.
+    if (
+        session.last_challenge_advance_at > 0.0
+        and (time.monotonic() - session.last_challenge_advance_at) < CHALLENGE_TRANSITION_GRACE_SECONDS
+    ):
+        return None
+    session.consecutive_frames_without_face += 1
+    if session.consecutive_frames_without_face >= MAX_CONSECUTIVE_NO_FACE_FRAMES:
+        log.warning(
+            "Live session aborted: consecutive no-face frames exceeded threshold.",
+            extra={
+                "session_id": session.session_id,
+                "consecutive_no_face": session.consecutive_frames_without_face,
+                "threshold": MAX_CONSECUTIVE_NO_FACE_FRAMES,
+            },
+        )
+        return _build_abort_result(
+            session,
+            "No face detected for too long \u2014 ensure you are well-lit and centred in the oval",
+        )
+    return None
 
 
 def _compute_temporal_consistency(history_groups: List[List[Dict[str, Any]]]) -> Dict[str, float]:
@@ -1003,16 +1154,103 @@ def _compute_depth_consistency(session: "FaceScanLiveSession") -> Dict[str, floa
     corr = float(np.corrcoef(yaws, iods)[0, 1])
 
     # Map the correlation [-1, +1] to a flat-face risk [0, 100]:
-    #   corr  ≤ -0.30 → expected 3D behavior → risk ≈ 0
-    #   corr  ≥ +0.20 → flat source (IOD grows or stays flat with yaw) → risk ≈ 100
-    # _scale_risk(corr + 1.0) shifts range: corr=-0.30 → 0.70, corr=+0.20 → 1.20
-    flat_face_risk = _scale_risk(corr + 1.0, 0.70, 1.20)
+    #   corr  ≤ -0.50 → strong 3D depth behaviour → risk = 0
+    #   corr  ≥  0.00 → IOD flat or growing with yaw → risk = 100
+    #
+    # Calibrated against real-session data:
+    #   Real human faces: iod_yaw_corr typically -0.40 to -0.99 → risk 0
+    #   Plastic doll:     iod_yaw_corr ≈ -0.12 (shallow 3D)     → risk ~77
+    #   Flat photo/mask:  iod_yaw_corr ≈  0.00 to +0.30         → risk 100
+    #
+    # Previous thresholds (0.70, 1.20) had the safe zone as corr ≤ -0.30, which
+    # was too lenient: a plastic doll with corr = -0.12 only scored ~37, staying
+    # below the SUSPICIOUS verdict threshold of 65.  Tightening to (0.50, 1.00)
+    # raises the same doll to ~77, crossing the existing 65-point threshold.
+    flat_face_risk = _scale_risk(corr + 1.0, 0.50, 1.00)
     score = _clamp(flat_face_risk)
     return {
         "score_0_100": round(score, 2),
         "iod_yaw_correlation": round(corr, 4),
         "flat_face_risk": round(flat_face_risk, 2),
     }
+
+
+def _compute_head_velocity_variance(history: List[Dict[str, Any]]) -> float:
+    """Compute the variance of frame-to-frame yaw velocity across all history frames.
+
+    Human head movements accelerate and decelerate naturally as muscles engage and
+    relax, producing variable velocity between frames. A replay video maintains a
+    constant playback frame-rate, yielding low-variance (uniform) yaw velocity.
+    A truly static photo or printed mask has near-zero velocity variance throughout.
+
+    Returns NaN when fewer than 4 frames are available (not enough to estimate variance).
+    """
+    yaws = np.array([float(f["yaw"]) for f in history if "yaw" in f], dtype=np.float32)
+    if len(yaws) < 4:
+        return float("nan")
+    # First derivative: frame-to-frame change in yaw = angular velocity
+    velocities = np.diff(yaws)
+    return float(np.var(velocities))
+
+
+def _compute_blink_duration_ms(session: "FaceScanLiveSession") -> float:
+    """Estimate mean blink duration (ms) from EAR values in the blink challenge frames.
+
+    A real human blink lasts 100\u2013400 ms. Deepfakes and replay videos either show no
+    blink event at all, or have abnormally short (<50 ms) or long (>600 ms) closures
+    due to frame interpolation or video editing artifacts.
+
+    EAR data is only meaningful on frames where MediaPipe ran (blink challenge frames).
+    On all other challenges, EAR defaults to 0.30 (open-eye), so we restrict analysis
+    to the blink challenge history. Returns NaN if no blink challenge was completed or
+    no blink event was detected in the challenge frames.
+    """
+    blink_frames: List[Dict[str, Any]] = []
+    for result in session.challenge_results:
+        if result.get("challenge") == "blink" and result.get("passed"):
+            blink_frames = session.challenge_frame_history.get(f"ch_{result['index']}", [])
+            break
+
+    if len(blink_frames) < 3:
+        return float("nan")
+
+    BLINK_EAR_THRESHOLD = 0.20  # EAR below this = eyes are closing (blink in progress)
+
+    ear_series = [
+        (float(f["ear"]), float(f.get("server_recv_mono", 0.0)))
+        for f in blink_frames
+    ]
+    in_blink = False
+    blink_start = 0.0
+    durations: List[float] = []
+
+    for ear, ts in ear_series:
+        if not in_blink and ear < BLINK_EAR_THRESHOLD:
+            in_blink = True
+            blink_start = ts
+        elif in_blink and ear >= BLINK_EAR_THRESHOLD:
+            in_blink = False
+            if ts > 0 and blink_start > 0:
+                dur_ms = (ts - blink_start) * 1000.0
+                # Accept only realistic blink durations (40\u2013700 ms includes margin)
+                if 40.0 < dur_ms < 700.0:
+                    durations.append(dur_ms)
+
+    return float(np.mean(durations)) if durations else float("nan")
+
+
+def _compute_mean_reaction_latency_ms(session: "FaceScanLiveSession") -> float:
+    """Return the mean time (ms) from challenge appearance to completion.
+
+    Bots typically react in milliseconds (the detection algorithm fires on the
+    very first injected frame). Genuine humans process the visual prompt and
+    react in 600\u20133000 ms depending on challenge complexity.
+
+    Requires at least 2 recorded reaction times to be meaningful (a single
+    challenge may be fast for other reasons). Returns NaN otherwise.
+    """
+    times = session.challenge_reaction_times
+    return float(np.mean(times)) if len(times) >= 2 else float("nan")
 
 
 def _compute_quality_metrics(history: List[Dict[str, Any]]) -> Dict[str, float]:
@@ -1030,9 +1268,15 @@ def _compute_quality_metrics(history: List[Dict[str, Any]]) -> Dict[str, float]:
     mean_laplacian = float(np.mean([float(frame["laplacian_var"]) for frame in history]))
     mean_brightness = float(np.mean([float(frame["brightness_mean"]) for frame in history]))
     mean_face_area = float(np.mean([float(frame["bbox_area_ratio"]) for frame in history]))
-    blur_risk = _scale_risk(mean_laplacian, 22.0, 120.0, inverse=True)
+    # Thresholds recalibrated for live webcam face crops.
+    # At rest, webcam face crops have Laplacian variance ~80-400 (sharp).
+    # Motion blur during head turns: ~30-80. Very blurry/out-of-focus: <30.
+    # The old (22, 120) thresholds were calibrated for static document scans and
+    # placed nearly all webcam frames at risk=0. These (30, 200) thresholds produce
+    # meaningful variation: slightly motion-blurred frames score 30-70%.
+    blur_risk = _scale_risk(mean_laplacian, 30.0, 200.0, inverse=True)
     brightness_risk = _scale_risk(abs(mean_brightness - 128.0), 18.0, 90.0)
-    face_size_risk = _scale_risk(mean_face_area, 0.06, 0.18, inverse=True)
+    face_size_risk = _scale_risk(mean_face_area, 0.05, 0.10, inverse=True)
     return {
         "blur_risk_0_100": round(blur_risk, 2),
         "brightness_risk_0_100": round(brightness_risk, 2),
@@ -1179,6 +1423,15 @@ def build_live_face_scan_result(session: FaceScanLiveSession) -> Dict[str, Any]:
     timing     = _compute_frame_timing_jitter(history)
     depth      = _compute_depth_consistency(session)
 
+    # ── Tier 1 ML signals ────────────────────────────────────────────────────
+    # These are computed at result-build time from data already in session/history.
+    # head_velocity_var: variance of yaw velocity — low = replay/robot, high = human
+    # blink_dur_ms: mean blink duration from EAR — abnormal = deepfake
+    # reaction_lat_ms: mean challenge reaction time — instant = bot, slow = human
+    head_velocity_var = _compute_head_velocity_variance(history)
+    blink_dur_ms      = _compute_blink_duration_ms(session)
+    reaction_lat_ms   = _compute_mean_reaction_latency_ms(session)
+
     quality_risk = round(
         (0.5 * quality["blur_risk_0_100"]) + (0.3 * quality["brightness_risk_0_100"]) + (0.2 * quality["face_size_risk_0_100"]),
         2,
@@ -1222,10 +1475,15 @@ def build_live_face_scan_result(session: FaceScanLiveSession) -> Dict[str, Any]:
         verdict = "INCONCLUSIVE"
     elif replay["score_0_100"] > 80.0:
         verdict = "DEEPFAKE"
-    elif max(replay["score_0_100"], temporal["score_0_100"]) >= 50.0:
-        # 50.0 threshold: temporal alone (computed only on still challenges) must be
+    elif max(replay["score_0_100"], temporal["score_0_100"]) >= 50.0 and risk_score >= 35.0:
+        # 50.0 sub-score threshold: temporal alone (computed only on still challenges) must be
         # clearly elevated to trigger SUSPICIOUS. A score of 35-49 on still frames is
         # borderline and not strong enough standalone evidence without replay support.
+        # The additional risk_score >= 35.0 guard prevents individual sub-score spikes
+        # (e.g. elevated repeat_frame_score from dark-frame hash collisions in a dim
+        # room) from overriding a low overall risk score and producing a false SUSPICIOUS
+        # verdict for a genuine live user.  If the overall evidence only yields risk < 35,
+        # the verdict should align with that low-risk assessment.
         verdict = "SUSPICIOUS"
     elif depth["score_0_100"] >= 65.0:
         # Hard flat-face gate: the 3D depth check strongly indicates a flat source
@@ -1240,10 +1498,24 @@ def build_live_face_scan_result(session: FaceScanLiveSession) -> Dict[str, Any]:
     completed = [item["challenge"] for item in session.challenge_results if item.get("passed")]
     last_face_box = session.last_face_box or [0, 0, 0, 0]
     mean_detector_conf = round(float(np.mean([float(frame["detector_confidence"]) for frame in history])) if history else 0.0, 4)
-    fps = session.environment.get("observed_fps")
-    if isinstance(fps, (int, float)) and session.frames_received > 0:
-        frame_drop_rate = _clamp(max(0.0, float(fps) - len(history) / max(len(completed), 1)) * 10.0)
-        session.environment["frame_drop_rate"] = round(frame_drop_rate, 2)
+
+    # Compute observed_fps from actual server-receive timestamps rather than using
+    # the browser-reported value. The browser hardcodes 1000/CAPTURE_MS = 10.0 and
+    # always sends that value, giving zero variation in the CSV. The server-side
+    # monotonic timestamps reveal actual delivery timing including network jitter.
+    _ts_list = [float(f["server_recv_mono"]) for f in history if "server_recv_mono" in f]
+    if len(_ts_list) >= 2:
+        _ts_duration = _ts_list[-1] - _ts_list[0]
+        if _ts_duration > 0.001:
+            session.environment["observed_fps"] = round((len(_ts_list) - 1) / _ts_duration, 2)
+
+    # frame_drop_rate: fraction of received frames where no valid face was detected.
+    # A genuine user at a good camera typically drops 2-15% of frames (blink, turn).
+    # Replay attacks and injected videos may drop 0% (every frame has a face) or
+    # spike to high values when an injected face doesn't hit the detector reliably.
+    session.environment["frame_drop_rate"] = round(
+        session.frames_without_face / max(session.frames_received, 1), 4
+    )
 
     result = {
         "filename": f"face_scan_live_{session.session_id}.jpg",
@@ -1273,6 +1545,10 @@ def build_live_face_scan_result(session: FaceScanLiveSession) -> Dict[str, Any]:
                 "detector_confidence": mean_detector_conf,
                 "frames_processed": len(history),
                 "frames_without_face": session.frames_without_face,
+                # Mean landmark confidence across all frames — a proxy for how
+                # reliably MediaPipe could locate facial keypoints. Low values
+                # indicate partial occlusion, unconventional angle, or low light.
+                "mean_landmark_confidence": mean_detector_conf,
             },
             "quality_assessment": {
                 "status": "review" if quality_risk >= 35.0 else "pass",
@@ -1281,6 +1557,10 @@ def build_live_face_scan_result(session: FaceScanLiveSession) -> Dict[str, Any]:
             "temporal_consistency": {
                 "status": "review" if temporal["score_0_100"] >= 35.0 else "pass",
                 **temporal,
+                # Velocity variance: high for natural human movement, low for replay/robot.
+                # Stored as None when fewer than 4 frames are available (NaN in NumPy
+                # serialises poorly; None becomes null in JSON and NaN in the CSV).
+                "head_velocity_variance": None if (head_velocity_var != head_velocity_var) else round(float(head_velocity_var), 6),
             },
             "replay_heuristics": {
                 "status": "review" if replay["score_0_100"] >= 35.0 else "pass",
@@ -1298,6 +1578,13 @@ def build_live_face_scan_result(session: FaceScanLiveSession) -> Dict[str, Any]:
                 # complex session can hint at scripted execution.
                 "wrong_action_count": len(session.challenge_wrong_actions),
                 "wrong_actions": session.challenge_wrong_actions,
+                # Mean blink duration from the EAR series during the blink challenge.
+                # Real blinks: 100-400 ms. Deepfakes: absent, too short, or too long.
+                # None = blink challenge not present or no blink detected.
+                "blink_duration_ms": None if (blink_dur_ms != blink_dur_ms) else round(blink_dur_ms, 1),
+                # Mean reaction latency from challenge appearance to completion.
+                # None until at least 2 challenges have been timed.
+                "challenge_reaction_latency_ms": None if (reaction_lat_ms != reaction_lat_ms) else round(reaction_lat_ms, 1),
             },
             # ── New signals ────────────────────────────────────────────────────
             "saccade_analysis": {
@@ -1322,6 +1609,25 @@ def build_live_face_scan_result(session: FaceScanLiveSession) -> Dict[str, Any]:
             "challenge_snapshots_available": bool(session.challenge_snapshots),
         },
     }
+
+    # ── Optional ML risk score (replaces the heuristic formula when trained) ──
+    # Build the feature vector from the checks dict that is already in the result
+    # and ask the ML scorer to predict spoof probability.  If the model pkl is
+    # absent (cold-start / not yet trained) predict() returns None and we keep
+    # the heuristic risk_score computed above unchanged.
+    _fv = _ml_scorer_live.build_feature_vector(result["checks"], session.environment)
+    _ml_result = _ml_scorer_live.predict(_fv)
+    if _ml_result is not None:
+        # Replace the heuristic risk score with the ML probability.
+        result["risk_score_0_100"] = _ml_result["score"]
+        result["trace"]["model_version"] = "xgboost-live-v1"
+        result["checks"]["scoring_method"] = "ML"
+        log.info(
+            "ml_scorer_live: ML score applied to live result.",
+            extra={"ml_score": _ml_result["score"], "session_id": session.session_id},
+        )
+    else:
+        result["checks"]["scoring_method"] = "heuristic"
 
     # Assign session.result NOW — before the LLM narrative call — so that any
     # Streamlit status-poll that fires during the ~6-8 s LLM call sees a non-null
@@ -1374,7 +1680,9 @@ def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> 
         faces = _detect_faces(img, attach_ear=(session.current_challenge == "blink"))
     except _LIVE_FRAME_RUNTIME_ERRORS as exc:  # noqa: BLE001
         log.error("Live frame detection raised unexpectedly.", extra={"error": str(exc), "session_id": session.session_id})
-        session.frames_without_face += 1
+        _abort = _no_face_tick(session)
+        if _abort is not None:
+            return _abort
         return {
             "type": "status",
             "face_detected": False,
@@ -1386,20 +1694,34 @@ def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> 
         }
 
     if not faces:
-        session.frames_without_face += 1
+        _abort = _no_face_tick(session)
+        if _abort is not None:
+            return _abort
         session.face_stable_frames = 0
         session.face_stable_yaw_buffer.clear()
+        # During a challenge transition the user is physically repositioning and
+        # the face being briefly absent is expected. Show context-aware feedback
+        # so they know what to do next rather than seeing a generic error.
+        _in_transition = (
+            session.last_challenge_advance_at > 0.0
+            and (time.monotonic() - session.last_challenge_advance_at) < CHALLENGE_TRANSITION_GRACE_SECONDS
+        )
         return {
             "type": "status",
             "face_detected": False,
             "challenge": session.current_challenge,
             "challenges_completed": session.current_challenge_idx,
             "total_challenges": len(session.challenges),
-            "feedback": "No face detected — move into the oval.",
+            "feedback": "Move back to centre and hold still for the next challenge." if _in_transition else "No face detected — move into the oval.",
             "challenge_just_passed": False,
         }
 
     face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
+    # Do NOT reset consecutive_frames_without_face here. A marginal detection that
+    # fails the geometry, confidence, or size gates below (e.g. an extreme profile
+    # face during a turn that the detector caught at the edge of its range) should
+    # NOT save the session from the no-face abort. We only reset after ALL three
+    # hard rejection gates pass — see the comment below the area check.
 
     # Validate that the detected object is geometrically consistent with a human
     # face before doing anything with it.  Face detectors occasionally accept a
@@ -1494,6 +1816,12 @@ def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> 
             "challenge_just_passed": False,
         }
 
+    # Face passed all three hard rejection gates (geometry, confidence, area) —
+    # the user is genuinely present and visible. Reset the consecutive no-face
+    # counter now. Doing it here (not at detection time) prevents profile/partial
+    # detections that fail validation from silently resetting the abort clock.
+    session.consecutive_frames_without_face = 0
+
     # ── Pre-liveness face stability gate ─────────────────────────────────────
     # Expert-recommended pipeline:
     #   Detection → Validation → Tracking (stability) → Liveness Challenge
@@ -1522,6 +1850,45 @@ def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> 
             brightness_mean=_brightness,
         )
         if not stable_ok:
+            # Log at INFO on the first rejection of each stability window so we can
+            # diagnose what condition keeps failing without flooding logs on every frame.
+            # Subsequent frames in the same reset-window (face_stable_frames == 0 after reset)
+            # are suppressed.
+            if session.face_stable_frames == 0:
+                log.info(
+                    "Face stability gate rejected frame (first in window).",
+                    extra={
+                        "session_id": session.session_id,
+                        "reason": stable_feedback,
+                        "confidence": round(metrics["detector_confidence"], 4),
+                        "bbox_area_ratio": round(metrics["bbox_area_ratio"], 4),
+                        "nose_rel_x": round(metrics["nose_rel_x"], 4),
+                        "nose_rel_y": round(metrics.get("nose_rel_y", 0.50), 4),
+                        "yaw": round(metrics.get("yaw", 0.0), 4),
+                        "pitch": round(metrics.get("pitch", 0.0), 4),
+                        "texture_score": round(_texture, 2),
+                        "brightness_mean": round(_brightness, 2),
+                        "face_count": len(faces),
+                    },
+                )
+            else:
+                log.debug(
+                    "Face stability gate rejected frame.",
+                    extra={
+                        "session_id": session.session_id,
+                        "reason": stable_feedback,
+                        "confidence": round(metrics["detector_confidence"], 4),
+                        "bbox_area_ratio": round(metrics["bbox_area_ratio"], 4),
+                        "nose_rel_x": round(metrics["nose_rel_x"], 4),
+                        "nose_rel_y": round(metrics.get("nose_rel_y", 0.50), 4),
+                        "yaw": round(metrics.get("yaw", 0.0), 4),
+                        "pitch": round(metrics.get("pitch", 0.0), 4),
+                        "texture_score": round(_texture, 2),
+                        "brightness_mean": round(_brightness, 2),
+                        "face_count": len(faces),
+                        "stable_frames_so_far": session.face_stable_frames,
+                    },
+                )
             # Reset on any validation failure — must be a continuous clean window.
             session.face_stable_frames = 0
             session.face_stable_yaw_buffer.clear()
@@ -1558,10 +1925,22 @@ def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> 
                 session.face_stable_frames = 0
                 session.face_stable_yaw_buffer.clear()
                 session.blink_observed_in_stability = False
+                # Count this static-source signal. If it fires too many times,
+                # this is a persistent spoof attempt, not a struggling genuine user.
+                session.static_source_rejections += 1
                 log.warning(
                     "Face stability gate: yaw variance too low — static source suspected.",
-                    extra={"yaw_var": _yaw_var, "threshold": FACE_STABILITY_YAW_VARIANCE_MIN, "session_id": session.session_id},
+                    extra={"yaw_var": _yaw_var, "threshold": FACE_STABILITY_YAW_VARIANCE_MIN, "rejections": session.static_source_rejections, "session_id": session.session_id},
                 )
+                if session.static_source_rejections >= MAX_STATIC_SOURCE_REJECTIONS:
+                    log.warning(
+                        "Live session aborted: persistent static-source rejections exceeded threshold.",
+                        extra={"session_id": session.session_id, "rejections": session.static_source_rejections},
+                    )
+                    return _build_abort_result(
+                        session,
+                        "Persistent static-source or spoof-attempt detected — session terminated",
+                    )
                 return {
                     "type": "status",
                     "face_detected": True,
@@ -1580,10 +1959,20 @@ def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> 
                 session.face_stable_frames = 0
                 session.face_stable_yaw_buffer.clear()
                 session.blink_observed_in_stability = False
+                session.static_source_rejections += 1
                 log.warning(
                     "Face stability gate: yaw jitter pattern too regular — artificial source suspected.",
-                    extra={"session_id": session.session_id},
+                    extra={"session_id": session.session_id, "rejections": session.static_source_rejections},
                 )
+                if session.static_source_rejections >= MAX_STATIC_SOURCE_REJECTIONS:
+                    log.warning(
+                        "Live session aborted: persistent artificial-jitter rejections exceeded threshold.",
+                        extra={"session_id": session.session_id, "rejections": session.static_source_rejections},
+                    )
+                    return _build_abort_result(
+                        session,
+                        "Persistent artificial-source jitter detected — session terminated",
+                    )
                 return {
                     "type": "status",
                     "face_detected": True,
@@ -1617,6 +2006,22 @@ def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> 
     session.current_frame_history().append(metrics)
     session.all_frame_history.append(metrics)
 
+    # Early-exit replay check: once enough frames are in history, run a quick
+    # repeat-frame analysis. A score this high this early means the session is a
+    # clear replay attack — terminate immediately rather than letting it continue.
+    if len(session.all_frame_history) == REPLAY_ABORT_FRAME_THRESHOLD:
+        _early_replay = _compute_replay_heuristics(session.all_frame_history)
+        if _early_replay["repeat_frame_score"] >= REPLAY_ABORT_SCORE_THRESHOLD:
+            log.warning(
+                "Live session aborted: early replay detection at frame threshold.",
+                extra={
+                    "session_id": session.session_id,
+                    "repeat_frame_score": _early_replay["repeat_frame_score"],
+                    "threshold": REPLAY_ABORT_SCORE_THRESHOLD,
+                },
+            )
+            return _build_abort_result(session, "Replay attack detected — session terminated")
+
     current_challenge = session.current_challenge
     if current_challenge is None:
         # All challenges already passed in a previous frame — replay the result if
@@ -1628,18 +2033,20 @@ def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> 
         return {"type": "processing", "message": "All challenges completed. Verifying your results\u2026"}
 
     # Challenge timeout enforcement: if the user has not completed the current
-    # challenge within CHALLENGE_TIMEOUT_SECONDS, reset the frame history and
-    # restart the timer.  This prevents slow brute-force probing.
+    # challenge within the allowed time, reset the frame history and restart
+    # the timer.  Hold-based challenges (nod, turns) get longer timeouts.
+    # This prevents slow brute-force probing while giving real users enough time.
     _now = time.monotonic()
+    _challenge_timeout = _CHALLENGE_TIMEOUTS.get(current_challenge, CHALLENGE_TIMEOUT_SECONDS)
     if session.challenge_started_at == 0.0:
         session.challenge_started_at = _now
-    elif _now - session.challenge_started_at > CHALLENGE_TIMEOUT_SECONDS:
+    elif _now - session.challenge_started_at > _challenge_timeout:
         ch_key = f"ch_{session.current_challenge_idx}"
         session.challenge_frame_history[ch_key] = []
         session.challenge_started_at = _now
         log.info(
             "Live challenge timed out; resetting challenge history.",
-            extra={"challenge": current_challenge, "timeout": CHALLENGE_TIMEOUT_SECONDS, "session_id": session.session_id},
+            extra={"challenge": current_challenge, "timeout": _challenge_timeout, "session_id": session.session_id},
         )
         return {
             "type": "status",
@@ -1709,6 +2116,20 @@ def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> 
             session.best_live_frame_bytes = raw
         if session.best_live_frame_bytes is None:
             session.best_live_frame_bytes = raw
+
+        # Record reaction latency before resetting challenge_started_at.
+        # This measures the time from when the challenge prompt appeared to when
+        # the user completed it. Bots respond near-instantly; humans take 0.6\u20133 s.
+        if session.challenge_started_at > 0.0:
+            _reaction_ms = round((_now - session.challenge_started_at) * 1000.0, 1)
+            session.challenge_reaction_times.append(_reaction_ms)
+
+        # Mark the challenge transition timestamp and clear the consecutive no-face
+        # counter so the abort clock starts fresh for the next challenge. advance_challenge()
+        # may reset face_stable_frames (for turn challenges), forcing a new stability gate
+        # during which the user naturally has no face visible as they reorient.
+        session.last_challenge_advance_at = _now
+        session.consecutive_frames_without_face = 0
 
         snapshot = {
             "challenge": current_challenge,

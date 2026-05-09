@@ -47,8 +47,13 @@ import numpy as np
 #
 _TURN_YAW_THRESHOLD = 0.16  # |yaw| must exceed this to register a valid head turn
                              # Tuned for low-FPS webcams so smaller real turns still register
-_TURN_RELATIVE_YAW_DELTA = 0.09
-_TURN_RELATIVE_NOSE_SHIFT = 0.10
+
+# Turn hold-and-return constants — used by the turn_left/turn_right challenges.
+# Once the user crosses the yaw threshold, they must hold their head turned for
+# _TURN_HOLD_FRAMES frames, then return to centre before the challenge passes.
+_TURN_HOLD_FRAMES   = 40    # frames of sustained turn ≈ 4 s at 10 FPS; satisfies "hold 5 s" UX
+_TURN_HOLD_LENIENCY = 0.04  # allow this much yaw relaxation during hold (natural camera wobble)
+_TURN_CENTRE_YAW    = 0.10  # |yaw| must drop below this to count as "returned to centre"
 
 # look_straight: nose_rel_x must stay within this central band for several frames.
 # We only check the horizontal position — pitch (nose below eye midpoint) is always
@@ -57,8 +62,7 @@ _TURN_RELATIVE_NOSE_SHIFT = 0.10
 # still registers without the user having to reposition themselves.
 _STRAIGHT_X_MIN = 0.40
 _STRAIGHT_X_MAX = 0.60
-_STRAIGHT_STABLE_FRAMES = 3  # 3 consecutive centred frames ≈ 375 ms at 8 FPS
-                              # Reduced from 5 (was ≈ 625 ms) — still a clear frontal hold
+_STRAIGHT_STABLE_FRAMES = 10  # 10 consecutive centred frames ≈ 1 s at 10 FPS — clear frontal hold
 
 # yaw = (nose_x - eye_mid_x) / interocular_px.  For a face looking straight into
 # the camera the nose sits directly between the eyes, so yaw ≈ 0.  We cap it at
@@ -110,8 +114,8 @@ MIN_FACE_AREA_RATIO = 0.05
 #   4. Horizontal centering   within FACE_STABILITY_X band
 #   5. Vertical centering     within FACE_STABILITY_Y band (prevents tilted/partial faces)
 #   6. Near-frontal pose      |yaw| ≤ FACE_STABILITY_YAW_MAX  (head not turned sideways)
-#   7. Near-frontal pose      |pitch| ≤ FACE_STABILITY_PITCH_MAX (head not tilted up/down)
-#   8. Texture richness       ≥ MIN_FACE_TEXTURE_SCORE (flat screen/photo guard)
+#      Note: pitch is intentionally NOT checked — see FACE_STABILITY_YAW_MAX comment below.
+#   7. Texture richness       ≥ MIN_FACE_TEXTURE_SCORE (flat screen/photo guard)
 #   9. Exactly 1 face in the frame
 #
 # In addition, after all N frames have accumulated, the yaw variance across the
@@ -150,20 +154,30 @@ FACE_STABILITY_X_MAX = 0.65
 FACE_STABILITY_Y_MIN = 0.30
 FACE_STABILITY_Y_MAX = 0.70
 
-# Maximum absolute yaw/pitch during the stability accumulation phase.
+# Maximum absolute yaw during the stability accumulation phase.
 # The user must be facing roughly straight at the camera before we start
 # so that the first challenge frames are captured with a high-quality pose.
-# 0.08 is roughly ±5 degrees of head rotation.
-FACE_STABILITY_YAW_MAX   = 0.08
-FACE_STABILITY_PITCH_MAX = 0.08
+# 0.12 matches the look_straight challenge threshold (_STRAIGHT_YAW_MAX) — a
+# natural resting face with slight off-centre placement reads ~0.10–0.13, so
+# 0.08 was too strict and blocked real users unconditionally.
+FACE_STABILITY_YAW_MAX = 0.12
+
+# NOTE: A pitch check is intentionally absent here.
+# Our pitch = (nose_y - eye_mid_y) / interocular_px is a face anatomy constant
+# (always 0.4–0.7 for any real forward-facing face) and is not a head-tilt
+# indicator.  Head-tilt detection requires 3D landmarks; the 2D version only
+# creates a gate that rejects every real user.  The nose_rel_y check (30–70%)
+# already guards against extreme camera angles.
 
 # Minimum yaw variance across the stability window to confirm micro-movement.
-# A real human always has tiny involuntary head oscillations (breathing, muscle
-# tremor).  Over 10 frames their yaw variance is typically 1e-4 to 1e-2.
-# A static screen or printed photo has yaw values that are machine-precision
-# constant — variance ≈ 0.  Setting the threshold at 2e-4 comfortably separates
-# the two populations while not penalising very still but genuinely live users.
-FACE_STABILITY_YAW_VARIANCE_MIN = 0.0002
+# Our yaw = (nose_x - eye_mid_x) / interocular_px from 5-point InsightFace
+# landmarks.  Empirically, real users at a laptop webcam produce variance in the
+# 4e-6 to 1e-4 range — much lower than the "1e-4 to 1e-2" estimate that assumed
+# full 3D landmark precision.  A truly static source (printed photo, screen
+# replay with a frozen frame) has near-zero NN floating-point variance (≈ 1e-8
+# to 1e-7).  Setting threshold to 1e-6 safely separates the two populations
+# while not rejecting live users who sit still.
+FACE_STABILITY_YAW_VARIANCE_MIN = 1e-6
 
 # Minimum local texture richness score for the stability gate.
 # compute_face_texture_score() measures the mean per-cell standard deviation
@@ -262,7 +276,10 @@ def compute_face_brightness(img: Any, bbox: Any) -> float:
 # At these levels, JPEG compression adds noise that inflates texture scores
 # for flat surfaces, so we use a relaxed threshold to avoid false rejections.
 LOW_BRIGHTNESS_THRESHOLD  = 80
-LOW_BRIGHTNESS_TEXTURE_SCORE = 14.0  # relaxed threshold for dark frames
+LOW_BRIGHTNESS_TEXTURE_SCORE = 12.0  # relaxed threshold for dark frames
+                                     # Lowered from 14.0: real faces in dim rooms
+                                     # (brightness ~30–50) score 13–14; 14.0 was
+                                     # rejecting them at the stability gate.
 
 
 def get_adaptive_texture_threshold(brightness_mean: float) -> float:
@@ -352,9 +369,8 @@ def is_face_stable(
       3. Face bounding box ≥ FACE_STABILITY_AREA_MIN (6%) of the full frame.
       4. Nose within horizontal band FACE_STABILITY_X_MIN–MAX (35–65%).
       5. Nose within vertical band FACE_STABILITY_Y_MIN–MAX (30–70%).
-      6. |yaw|   ≤ FACE_STABILITY_YAW_MAX (0.08) — head near-frontal.
-      7. |pitch| ≤ FACE_STABILITY_PITCH_MAX (0.08) — head near-frontal.
-      8. texture_score ≥ get_adaptive_texture_threshold(brightness_mean) — not a flat surface.
+      6. |yaw|   ≤ FACE_STABILITY_YAW_MAX (0.12) — head near-frontal.
+      7. texture_score ≥ get_adaptive_texture_threshold(brightness_mean) — not a flat surface.
       9. Geometry invariants pass (caller must pre-check with face_geometry_valid).
 
     Parameters nose_rel_y, yaw, pitch, texture_score, brightness_mean all default
@@ -386,11 +402,10 @@ def is_face_stable(
         return False, "Centre your face vertically in the oval."
 
     # Head angle restrictions — user must face roughly straight before challenges begin.
+    # Only yaw is checked; pitch as computed (nose_y - eye_mid_y / IOD) is a
+    # face-anatomy constant (~0.4–0.7) and not a reliable tilt indicator.
     if abs(yaw) > FACE_STABILITY_YAW_MAX:
         return False, "Look straight at the camera before we begin."
-
-    if abs(pitch) > FACE_STABILITY_PITCH_MAX:
-        return False, "Look straight at the camera — do not tilt your head up or down."
 
     # Flat surface guard — uses an adaptive threshold based on face brightness.
     # In low-light frames, sensor noise can inflate the texture score of a flat
@@ -403,8 +418,24 @@ def is_face_stable(
     return True, ""
 
 
-# 0.12 accepts a natural head nod; 0.28 was the original, 0.14 was already lowered once
-_NOD_RANGE_THRESHOLD = 0.12
+# Nod hold-and-return constants — used by the nod challenge.
+# The user must tilt their head down (pitch deviates from neutral by ≥ _NOD_DOWN_DELTA),
+# hold that position for _NOD_HOLD_FRAMES frames, then look back up.
+# Baseline neutral pitch is computed from the first _NOD_BASELINE_FRAMES challenge frames
+# (user was just looking straight after the stability gate).
+# _NOD_DOWN_DELTA: typical nod moves pitch by 0.15–0.40; static noise is < 0.04.
+# Direction is not assumed — we detect deviation in either direction so the
+# challenge works regardless of which way pitch changes for "chin down" on
+# each user's camera setup.
+_NOD_HOLD_FRAMES    = 40    # frames of sustained head-down position ≈ 4 s at 10 FPS
+_NOD_DOWN_DELTA     = 0.12  # pitch must deviate this much from neutral to count as "down"
+_NOD_RETURN_DELTA   = 0.08  # pitch must return within this of neutral = "looking back up"
+_NOD_BASELINE_FRAMES = 3    # first N challenge frames used to estimate neutral pitch
+
+# Blink: number of distinct eye-close/open cycles required to pass the challenge.
+# Two blinks are sufficient proof of liveness and are easier for users than
+# performing a single precisely-timed blink at the right moment.
+_BLINK_COUNT_REQUIRED = 2
 
 _BLINK_BASELINE_MIN      = 0.880   # baseline (open-eye) confidence
 
@@ -595,26 +626,18 @@ def analyze_challenge(
     if n < 3:
         return {"passed": False, "feedback": "Look straight at the camera…"}
 
-    recent = feature_history[-20:] if n > 20 else feature_history
-    # Filter out frames where the face detector was not sufficiently confident.
-    # Background objects, hands, or an empty room can trigger marginal detections
-    # with low det_score.  The extracted features from those frames are noise —
-    # a pitch range of 0.12 can appear over 4 frames of jitter even with no real
-    # head present, which would spuriously satisfy the nod challenge.
-    # The default value of 1.0 (set by extract_features when det_score is absent,
-    # e.g. MediaPipe) is intentionally above the threshold so MediaPipe frames
-    # are never discarded by this filter.
-    recent = [f for f in recent if f.get("det_score", 1.0) >= MIN_FACE_DETECTION_CONFIDENCE]
+    # Hold-based challenges (nod, turn_left, turn_right) need the FULL filtered
+    # history so the complete turn/down → hold → return sequence can be detected.
+    # For instant challenges (look_straight, blink) the recent-20 window is fine.
+    filtered_history = [
+        f for f in feature_history
+        if f.get("det_score", 1.0)         >= MIN_FACE_DETECTION_CONFIDENCE
+        and f.get("bbox_area_ratio", MIN_FACE_AREA_RATIO) >= MIN_FACE_AREA_RATIO
+    ]
+    # Keep a 20-frame recent window for look_straight (and as a fallback).
+    recent = filtered_history[-20:] if len(filtered_history) > 20 else filtered_history
     if len(recent) < 3:
         return {"passed": False, "feedback": "No face detected — look directly into the camera."}
-
-    # Filter out frames where the face is too small relative to the full frame.
-    # When the user ducks away or a distant background object is detected, the
-    # face bbox is tiny (< 3 % of frame area).  Frames without 'bbox_area_ratio'
-    # (e.g. test fixtures or paths that do not compute it) default to passing.
-    recent = [f for f in recent if f.get("bbox_area_ratio", MIN_FACE_AREA_RATIO) >= MIN_FACE_AREA_RATIO]
-    if len(recent) < 3:
-        return {"passed": False, "feedback": "No face detected — position yourself in the oval."}
 
     # ─── Look Straight (mandatory first challenge — captures the best selfie) ──
     # Require the nose to stay within the horizontal centre band for several frames.
@@ -658,128 +681,269 @@ def analyze_challenge(
     # Canvas frames are mirrored to match the user's preview. In a mirrored frame,
     # when the subject turns to their own left the nose swings toward image-left,
     # making yaw negative.
+    #
+    # The challenge now requires a HOLD-AND-RETURN sequence to prove a genuine turn:
+    #   Phase 1 — User turns left until |yaw| crosses _TURN_YAW_THRESHOLD.
+    #   Phase 2 — User holds that turned position for _TURN_HOLD_FRAMES frames.
+    #             _TURN_HOLD_LENIENCY allows slight yaw relaxation during the hold.
+    #   Phase 3 — User looks straight again (|yaw| drops below _TURN_CENTRE_YAW).
+    # Only after all three phases does the challenge pass.
     if challenge == "turn_left":
-        yaws = [f["yaw"] for f in recent]
-        noses = [f["nose_rel_x"] for f in recent]
+        # Use the full filtered history so the complete turn→hold→return arc is visible.
+        turn_hist = filtered_history
+        if len(turn_hist) < 3:
+            return {"passed": False, "feedback": "Slowly turn your head to YOUR LEFT…"}
+
+        yaws = [f["yaw"] for f in turn_hist]
+
         # Wrong-direction guard: if the user clearly turned RIGHT (yaw strongly positive)
-        # while the required challenge is turn_left, reset the frame history. This
-        # prevents the inflated baseline from making the relative-delta check trivially
-        # pass when the user returns to centre. Only fires after >= 5 frames so brief
-        # detector noise on the very first frames is not penalised.
-        if len(recent) >= 5 and max(yaws) >= _TURN_YAW_THRESHOLD:
-            return {"passed": False, "feedback": "Wrong direction - turn to YOUR LEFT.", "reset_needed": True, "wrong_motion": "turned_right"}
-        if min(yaws) <= -_TURN_YAW_THRESHOLD:
-            return {"passed": True, "feedback": "\u2705 Turn detected!"}
-        if len(recent) >= 5:
-            baseline_yaw = sum(yaws[:2]) / 2
-            baseline_nose = sum(noses[:2]) / 2
-            yaw_delta = baseline_yaw - min(yaws)
-            nose_shift = baseline_nose - min(noses)
-            if yaw_delta >= _TURN_RELATIVE_YAW_DELTA and nose_shift >= _TURN_RELATIVE_NOSE_SHIFT:
-                return {"passed": True, "feedback": "\u2705 Turn detected!"}
-        gap = _TURN_YAW_THRESHOLD - abs(min(yaws))
-        hint = "a little more..." if gap < 0.10 else "turn further to YOUR left..."
-        return {"passed": False, "feedback": f"Keep turning - {hint}"}
+        # while turn_left is required, reset the history. Only fires after ≥ 5 frames
+        # so brief detector noise at the start is not penalised.
+        if len(turn_hist) >= 5 and max(yaws) >= _TURN_YAW_THRESHOLD:
+            return {"passed": False, "feedback": "Wrong direction — turn to YOUR LEFT.", "reset_needed": True, "wrong_motion": "turned_right"}
+
+        # Phase detection: find the longest contiguous run of frames where the user
+        # is comfortably in the "turned left" zone, i.e. yaw ≤ hold_zone.
+        # hold_zone is slightly less strict than _TURN_YAW_THRESHOLD to tolerate
+        # small wobble while the user is holding their head turned.
+        hold_zone = -(_TURN_YAW_THRESHOLD - _TURN_HOLD_LENIENCY)   # e.g. -0.12
+        best_start, best_len, cur_start, cur_len = -1, 0, -1, 0
+        for i, y in enumerate(yaws):
+            if y <= hold_zone:
+                if cur_start < 0:
+                    cur_start = i
+                    cur_len = 1
+                else:
+                    cur_len += 1
+                if cur_len > best_len:
+                    best_len, best_start = cur_len, cur_start
+            else:
+                cur_start, cur_len = -1, 0
+
+        # Require the hold block to have actually crossed the full threshold at least once
+        # (prevents a marginally-turned face from gaming the leniency zone).
+        crossed_threshold = (
+            best_start >= 0 and min(yaws[best_start: best_start + best_len]) <= -_TURN_YAW_THRESHOLD
+        )
+
+        if best_len >= _TURN_HOLD_FRAMES and crossed_threshold:
+            # Hold achieved — now look for the return to centre.
+            after_hold = yaws[best_start + best_len:]
+            if after_hold and any(abs(y) <= _TURN_CENTRE_YAW for y in after_hold):
+                return {"passed": True, "feedback": "✅ Turn completed!"}
+            if after_hold:
+                return {"passed": False, "feedback": "Good! Now look STRAIGHT ahead…"}
+            held_sec   = best_len / 10.0
+            target_sec = _TURN_HOLD_FRAMES / 10.0
+            return {"passed": False, "feedback": f"Hold it… ({held_sec:.0f}s / {target_sec:.0f}s) — then look straight"}
+
+        if best_len > 5 and crossed_threshold:
+            # Partial hold — show progress and encourage them to keep holding.
+            held_sec   = best_len / 10.0
+            target_sec = _TURN_HOLD_FRAMES / 10.0
+            return {"passed": False, "feedback": f"Good! Hold it… ({held_sec:.0f}s / {target_sec:.0f}s)"}
+
+        # User has not turned enough or just started turning.
+        min_yaw = min(yaws)
+        if abs(min_yaw) >= _TURN_YAW_THRESHOLD:
+            # Crossed threshold but hold block is too short (brief flick).
+            return {"passed": False, "feedback": "Hold that position — keep your head turned LEFT…"}
+        gap  = _TURN_YAW_THRESHOLD - abs(min_yaw)
+        hint = "a little more…" if gap < 0.10 else "turn further to YOUR left…"
+        return {"passed": False, "feedback": f"Keep turning — {hint}"}
 
     # ─── Turn Right (subject's right → nose image-RIGHT → yaw POSITIVE) ─────────
     # When the subject turns to their own right in a mirrored frame, the nose swings
     # toward image-right, making yaw positive.
+    # Same hold-and-return sequence as turn_left with sign flipped.
     if challenge == "turn_right":
-        yaws = [f["yaw"] for f in recent]
-        noses = [f["nose_rel_x"] for f in recent]
-        # Wrong-direction guard: if the user clearly turned LEFT (yaw strongly negative)
-        # while the required challenge is turn_right, reset the frame history so the
-        # depressed baseline cannot be exploited by the relative-delta check.
-        if len(recent) >= 5 and min(yaws) <= -_TURN_YAW_THRESHOLD:
-            return {"passed": False, "feedback": "Wrong direction - turn to YOUR RIGHT.", "reset_needed": True, "wrong_motion": "turned_left"}
-        if max(yaws) >= _TURN_YAW_THRESHOLD:
-            return {"passed": True, "feedback": "\u2705 Turn detected!"}
-        if len(recent) >= 5:
-            baseline_yaw = sum(yaws[:2]) / 2
-            baseline_nose = sum(noses[:2]) / 2
-            yaw_delta = max(yaws) - baseline_yaw
-            nose_shift = max(noses) - baseline_nose
-            if yaw_delta >= _TURN_RELATIVE_YAW_DELTA and nose_shift >= _TURN_RELATIVE_NOSE_SHIFT:
-                return {"passed": True, "feedback": "\u2705 Turn detected!"}
-        gap = _TURN_YAW_THRESHOLD - max(yaws)
-        hint = "a little more..." if gap < 0.10 else "turn further to YOUR right..."
-        return {"passed": False, "feedback": f"Keep turning - {hint}"}
+        # Use the full filtered history so the complete turn→hold→return arc is visible.
+        turn_hist = filtered_history
+        if len(turn_hist) < 3:
+            return {"passed": False, "feedback": "Slowly turn your head to YOUR RIGHT…"}
 
-    # ─── Nod (vertical head movement → pitch range) ──────────────────────────
+        yaws = [f["yaw"] for f in turn_hist]
+
+        # Wrong-direction guard: if the user clearly turned LEFT (yaw strongly negative)
+        # while turn_right is required, reset the history.
+        if len(turn_hist) >= 5 and min(yaws) <= -_TURN_YAW_THRESHOLD:
+            return {"passed": False, "feedback": "Wrong direction — turn to YOUR RIGHT.", "reset_needed": True, "wrong_motion": "turned_left"}
+
+        # hold_zone for right turn: yaw ≥ +(_TURN_YAW_THRESHOLD - _TURN_HOLD_LENIENCY).
+        hold_zone = _TURN_YAW_THRESHOLD - _TURN_HOLD_LENIENCY   # e.g. +0.12
+        best_start, best_len, cur_start, cur_len = -1, 0, -1, 0
+        for i, y in enumerate(yaws):
+            if y >= hold_zone:
+                if cur_start < 0:
+                    cur_start = i
+                    cur_len = 1
+                else:
+                    cur_len += 1
+                if cur_len > best_len:
+                    best_len, best_start = cur_len, cur_start
+            else:
+                cur_start, cur_len = -1, 0
+
+        crossed_threshold = (
+            best_start >= 0 and max(yaws[best_start: best_start + best_len]) >= _TURN_YAW_THRESHOLD
+        )
+
+        if best_len >= _TURN_HOLD_FRAMES and crossed_threshold:
+            after_hold = yaws[best_start + best_len:]
+            if after_hold and any(abs(y) <= _TURN_CENTRE_YAW for y in after_hold):
+                return {"passed": True, "feedback": "✅ Turn completed!"}
+            if after_hold:
+                return {"passed": False, "feedback": "Good! Now look STRAIGHT ahead…"}
+            held_sec   = best_len / 10.0
+            target_sec = _TURN_HOLD_FRAMES / 10.0
+            return {"passed": False, "feedback": f"Hold it… ({held_sec:.0f}s / {target_sec:.0f}s) — then look straight"}
+
+        if best_len > 5 and crossed_threshold:
+            held_sec   = best_len / 10.0
+            target_sec = _TURN_HOLD_FRAMES / 10.0
+            return {"passed": False, "feedback": f"Good! Hold it… ({held_sec:.0f}s / {target_sec:.0f}s)"}
+
+        max_yaw = max(yaws)
+        if max_yaw >= _TURN_YAW_THRESHOLD:
+            return {"passed": False, "feedback": "Hold that position — keep your head turned RIGHT…"}
+        gap  = _TURN_YAW_THRESHOLD - max_yaw
+        hint = "a little more…" if gap < 0.10 else "turn further to YOUR right…"
+        return {"passed": False, "feedback": f"Keep turning — {hint}"}
+
+    # ─── Nod (vertical head tilt → hold down → return up) ────────────────────
+    # The challenge requires a HOLD-AND-RETURN sequence:
+    #   Phase 1 — Collect a neutral-pitch baseline from the first few frames
+    #             (user was looking straight after the stability gate).
+    #   Phase 2 — User tilts head down until pitch deviates ≥ _NOD_DOWN_DELTA
+    #             from baseline. Both directions are accepted because different
+    #             cameras and user heights produce different pitch directions for
+    #             "chin toward chest".
+    #   Phase 3 — User holds that deviated position for _NOD_HOLD_FRAMES frames.
+    #   Phase 4 — User looks back up: pitch returns within _NOD_RETURN_DELTA of
+    #             the original baseline.
     if challenge == "nod":
-        pitches = [f["pitch"] for f in recent]
-        # 4 frames (≈ 500 ms at 8 FPS) is enough to capture an up-down nod;
-        # the range threshold ensures the movement is real and not just detector noise
-        if len(pitches) >= 4:
-            pitch_range = max(pitches) - min(pitches)
-            if pitch_range >= _NOD_RANGE_THRESHOLD:
-                return {"passed": True, "feedback": "✅ Nod detected!"}
-            # Wrong-motion hint: if the user is shaking their head side-to-side
-            # (high yaw range) instead of nodding up-down (high pitch range),
-            # give targeted feedback so they stop the wrong movement immediately.
-            yaws = [f["yaw"] for f in recent]
-            yaw_range = max(yaws) - min(yaws)
-            if yaw_range > pitch_range * 2.0 and yaw_range > 0.10:
-                return {"passed": False, "feedback": "That's a turn, not a nod - move your head DOWN then back UP.", "wrong_motion": "side_to_side_shake"}
-        return {"passed": False, "feedback": "Nod your head down and back up…"}
+        # Use the full filtered history to detect the complete down→hold→return arc.
+        nod_hist = filtered_history
+        if len(nod_hist) < 3:
+            return {"passed": False, "feedback": "Slowly look DOWN — tilt your chin toward your chest…"}
+
+        # Wrong-motion guard runs immediately (even with few frames) so the user
+        # gets corrective feedback before the hold timer starts.
+        # A side-to-side shake produces a large yaw range but tiny pitch range.
+        pitches   = [f["pitch"] for f in nod_hist]
+        yaws      = [f.get("yaw", 0.0) for f in nod_hist]
+        pitch_rng = max(pitches) - min(pitches)
+        yaw_rng   = max(yaws) - min(yaws)
+        if yaw_rng > pitch_rng * 2.0 and yaw_rng > 0.10:
+            return {"passed": False, "feedback": "That's a turn, not a nod — tilt your chin DOWN, not sideways.", "wrong_motion": "side_to_side_shake"}
+
+        if len(nod_hist) < _NOD_BASELINE_FRAMES + 3:
+            return {"passed": False, "feedback": "Slowly look DOWN — tilt your chin toward your chest…"}
+
+        # Phase 1: baseline pitch from the first frames (user was frontal/straight).
+        baseline_pitch = (
+            sum(f["pitch"] for f in nod_hist[:_NOD_BASELINE_FRAMES]) / _NOD_BASELINE_FRAMES
+        )
+
+        # Phase 2-3: find the longest contiguous run where pitch is deviated from
+        # baseline by ≥ _NOD_DOWN_DELTA. Direction-agnostic so it works for all
+        # camera heights (pitch can go either way for "chin down").
+        best_start, best_len, cur_start, cur_len = -1, 0, -1, 0
+        for i in range(_NOD_BASELINE_FRAMES, len(pitches)):
+            if abs(pitches[i] - baseline_pitch) >= _NOD_DOWN_DELTA:
+                if cur_start < 0:
+                    cur_start = i
+                    cur_len = 1
+                else:
+                    cur_len += 1
+                if cur_len > best_len:
+                    best_len, best_start = cur_len, cur_start
+            else:
+                cur_start, cur_len = -1, 0
+
+        if best_len >= _NOD_HOLD_FRAMES:
+            # Phase 4: after the hold, check that pitch returned toward baseline.
+            after_hold = pitches[best_start + best_len:]
+            if after_hold and any(abs(p - baseline_pitch) <= _NOD_RETURN_DELTA for p in after_hold):
+                return {"passed": True, "feedback": "✅ Nod completed!"}
+            if after_hold:
+                return {"passed": False, "feedback": "Now look back UP at the camera…"}
+            held_sec   = best_len / 10.0
+            target_sec = _NOD_HOLD_FRAMES / 10.0
+            return {"passed": False, "feedback": f"Hold it… ({held_sec:.0f}s / {target_sec:.0f}s) — then look back up"}
+
+        if best_len > 5:
+            # Partial hold — show progress.
+            held_sec   = best_len / 10.0
+            target_sec = _NOD_HOLD_FRAMES / 10.0
+            return {"passed": False, "feedback": f"Hold it… ({held_sec:.0f}s / {target_sec:.0f}s)"}
+
+        return {"passed": False, "feedback": "Slowly look DOWN — tilt your chin toward your chest…"}
 
     # ─── Blink ────────────────────────────────────────────────────────────────
-    if challenge == "blink":        # Apply the same confidence filter used for all other challenges.
+    if challenge == "blink":
+        # Apply the same confidence filter used for all other challenges.
         # The blink check walks the full feature_history (not just `recent`) so
         # low-confidence ghost frames must be stripped here independently.
-        feature_history = [f for f in feature_history if f.get("det_score", 1.0) >= MIN_FACE_DETECTION_CONFIDENCE]
+        blink_hist = [f for f in feature_history if f.get("det_score", 1.0) >= MIN_FACE_DETECTION_CONFIDENCE]
         # Apply the same face-size filter — blink can also be faked by noise in
         # a tiny background detection whose EAR or det_score fluctuates.
-        feature_history = [f for f in feature_history if f.get("bbox_area_ratio", MIN_FACE_AREA_RATIO) >= MIN_FACE_AREA_RATIO]
+        blink_hist = [f for f in blink_hist if f.get("bbox_area_ratio", MIN_FACE_AREA_RATIO) >= MIN_FACE_AREA_RATIO]
         # 3 frames minimum: 1 baseline open + 1 closed dip + 1 reopen.
-        # Reduced from 5 — the blink logic walks backwards through history anyway;
-        # waiting for 5 frames just adds ~250 ms latency before the first check.
-        if len(feature_history) < 3:
+        if len(blink_hist) < 3:
             return {"passed": False, "feedback": "Hold still and look at the camera…"}
 
         # ── Primary path: EAR (Eye Aspect Ratio) — works with MediaPipe ──────
         # Open eye: EAR ≈ 0.25-0.35. Closed eye: EAR ≈ 0.02-0.10.
-        # With blendshapes: open → EAR ≈ 0.35, closed → EAR ≈ 0.07 or lower.
-        # Thresholds: "closed" = EAR < 0.15, "open" = EAR > 0.18.
         # The default 0.30 fill value means no real data — detect via variance.
-        ears = [f.get("ear", 0.30) for f in feature_history]
+        ears = [f.get("ear", 0.30) for f in blink_hist]
         ear_variance = max(ears) - min(ears)
         has_real_ear = ear_variance > 0.04  # flat 0.30 everywhere = no real data
 
         if has_real_ear:
-            # We have genuine EAR data. Look for the sequence:
-            #   1. Eyes open (EAR > 0.18) in early frames (baseline)
-            #   2. Eyes closed (EAR < 0.15) in a middle frame (the dip)
-            #   3. Eyes open again (EAR > 0.18) in recent frames (recovery)
+            # We have genuine EAR data. Count distinct blink events using a
+            # state machine: open → dipping (EAR below threshold) → open again.
+            # Each complete dip-recovery cycle counts as one blink.
+            # Two blinks are required to pass.
             baseline_window = ears[:-2] if len(ears) > 2 else ears
-            baseline_open = max(baseline_window or ears)
-            recent_recovery = max(ears[-2:])
-            recent_ear_avg = sum(ears[-2:]) / 2
+            baseline_open   = max(baseline_window or ears)
 
-            # A real blink on a low-FPS webcam often recovers over only one or
-            # two frames. Accept a modest reopen signal, but still require the
-            # full open -> dip -> reopen sequence.
-            recovery_threshold = max(0.18, baseline_open * 0.68)
-            if recent_recovery >= recovery_threshold or recent_ear_avg >= 0.19:
-                # Walk backwards while keeping the last two frames reserved for
-                # the reopen step. The dip must be materially below the open-eye
-                # baseline, but should still be reachable on average webcams.
-                dip_threshold = min(0.20, baseline_open * 0.72)
-                open_threshold = max(0.20, baseline_open * 0.82)
+            # Set thresholds relative to the user's own open-eye baseline so
+            # the check works for a wide range of webcam calibration levels.
+            dip_threshold      = min(0.20, baseline_open * 0.72)  # EAR below this = "closing"
+            recovery_threshold = max(0.18, baseline_open * 0.68)  # EAR above this = "open again"
+            open_threshold     = max(0.20, baseline_open * 0.82)  # baseline open level
 
-                for i in range(len(ears) - 3, -1, -1):
-                    if ears[i] < dip_threshold:
+            blink_count = 0
+            eye_state   = "open"   # start in open state
+
+            for i, ear in enumerate(ears):
+                if eye_state == "open":
+                    # Transition to "closing" only when we were clearly open before.
+                    if ear < dip_threshold:
                         before = ears[:i]
-                        if before and max(before) >= open_threshold:
-                            return {"passed": True, "feedback": "✅ Blink detected!"}
-                        if not before:
-                            return {"passed": True, "feedback": "✅ Blink detected!"}
-                        break
+                        if not before or max(before) >= open_threshold:
+                            eye_state = "closing"
+                elif eye_state == "closing":
+                    # Transition back to "open" when EAR recovers — that's one blink.
+                    if ear >= recovery_threshold:
+                        blink_count += 1
+                        eye_state = "open"
+                        if blink_count >= _BLINK_COUNT_REQUIRED:
+                            return {"passed": True, "feedback": "✅ Blinks detected!"}
+
+            # Give progressive feedback so the user knows how many more blinks are needed.
+            remaining = _BLINK_COUNT_REQUIRED - blink_count
+            if blink_count > 0:
+                return {"passed": False, "feedback": f"Good! {remaining} more blink{'s' if remaining > 1 else ''} — close and open your eyes naturally…"}
+            return {"passed": False, "feedback": "Blink naturally — close both eyes fully, then open them…"}
+
         else:
             # ── Fallback: det_score dip (InsightFace only) ───────────────────
             # When MediaPipe EAR isn't available, a blink causes a small but
             # measurable dip in the face-detection confidence score (det_score).
-            all_scores = [f["det_score"] for f in feature_history]
+            # The fallback uses a single-dip check (less accurate than EAR counting).
+            all_scores = [f["det_score"] for f in blink_hist]
             recent_score_avg = sum(all_scores[-3:]) / 3
 
             if recent_score_avg >= _BLINK_BASELINE_MIN * 0.96:

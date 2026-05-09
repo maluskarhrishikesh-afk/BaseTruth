@@ -51,8 +51,10 @@ def test_extract_features_normalizes_pose_and_defaults_optional_values() -> None
     assert features["ear"] == pytest.approx(0.30)
 
 
-def test_analyze_challenge_turn_left_passes_when_nose_moves_far_enough() -> None:
-    # Mirrored frame: subject turns THEIR left → nose swings image-LEFT → yaw NEGATIVE
+def test_analyze_challenge_turn_left_does_not_pass_without_hold() -> None:
+    # Under the new hold-and-return design, simply crossing the yaw threshold
+    # in a brief swing is no longer enough.  The user must hold the turned
+    # position for _TURN_HOLD_FRAMES frames, THEN return to centre.
     history = [
         {"nose_rel_x": 0.50, "yaw":  0.00, "pitch": 0.0, "det_score": 1.0, "ear": 0.30},
         {"nose_rel_x": 0.42, "yaw": -0.18, "pitch": 0.0, "det_score": 1.0, "ear": 0.30},
@@ -61,10 +63,12 @@ def test_analyze_challenge_turn_left_passes_when_nose_moves_far_enough() -> None
 
     result = analyze_challenge(history, "turn_left")
 
-    assert result == {"passed": True, "feedback": "✅ Turn detected!"}
+    assert result["passed"] is False
 
 
-def test_analyze_challenge_turn_left_passes_for_modest_low_fps_turn() -> None:
+def test_analyze_challenge_turn_left_does_not_pass_on_threshold_touch_without_hold() -> None:
+    # Even reaching exactly -_TURN_YAW_THRESHOLD in a single frame is not enough;
+    # the user must hold at that position.
     history = [
         {"nose_rel_x": 0.50, "yaw": 0.00, "pitch": 0.0, "det_score": 1.0, "ear": 0.30},
         {"nose_rel_x": 0.46, "yaw": -0.09, "pitch": 0.0, "det_score": 1.0, "ear": 0.30},
@@ -73,7 +77,7 @@ def test_analyze_challenge_turn_left_passes_for_modest_low_fps_turn() -> None:
 
     result = analyze_challenge(history, "turn_left")
 
-    assert result == {"passed": True, "feedback": "✅ Turn detected!"}
+    assert result["passed"] is False
 
 
 def test_analyze_challenge_turn_left_does_not_pass_for_opposite_direction() -> None:
@@ -88,22 +92,23 @@ def test_analyze_challenge_turn_left_does_not_pass_for_opposite_direction() -> N
     assert result["passed"] is False
 
 
-def test_analyze_challenge_turn_left_passes_on_clear_relative_shift_from_starting_pose() -> None:
-    history = [
-        {"nose_rel_x": 0.54, "yaw": -0.02, "pitch": 0.0, "det_score": 1.0, "ear": 0.30},
-        {"nose_rel_x": 0.52, "yaw": -0.04, "pitch": 0.0, "det_score": 1.0, "ear": 0.30},
-        {"nose_rel_x": 0.49, "yaw": -0.07, "pitch": 0.0, "det_score": 1.0, "ear": 0.30},
-        {"nose_rel_x": 0.45, "yaw": -0.11, "pitch": 0.0, "det_score": 1.0, "ear": 0.30},
-        {"nose_rel_x": 0.40, "yaw": -0.14, "pitch": 0.0, "det_score": 1.0, "ear": 0.30},
-    ]
+def test_analyze_challenge_turn_left_passes_with_hold_and_return() -> None:
+    # Full hold-and-return sequence: straight → turn left → hold 40 frames → look straight.
+    # 40 held frames at yaw=-0.20 satisfies _TURN_HOLD_FRAMES; return frame drops |yaw| below
+    # _TURN_CENTRE_YAW=0.10.
+    history = (
+        [{"nose_rel_x": 0.50, "yaw":  0.02, "pitch": 0.0, "det_score": 1.0, "ear": 0.30}]
+        + [{"nose_rel_x": 0.37, "yaw": -0.20, "pitch": 0.0, "det_score": 1.0, "ear": 0.30}] * 40
+        + [{"nose_rel_x": 0.51, "yaw":  0.03, "pitch": 0.0, "det_score": 1.0, "ear": 0.30}]
+    )
 
     result = analyze_challenge(history, "turn_left")
 
-    assert result == {"passed": True, "feedback": "✅ Turn detected!"}
+    assert result == {"passed": True, "feedback": "✅ Turn completed!"}
 
 
 def test_analyze_challenge_turn_right_requests_more_movement_when_not_far_enough() -> None:
-    # Mirrored frame: subject tries to turn THEIR right (yaw positive) but not far enough (< 0.20)
+    # 3 frames, yaw reaches 0.14 < _TURN_YAW_THRESHOLD (0.16) → "Keep turning" feedback.
     history = [
         {"nose_rel_x": 0.50, "yaw":  0.00, "pitch": 0.0, "det_score": 1.0, "ear": 0.30},
         {"nose_rel_x": 0.54, "yaw":  0.08, "pitch": 0.0, "det_score": 1.0, "ear": 0.30},
@@ -116,21 +121,22 @@ def test_analyze_challenge_turn_right_requests_more_movement_when_not_far_enough
     assert "Keep turning" in result["feedback"]
 
 
-def test_analyze_challenge_turn_right_passes_on_clear_relative_shift_from_starting_pose() -> None:
-    history = [
-        {"nose_rel_x": 0.46, "yaw": 0.02, "pitch": 0.0, "det_score": 1.0, "ear": 0.30},
-        {"nose_rel_x": 0.48, "yaw": 0.04, "pitch": 0.0, "det_score": 1.0, "ear": 0.30},
-        {"nose_rel_x": 0.51, "yaw": 0.07, "pitch": 0.0, "det_score": 1.0, "ear": 0.30},
-        {"nose_rel_x": 0.55, "yaw": 0.11, "pitch": 0.0, "det_score": 1.0, "ear": 0.30},
-        {"nose_rel_x": 0.60, "yaw": 0.14, "pitch": 0.0, "det_score": 1.0, "ear": 0.30},
-    ]
+def test_analyze_challenge_turn_right_passes_with_hold_and_return() -> None:
+    # Full hold-and-return sequence for turn_right.
+    history = (
+        [{"nose_rel_x": 0.49, "yaw": -0.02, "pitch": 0.0, "det_score": 1.0, "ear": 0.30}]
+        + [{"nose_rel_x": 0.64, "yaw":  0.21, "pitch": 0.0, "det_score": 1.0, "ear": 0.30}] * 40
+        + [{"nose_rel_x": 0.50, "yaw":  0.04, "pitch": 0.0, "det_score": 1.0, "ear": 0.30}]
+    )
 
     result = analyze_challenge(history, "turn_right")
 
-    assert result == {"passed": True, "feedback": "✅ Turn detected!"}
+    assert result == {"passed": True, "feedback": "✅ Turn completed!"}
 
 
-def test_analyze_challenge_nod_passes_on_large_pitch_range() -> None:
+def test_analyze_challenge_nod_does_not_pass_without_hold() -> None:
+    # Under the new hold-and-return design, a quick pitch change across 6 frames
+    # (< _NOD_HOLD_FRAMES = 40) is not sufficient to pass the nod challenge.
     history = [
         {"nose_rel_x": 0.5, "pitch": 0.02, "det_score": 1.0, "ear": 0.30},
         {"nose_rel_x": 0.5, "pitch": 0.05, "det_score": 1.0, "ear": 0.30},
@@ -142,10 +148,31 @@ def test_analyze_challenge_nod_passes_on_large_pitch_range() -> None:
 
     result = analyze_challenge(history, "nod")
 
-    assert result == {"passed": True, "feedback": "✅ Nod detected!"}
+    assert result["passed"] is False
 
 
-def test_analyze_challenge_blink_passes_with_ear_dip_and_recovery() -> None:
+def test_analyze_challenge_nod_passes_with_hold_and_return() -> None:
+    # Full hold-and-return sequence: straight baseline, 40 frames of head-down
+    # (pitch deviates by 0.20 from baseline), then head back up.
+    # baseline_pitch = (0.50 + 0.51 + 0.50) / 3 = 0.503… ≈ 0.503
+    # down_pitch = 0.30 → deviation = 0.20 ≥ _NOD_DOWN_DELTA (0.12) ✓
+    # return_pitch = 0.50 → deviation = 0.003 ≤ _NOD_RETURN_DELTA (0.08) ✓
+    _b = 0.50  # baseline pitch value
+    history = (
+        [{"nose_rel_x": 0.5, "pitch": _b + d, "yaw": 0.0, "det_score": 1.0, "ear": 0.30}
+         for d in [0.00, 0.01, 0.00]]  # 3 baseline frames
+        + [{"nose_rel_x": 0.5, "pitch": _b - 0.20, "yaw": 0.0, "det_score": 1.0, "ear": 0.30}] * 40
+        + [{"nose_rel_x": 0.5, "pitch": _b,        "yaw": 0.0, "det_score": 1.0, "ear": 0.30}]
+    )
+
+    result = analyze_challenge(history, "nod")
+
+    assert result == {"passed": True, "feedback": "✅ Nod completed!"}
+
+
+def test_analyze_challenge_blink_does_not_pass_on_single_blink() -> None:
+    # Under the new requirement (_BLINK_COUNT_REQUIRED = 2), a single EAR dip-recovery
+    # cycle is no longer sufficient to pass the blink challenge.
     history = [
         {"ear": 0.30, "det_score": 0.95},
         {"ear": 0.31, "det_score": 0.95},
@@ -159,22 +186,25 @@ def test_analyze_challenge_blink_passes_with_ear_dip_and_recovery() -> None:
 
     result = analyze_challenge(history, "blink")
 
-    assert result == {"passed": True, "feedback": "✅ Blink detected!"}
+    assert result["passed"] is False
+    assert "more" in result["feedback"].lower() or "blink" in result["feedback"].lower()
 
 
-def test_analyze_challenge_blink_passes_for_short_realistic_webcam_sequence() -> None:
+def test_analyze_challenge_blink_passes_on_two_distinct_blinks() -> None:
+    # Two full dip-recovery EAR cycles should pass the challenge.
     history = [
-        {"ear": 0.29, "det_score": 0.95},
-        {"ear": 0.30, "det_score": 0.95},
-        {"ear": 0.28, "det_score": 0.95},
-        {"ear": 0.11, "det_score": 0.95},
-        {"ear": 0.17, "det_score": 0.95},
-        {"ear": 0.22, "det_score": 0.95},
+        {"ear": 0.30, "det_score": 0.95},  # open baseline
+        {"ear": 0.31, "det_score": 0.95},
+        {"ear": 0.07, "det_score": 0.95},  # blink 1: eyes close
+        {"ear": 0.26, "det_score": 0.95},  # blink 1: eyes reopen
+        {"ear": 0.30, "det_score": 0.95},  # back to baseline
+        {"ear": 0.07, "det_score": 0.95},  # blink 2: eyes close
+        {"ear": 0.28, "det_score": 0.95},  # blink 2: eyes reopen
     ]
 
     result = analyze_challenge(history, "blink")
 
-    assert result == {"passed": True, "feedback": "✅ Blink detected!"}
+    assert result == {"passed": True, "feedback": "✅ Blinks detected!"}
 
 
 def test_analyze_challenge_blink_does_not_pass_without_eye_reopening() -> None:
@@ -247,22 +277,23 @@ def _straight_frame(nose_rel_x: float = 0.50, pitch: float = 0.05, yaw: float = 
 
 
 def test_look_straight_passes_when_face_centred_for_required_frames() -> None:
-    # Three or more consecutive frames with nose centred should pass (minimum is now 3).
-    history = [_straight_frame() for _ in range(3)]
+    # Ten or more consecutive frames with nose centred should pass (minimum is now 10).
+    history = [_straight_frame() for _ in range(10)]
     result = analyze_challenge(history, "look_straight")
     assert result == {"passed": True, "feedback": "✅ Frontal face captured!"}
 
 
 def test_look_straight_does_not_pass_with_fewer_than_required_frames() -> None:
-    # Two frames is below the 3-frame minimum; should not pass yet.
-    history = [_straight_frame() for _ in range(2)]
+    # Nine frames is below the 10-frame minimum; should not pass yet.
+    history = [_straight_frame() for _ in range(9)]
     result = analyze_challenge(history, "look_straight")
     assert result["passed"] is False
 
 
 def test_look_straight_fails_when_nose_is_off_centre() -> None:
-    # Nose too far to image-right → face is angled
-    history = [_straight_frame(nose_rel_x=0.65) for _ in range(5)]
+    # Nose too far to image-right → face is angled. Use 10 frames so the centering
+    # check fires (not the insufficient-history early return).
+    history = [_straight_frame(nose_rel_x=0.65) for _ in range(10)]
     result = analyze_challenge(history, "look_straight")
     assert result["passed"] is False
     assert result["feedback"]  # some directional hint
@@ -271,20 +302,22 @@ def test_look_straight_fails_when_nose_is_off_centre() -> None:
 def test_look_straight_passes_with_realistic_pitch() -> None:
     # For any real face pitch = (nose_y - eye_mid_y) / IOD is ~0.4-0.7.
     # The challenge must pass regardless of pitch as long as nose_rel_x is centred.
-    history = [_straight_frame(pitch=0.55) for _ in range(5)]
+    history = [_straight_frame(pitch=0.55) for _ in range(10)]
     result = analyze_challenge(history, "look_straight")
     assert result == {"passed": True, "feedback": "✅ Frontal face captured!"}
 
 
-def test_turn_right_passes_when_yaw_sufficiently_negative() -> None:
-    # Mirrored frame: subject turns THEIR right → nose swings image-RIGHT → yaw POSITIVE
+def test_turn_right_does_not_pass_without_hold() -> None:
+    # Under the new hold-and-return design, simply crossing the yaw threshold
+    # in a brief swing is no longer enough.  The user must hold the turned
+    # position for _TURN_HOLD_FRAMES frames, THEN return to centre.
     history = [
         {"nose_rel_x": 0.50, "yaw":  0.00, "pitch": 0.0, "det_score": 1.0, "ear": 0.30},
         {"nose_rel_x": 0.57, "yaw":  0.20, "pitch": 0.0, "det_score": 1.0, "ear": 0.30},
         {"nose_rel_x": 0.64, "yaw":  0.38, "pitch": 0.0, "det_score": 1.0, "ear": 0.30},
     ]
     result = analyze_challenge(history, "turn_right")
-    assert result == {"passed": True, "feedback": "✅ Turn detected!"}
+    assert result["passed"] is False
 
 
 # ── ghost / no-face detection tests ──────────────────────────────────────────
@@ -346,14 +379,13 @@ def test_blink_does_not_pass_on_low_confidence_ghost_frames() -> None:
 def test_challenges_pass_normally_with_mixed_ghost_and_real_frames() -> None:
     """Challenges should still pass when high-confidence real frames are mixed with
     low-confidence ghost frames — the ghost frames are simply ignored."""
-    # 3 real frontal frames mixed with 2 ghost frames.
-    history = [
-        _ghost_frame(nose_rel_x=0.80),  # ghost — off centre too
-        _straight_frame(nose_rel_x=0.50, yaw=0.0),
-        _ghost_frame(nose_rel_x=0.20),  # ghost
-        _straight_frame(nose_rel_x=0.50, yaw=0.0),
-        _straight_frame(nose_rel_x=0.50, yaw=0.0),
-    ]
+    # 10 real frontal frames mixed with 2 ghost frames.
+    history = (
+        [_ghost_frame(nose_rel_x=0.80)]
+        + [_straight_frame(nose_rel_x=0.50, yaw=0.0) for _ in range(5)]
+        + [_ghost_frame(nose_rel_x=0.20)]
+        + [_straight_frame(nose_rel_x=0.50, yaw=0.0) for _ in range(5)]
+    )
     result = analyze_challenge(history, "look_straight")
     assert result == {"passed": True, "feedback": "✅ Frontal face captured!"}
 
@@ -402,7 +434,7 @@ def test_look_straight_passes_normally_when_face_is_large_enough() -> None:
     """look_straight must still pass when bbox_area_ratio meets the minimum."""
     from basetruth.kyc.liveness import MIN_FACE_AREA_RATIO
     history = []
-    for _ in range(5):
+    for _ in range(10):
         frame = _straight_frame(nose_rel_x=0.50, yaw=0.0)
         frame["bbox_area_ratio"] = MIN_FACE_AREA_RATIO * 3  # well above minimum
         history.append(frame)
@@ -411,17 +443,19 @@ def test_look_straight_passes_normally_when_face_is_large_enough() -> None:
 
 
 def test_nod_passes_normally_when_face_is_large_enough() -> None:
-    """nod must still pass when bbox_area_ratio meets the minimum."""
+    """nod must still pass when bbox_area_ratio meets the minimum.
+    Uses the full hold-and-return sequence: 3 baseline frames, 40 held-down frames,
+    then 1 return frame. All frames have bbox_area_ratio above the minimum."""
     from basetruth.kyc.liveness import MIN_FACE_AREA_RATIO
-    history = []
-    for pitch in [0.00, 0.05, 0.10, 0.20, 0.15, 0.08]:
-        history.append({
-            "nose_rel_x": 0.50, "yaw": 0.0, "pitch": pitch,
-            "det_score": 0.90, "ear": 0.30,
-            "bbox_area_ratio": MIN_FACE_AREA_RATIO * 3,
-        })
+    area = MIN_FACE_AREA_RATIO * 3
+    _b = 0.50  # baseline pitch value
+    history = (
+        [{"nose_rel_x": 0.50, "pitch": _b, "yaw": 0.0, "det_score": 0.90, "ear": 0.30, "bbox_area_ratio": area} for _ in range(3)]
+        + [{"nose_rel_x": 0.50, "pitch": _b - 0.20, "yaw": 0.0, "det_score": 0.90, "ear": 0.30, "bbox_area_ratio": area}] * 40
+        + [{"nose_rel_x": 0.50, "pitch": _b, "yaw": 0.0, "det_score": 0.90, "ear": 0.30, "bbox_area_ratio": area}]
+    )
     result = analyze_challenge(history, "nod")
-    assert result == {"passed": True, "feedback": "✅ Nod detected!"}
+    assert result == {"passed": True, "feedback": "✅ Nod completed!"}
 
 
 # ── session challenge_results tests ───────────────────────────────────────────
@@ -880,15 +914,19 @@ def test_is_face_stable_accepts_yaw_within_limit() -> None:
     assert ok is True
 
 
-def test_is_face_stable_rejects_pitch_too_large() -> None:
-    """Head tilted too far (|pitch| > FACE_STABILITY_PITCH_MAX) must return False."""
-    from basetruth.kyc.liveness import FACE_STABILITY_PITCH_MAX
+def test_is_face_stable_pitch_does_not_affect_stability() -> None:
+    """Pitch is intentionally NOT checked by is_face_stable().
 
-    ok_pos, fb_pos = _stable_call(pitch=FACE_STABILITY_PITCH_MAX + 0.01)
-    ok_neg, fb_neg = _stable_call(pitch=-(FACE_STABILITY_PITCH_MAX + 0.01))
-    assert ok_pos is False
-    assert "straight" in fb_pos.lower() or "camera" in fb_pos.lower() or "tilt" in fb_pos.lower()
-    assert ok_neg is False
+    The 5-point InsightFace pitch formula measures (nose_y - eye_mid_y) / IOD,
+    which is an anatomical constant (0.4-0.7) for any real face regardless of
+    head tilt. Real 3D pitch estimation requires 3D landmarks. Removing the
+    pitch check eliminates false rejections that blocked all real users.
+    """
+    # Large pitch values must NOT cause rejection — pitch is not checked.
+    ok_pos, _ = _stable_call(pitch=0.9)
+    ok_neg, _ = _stable_call(pitch=0.1)
+    assert ok_pos is True, "Large pitch value must not reject a stable face"
+    assert ok_neg is True, "Small pitch value must not reject a stable face"
 
 
 def test_is_face_stable_rejects_low_texture() -> None:
