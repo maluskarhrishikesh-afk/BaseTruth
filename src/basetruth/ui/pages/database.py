@@ -14,10 +14,16 @@ from basetruth.ui.components import (
     db_table_counts,
     db_table_rows,
     minio_bucket_stats,
+    minio_delete_object,
     minio_docs_bucket_stats,
+    minio_docs_delete,
+    minio_docs_get,
+    minio_docs_put,
+    minio_get_object,
     minio_list_docs_objects,
     minio_list_objects,
     minio_truncate_bucket,
+    minio_upload,
     reset_db,
     truncate_table,
     db_viewer_get_row,
@@ -45,6 +51,7 @@ _DB_TABLE_LABELS: dict[str, str] = {
     "identity_checks": "Identity Checks",
     "entity_reports": "Entity Reports",
     "video_kyc_checks": "Video KYC Checks",
+    "face_scan_live_results": "Face Scan Live Results",
 }
 
 # Schema reference — (column_name, type, description)
@@ -152,6 +159,18 @@ _TABLE_SCHEMA: dict[str, list[tuple[str, str, str]]] = {
         ("second_level_approval_comment", "TEXT", "Optional 2nd-level reviewer note"),
         ("generated_at", "TIMESTAMPTZ", "When the report was first generated"),
         ("updated_at", "TIMESTAMPTZ", "When the report was last updated"),
+    ],
+    "face_scan_live_results": [
+        ("id", "SERIAL", "Primary key"),
+        ("session_id", "VARCHAR(50), UNIQUE", "URL-safe token matching the in-memory FaceScanLiveSession"),
+        ("verdict", "VARCHAR(20)", "GENUINE | SUSPICIOUS | DEEPFAKE | INCONCLUSIVE | LIVENESS_FAILED"),
+        ("risk_score", "FLOAT", "0–100 risk score derived from ML model or heuristic fallback"),
+        ("confidence", "FLOAT", "0–1 model confidence value"),
+        ("best_frame_key", "VARCHAR(500)", "MinIO object key for the best captured still frame"),
+        ("video_key", "VARCHAR(500)", "MinIO object key for the recorded MP4 video (NULL when not recorded)"),
+        ("report_json", "JSONB", "Full live face scan result payload for audit and re-display"),
+        ("created_at", "TIMESTAMPTZ", "Row creation timestamp"),
+        ("updated_at", "TIMESTAMPTZ", "Last update timestamp"),
     ],
 }
 
@@ -730,6 +749,7 @@ This screen gives you direct visibility into what is stored in the system.
                     "and that `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` are set."
                 )
             else:
+                # ── Main reports bucket ───────────────────────────────────
                 stats = _cached_minio_bucket_stats()
                 mc1, mc2, mc3 = st.columns(3)
                 mc1.metric("Bucket", stats.get("bucket", "—"))
@@ -738,6 +758,8 @@ This screen gives you direct visibility into what is stored in the system.
 
                 st.divider()
                 objs = _cached_minio_list_objects(limit=500)
+                main_keys: list[str] = [o["key"] for o in objs]
+
                 if objs:
                     import pandas as pd  # noqa: PLC0415
 
@@ -752,11 +774,91 @@ This screen gives you direct visibility into what is stored in the system.
                             for o in objs
                         ]
                     )
-                    st.dataframe(obj_df, hide_index=True, use_container_width=True, height=400)
+                    st.dataframe(obj_df, hide_index=True, use_container_width=True, height=300)
                 else:
                     st.info("The bucket is empty.")
 
+                # ── Main bucket operations ────────────────────────────────
+                with st.expander("⬇️  Download object", expanded=False):
+                    if main_keys:
+                        dl_key = st.selectbox(
+                            "Select object key",
+                            options=main_keys,
+                            key="main_dl_key_select",
+                        )
+                        if dl_key:
+                            raw = minio_get_object(dl_key)
+                            if raw is not None:
+                                st.download_button(
+                                    label="⬇️  Download",
+                                    data=raw,
+                                    file_name=dl_key.split("/")[-1],
+                                    key="main_dl_btn",
+                                )
+                            else:
+                                st.error("Could not retrieve the object — it may have been deleted.")
+                    else:
+                        st.info("No objects in the bucket yet.")
+
+                with st.expander("⬆️  Upload object", expanded=False):
+                    uploaded_file = st.file_uploader(
+                        "Choose a file to upload",
+                        key="main_upload_file",
+                    )
+                    custom_key = st.text_input(
+                        "Object key (leave blank to use original filename)",
+                        key="main_upload_key_input",
+                        placeholder="e.g. reports/my-doc.pdf",
+                    )
+                    if st.button("⬆️  Upload", key="main_upload_btn"):
+                        if uploaded_file is None:
+                            st.warning("Please choose a file first.")
+                        else:
+                            # Use custom key if provided, otherwise use the original filename
+                            target_key = custom_key.strip() if custom_key.strip() else uploaded_file.name
+                            data = uploaded_file.getvalue()
+                            content_type = uploaded_file.type or "application/octet-stream"
+                            ok = minio_upload(target_key, data, content_type)
+                            if ok:
+                                log.info("Database Viewer [MinIO]: Uploaded '%s' (%d bytes)", target_key, len(data))
+                                st.success(f"✅ Uploaded `{target_key}` ({len(data):,} bytes).")
+                                _cached_minio_bucket_stats.clear()
+                                _cached_minio_list_objects.clear()
+                                st.rerun()
+                            else:
+                                st.error("Upload failed — check Logs for details.")
+
+                with st.expander("🗑️  Delete object", expanded=False):
+                    if main_keys:
+                        del_key = st.selectbox(
+                            "Select object to delete",
+                            options=main_keys,
+                            key="main_del_key_select",
+                        )
+                        del_confirm = st.text_input(
+                            "Type DELETE to confirm",
+                            key="main_del_confirm_input",
+                            placeholder="DELETE",
+                        )
+                        if st.button("🗑️  Delete object", type="primary", key="main_del_btn"):
+                            if del_confirm.strip() != "DELETE":
+                                st.error("Type exactly `DELETE` (all caps) to confirm.")
+                            else:
+                                ok = minio_delete_object(del_key)
+                                if ok:
+                                    log.warning("Database Viewer [MinIO]: Deleted object '%s'", del_key)
+                                    st.success(f"✅ Deleted `{del_key}`.")
+                                    _cached_minio_bucket_stats.clear()
+                                    _cached_minio_list_objects.clear()
+                                    st.rerun()
+                                else:
+                                    st.error("Delete failed — MinIO may be offline or the key no longer exists.")
+                    else:
+                        st.info("No objects in the bucket yet.")
+
                 st.divider()
+
+                # ── Docs bucket ───────────────────────────────────────────
                 docs_stats = _cached_minio_docs_bucket_stats()
                 dc1, dc2, dc3 = st.columns(3)
                 dc1.metric("Docs Bucket", docs_stats.get("bucket", "—"))
@@ -764,6 +866,8 @@ This screen gives you direct visibility into what is stored in the system.
                 dc3.metric("Docs Total Size", f"{docs_stats.get('total_mb', 0):.3f} MB")
 
                 docs_objs = _cached_minio_list_docs_objects(limit=200)
+                docs_keys: list[str] = [o["key"] for o in docs_objs]
+
                 if docs_objs:
                     import pandas as pd  # noqa: PLC0415
 
@@ -781,6 +885,92 @@ This screen gives you direct visibility into what is stored in the system.
                     st.dataframe(docs_df, hide_index=True, use_container_width=True, height=220)
                 else:
                     st.info("The docs bucket is empty.")
+
+                # ── Docs bucket operations ────────────────────────────────
+                with st.expander("⬇️  Download docs object", expanded=False):
+                    if docs_keys:
+                        docs_dl_key = st.selectbox(
+                            "Select docs object key",
+                            options=docs_keys,
+                            key="docs_dl_key_select",
+                        )
+                        if docs_dl_key:
+                            docs_raw = minio_docs_get(docs_dl_key)
+                            if docs_raw is not None:
+                                # Show inline preview for markdown / text files
+                                if docs_dl_key.lower().endswith((".md", ".txt")):
+                                    st.text_area(
+                                        "Preview",
+                                        value=docs_raw.decode("utf-8", errors="replace"),
+                                        height=250,
+                                        key="docs_dl_preview",
+                                    )
+                                st.download_button(
+                                    label="⬇️  Download",
+                                    data=docs_raw,
+                                    file_name=docs_dl_key.split("/")[-1],
+                                    key="docs_dl_btn",
+                                )
+                            else:
+                                st.error("Could not retrieve the object — it may have been deleted.")
+                    else:
+                        st.info("No objects in the docs bucket yet.")
+
+                with st.expander("⬆️  Upload docs object", expanded=False):
+                    docs_uploaded_file = st.file_uploader(
+                        "Choose a file to upload to docs bucket",
+                        key="docs_upload_file",
+                    )
+                    docs_custom_key = st.text_input(
+                        "Object key (leave blank to use original filename)",
+                        key="docs_upload_key_input",
+                        placeholder="e.g. DATABASE.md",
+                    )
+                    if st.button("⬆️  Upload to Docs", key="docs_upload_btn"):
+                        if docs_uploaded_file is None:
+                            st.warning("Please choose a file first.")
+                        else:
+                            # Use custom key if provided, otherwise use the original filename
+                            target_key = docs_custom_key.strip() if docs_custom_key.strip() else docs_uploaded_file.name
+                            data = docs_uploaded_file.getvalue()
+                            content_type = docs_uploaded_file.type or "application/octet-stream"
+                            ok = minio_docs_put(target_key, data, content_type)
+                            if ok:
+                                log.info("Database Viewer [MinIO Docs]: Uploaded '%s' (%d bytes)", target_key, len(data))
+                                st.success(f"✅ Uploaded `{target_key}` to docs bucket ({len(data):,} bytes).")
+                                _cached_minio_docs_bucket_stats.clear()
+                                _cached_minio_list_docs_objects.clear()
+                                st.rerun()
+                            else:
+                                st.error("Upload failed — check Logs for details.")
+
+                with st.expander("🗑️  Delete docs object", expanded=False):
+                    if docs_keys:
+                        docs_del_key = st.selectbox(
+                            "Select docs object to delete",
+                            options=docs_keys,
+                            key="docs_del_key_select",
+                        )
+                        docs_del_confirm = st.text_input(
+                            "Type DELETE to confirm",
+                            key="docs_del_confirm_input",
+                            placeholder="DELETE",
+                        )
+                        if st.button("🗑️  Delete docs object", type="primary", key="docs_del_btn"):
+                            if docs_del_confirm.strip() != "DELETE":
+                                st.error("Type exactly `DELETE` (all caps) to confirm.")
+                            else:
+                                ok = minio_docs_delete(docs_del_key)
+                                if ok:
+                                    log.warning("Database Viewer [MinIO Docs]: Deleted docs object '%s'", docs_del_key)
+                                    st.success(f"✅ Deleted `{docs_del_key}` from docs bucket.")
+                                    _cached_minio_docs_bucket_stats.clear()
+                                    _cached_minio_list_docs_objects.clear()
+                                    st.rerun()
+                                else:
+                                    st.error("Delete failed — MinIO may be offline or the key no longer exists.")
+                    else:
+                        st.info("No objects in the docs bucket yet.")
 
     # ── Danger Zone tab ──────────────────────────────────────────────────────
     with danger_tab:
@@ -867,6 +1057,7 @@ This screen gives you direct visibility into what is stored in the system.
             ("Identity Checks", "identity_checks"),
             ("Video KYC Checks", "video_kyc_checks"),
             ("Entity Reports", "entity_reports"),
+            ("Face Scan Live Results", "face_scan_live_results"),
         ]
 
         # Display one row per table: label | description | confirm input | button

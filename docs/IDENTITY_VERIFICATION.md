@@ -103,10 +103,10 @@ Customer's browser ──WS /kyc/ws/{session_id}──► FastAPI server
     - BaseTruth does not trust one frame. It watches a short recent sequence of frames and checks whether the movement really happened.
     - The browser preview is mirrored and the captured frame is mirrored too, so `turn left` means **your real left**, not the opposite direction.
     - The face must stay visible enough for the detector to see the eyes, nose, and mouth area.
-    - For `look_straight`, the face must stay near the centre for 5 steady frames.
+    - For `look_straight`, the face must stay near the centre for **10 steady frames** (~1 second).
     - For `blink`, the main signal is **EAR (Eye Aspect Ratio)**. The engine looks for open eyes, then a dip when the eyelids close, then a reopen signal. It is tuned to still work on low-FPS webcams.
    - For `turn_left` and `turn_right`, the main signal is **yaw**. This is the nose position compared with the middle point between the eyes. The engine first checks for an absolute turn of about `0.16` in either direction, and if that is not reached it also checks whether the nose and yaw moved clearly away from the starting pose for that challenge.
-    - For `nod`, the main signal is **pitch**. This is how far the nose moves up and down compared with the eyes. The system checks the pitch range over at least 6 recent frames and looks for a range above `0.14`.
+    - For `nod`, the main signal is **pitch**. This is how far the nose moves down relative to the eyes. The server records a neutral-pitch baseline from the first 3 frames, then looks for a sustained deviation of at least **0.08** (about 8% of the eye-to-eye distance) held for **6 consecutive frames** (~0.6 s). A gentle chin-dip is enough — the user does not need to bend far down. Direction is accepted in either direction (some camera heights flip which way pitch goes for the same chin-down movement).
     - Distance from the camera matters less because these values are normalised using face size or eye distance.
 
 4. **Current-location capture** — During the customer flow:

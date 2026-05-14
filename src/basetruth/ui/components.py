@@ -52,6 +52,9 @@ try:
         minio_available,
         minio_bucket_stats,
         minio_docs_bucket_stats,
+        minio_docs_get,
+        minio_docs_put,
+        minio_docs_delete,
         minio_get_object,
         minio_delete_object,
         minio_list_entity_objects,
@@ -131,6 +134,15 @@ except Exception:  # noqa: BLE001
 
     def minio_docs_bucket_stats() -> dict:  # type: ignore[misc]
         return {}
+
+    def minio_docs_get(key: str) -> Optional[bytes]:  # type: ignore[misc]
+        return None
+
+    def minio_docs_put(key: str, data: bytes, content_type: str = "text/plain") -> bool:  # type: ignore[misc]
+        return False
+
+    def minio_docs_delete(key: str) -> bool:  # type: ignore[misc]
+        return False
 
     def minio_get_object(key: str) -> Optional[bytes]:  # type: ignore[misc]
         return None

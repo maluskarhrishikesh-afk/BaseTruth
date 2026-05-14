@@ -135,8 +135,8 @@ def test_analyze_challenge_turn_right_passes_with_hold_and_return() -> None:
 
 
 def test_analyze_challenge_nod_does_not_pass_without_hold() -> None:
-    # Under the new hold-and-return design, a quick pitch change across 6 frames
-    # (< _NOD_HOLD_FRAMES = 40) is not sufficient to pass the nod challenge.
+    # 3 deviated frames is not sufficient to pass the nod challenge
+    # (_NOD_HOLD_FRAMES = 6 consecutive frames required).
     history = [
         {"nose_rel_x": 0.5, "pitch": 0.02, "det_score": 1.0, "ear": 0.30},
         {"nose_rel_x": 0.5, "pitch": 0.05, "det_score": 1.0, "ear": 0.30},
@@ -152,11 +152,11 @@ def test_analyze_challenge_nod_does_not_pass_without_hold() -> None:
 
 
 def test_analyze_challenge_nod_passes_with_hold_and_return() -> None:
-    # Full hold-and-return sequence: straight baseline, 40 frames of head-down
-    # (pitch deviates by 0.20 from baseline), then head back up.
+    # Full hold sequence: 3 baseline frames then 40 frames of head-down
+    # (pitch deviates by 0.20 from baseline — well above _NOD_DOWN_DELTA 0.08).
+    # 40 > _NOD_HOLD_FRAMES (6) so the challenge passes.
     # baseline_pitch = (0.50 + 0.51 + 0.50) / 3 = 0.503… ≈ 0.503
-    # down_pitch = 0.30 → deviation = 0.20 ≥ _NOD_DOWN_DELTA (0.12) ✓
-    # return_pitch = 0.50 → deviation = 0.003 ≤ _NOD_RETURN_DELTA (0.08) ✓
+    # down_pitch = 0.30 → deviation = 0.20 ≥ _NOD_DOWN_DELTA (0.08) ✓
     _b = 0.50  # baseline pitch value
     history = (
         [{"nose_rel_x": 0.5, "pitch": _b + d, "yaw": 0.0, "det_score": 1.0, "ear": 0.30}

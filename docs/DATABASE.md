@@ -111,7 +111,7 @@ The report goes through the same two-level human approval process as individual 
 ## Design Principles
 
 1. `entities` is the canonical applicant table.
-2. `scans`, `document_extractions`, `identity_checks`, `video_kyc_checks`, and `entity_reports` use operational UPSERT behaviour so the UI shows one current record per natural entity-scoped key.
+2. `scans`, `document_extractions`, `identity_checks`, `video_kyc_checks`, `entity_reports`, and `face_scan_live_results` use operational UPSERT behaviour so the UI shows one current record per natural entity-scoped key.
 3. Final reports (`entity_reports`) for a pending entity are refreshed in-place; once approved or rejected a new `BTR-XXXXXX` row is created so the audit trail is preserved.
 4. Deleting an entity cascades to all related rows across every table.
 
@@ -328,6 +328,33 @@ Stores the output of the cross-document consistency analysis that an analyst run
 
 ---
 
+### `face_scan_live_results`
+
+**What is it used for?**
+Stores the durable result of every completed Live Face Scan session. The in-memory session objects expire after 20 minutes; this table is the permanent audit trail. Operators can review past verdicts, download the best still frame, and watch the recorded challenge video long after the session has ended.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | SERIAL | Primary key |
+| `session_id` | VARCHAR(50), UNIQUE | URL-safe token matching the in-memory `FaceScanLiveSession` |
+| `verdict` | VARCHAR(20) | `GENUINE` \| `SUSPICIOUS` \| `DEEPFAKE` \| `INCONCLUSIVE` \| `LIVENESS_FAILED` |
+| `risk_score` | FLOAT | 0–100 risk score from the ML model or heuristic fallback |
+| `confidence` | FLOAT | 0–1 model confidence value |
+| `best_frame_key` | VARCHAR(500) | MinIO object key for the best captured still frame (e.g. `face-scan-frames/{session_id}.jpg`) |
+| `video_key` | VARCHAR(500) | MinIO object key for the recorded MP4 video — `NULL` when not recorded |
+| `report_json` | JSONB | Full live scan result payload for audit and re-display |
+| `created_at` | TIMESTAMPTZ | Row creation timestamp |
+| `updated_at` | TIMESTAMPTZ | Last update timestamp |
+
+**`video_key` is NULL when:**
+- `FACE_SCAN_RECORD_VIDEO` env var is `false` (recording disabled), or
+- the MinIO upload failed (soft failure — the session result is never blocked), or
+- the captured frame buffer was empty.
+
+**No entity link:** `face_scan_live_results` rows are not linked to `entities` by a foreign key. The session is identified by `session_id` only. Deleting an entity does **not** cascade to this table.
+
+---
+
 ## Entity Report Generation Rules
 
 1. The Document Intelligence screen generates a final `entity_reports` row by reading the entity's `document_extractions`, `identity_checks`, `video_kyc_checks`, and `scans`.
@@ -359,12 +386,13 @@ Final verification reports (`BTR-XXXXXX.pdf`) are stored under the `BTR-reports/
 
 ## Reset Behaviour
 
-Database reset truncates all six tables in dependency order:
+Database reset truncates all seven tables in dependency order:
 - `entity_reports`
 - `video_kyc_checks`
 - `document_extractions`
 - `identity_checks`
 - `scans`
 - `entities`
+- `face_scan_live_results`
 
 MinIO reset clears all objects in the configured bucket.

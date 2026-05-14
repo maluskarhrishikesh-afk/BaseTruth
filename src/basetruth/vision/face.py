@@ -137,7 +137,15 @@ def _get_mp_landmarker():
             urllib.request.urlretrieve(url, model_path)
             log.info("MediaPipe model downloaded.")
 
-        base_options = mp_python.BaseOptions(model_asset_path=model_path)
+        # Force CPU delegate so MediaPipe never attempts to load libGLESv2.so.2
+        # (OpenGL ES).  In a Docker container / headless server the GPU delegate
+        # tries to dlopen that library and raises a hard crash even though no GPU
+        # is present.  CPU inference is only ~10–15 ms slower per frame — well
+        # within our real-time budget.
+        base_options = mp_python.BaseOptions(
+            model_asset_path=model_path,
+            delegate=mp_python.BaseOptions.Delegate.CPU,
+        )
         options = mp_vision.FaceLandmarkerOptions(
             base_options=base_options,
             output_face_blendshapes=True,   # enables blink score per-eye

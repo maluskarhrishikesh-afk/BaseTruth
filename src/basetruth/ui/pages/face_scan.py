@@ -14,7 +14,8 @@ import requests
 from basetruth.face_scan.service import run_face_scan_static
 from basetruth.logger import get_logger
 from basetruth.service import BaseTruthService
-from basetruth.ui.components import _page_title
+from basetruth.ui.components import _page_title, _db_available_cached
+from basetruth.db import list_face_scan_live_results
 from basetruth.ui.pages.scan import (
     _RESULT_CSS,
     _syntax_highlight_json,
@@ -150,7 +151,14 @@ You get a verdict, risk score, confidence score, evidence, and a downloadable JS
                     status_data = status_resp.json()
                     status = status_data.get("status", "waiting")
                     
-                    if status in ["completed", "failed", "processing"]:
+                    if status == "expired":
+                        # Session TTL has elapsed — clean it up and prompt a fresh start.
+                        st.warning("⏰ This session has expired (sessions last 20 minutes). Start a new one below.")
+                        del st.session_state.face_scan_live_sid
+                        st.session_state.pop("face_scan_live_url", None)
+                        if st.button("Start New Session", key="expired_new_btn"):
+                            st.rerun()
+                    elif status in ["completed", "failed", "processing"]:
                         st.subheader("Live Session Result")
                         result = status_data.get("result")
                         # Determine if challenges are done but the LLM narrative is still running
@@ -195,6 +203,55 @@ You get a verdict, risk score, confidence score, evidence, and a downloadable JS
             if _should_auto_refresh:
                 time.sleep(2)
                 st.rerun()
+
+        # ── Recent Live Scan Recordings ─────────────────────────────────────
+        # Persistent panel querying the DB so operators can watch or delete
+        # recordings from past sessions — even after Streamlit session state
+        # has been cleared by navigation, refresh, or "Start New Session".
+        st.markdown("---")
+        with st.expander("📋 Recent Live Scan Recordings", expanded=True):
+            if not _db_available_cached():
+                st.warning("Database unavailable — cannot load recent recordings.", icon="⚠️")
+            else:
+                _recent_rows = list_face_scan_live_results(limit=10)
+                _rows_with_video = [r for r in _recent_rows if r.video_key]
+                if not _rows_with_video:
+                    st.info("No recorded live scan sessions yet.", icon="ℹ️")
+                else:
+                    # Render each recorded session as a compact row with Watch action.
+                    for _row in _rows_with_video:
+                        _rec_url_key = f"rec_video_url_{_row.session_id}"
+                        _rec_deleted_key = f"rec_video_deleted_{_row.session_id}"
+                        _sid_short = (_row.session_id[:16] + "\u2026") if len(_row.session_id) > 16 else _row.session_id
+                        _ts = _row.created_at.strftime("%Y-%m-%d %H:%M") if _row.created_at else "N/A"
+                        _v_label = _VERDICT_BADGE.get(str(_row.verdict or "").upper(), _row.verdict or "—")
+                        _c1, _c2, _c3, _c4 = st.columns([4, 2, 2, 2])
+                        _c1.code(_sid_short, language=None)
+                        _c2.markdown(_v_label)
+                        _c3.caption(_ts)
+                        if st.session_state.get(_rec_deleted_key):
+                            _c4.caption("🗑️ Deleted")
+                        elif _c4.button("▶ Watch", key=f"rec_watch_{_row.session_id}"):
+                            try:
+                                _vid_r = requests.get(
+                                    f"{_API_INTERNAL}/api/v1/face-scan/sessions/{_row.session_id}/video",
+                                    timeout=10,
+                                )
+                                if _vid_r.status_code == 200:
+                                    st.session_state[_rec_url_key] = _vid_r.json().get("video_url")
+                                else:
+                                    st.error(f"Could not load video: {_vid_r.status_code} {_vid_r.text}", icon="❌")
+                            except requests.RequestException as _rv_exc:
+                                st.error(f"API error: {_rv_exc}", icon="❌")
+                        # Show the player inline when a URL has been fetched for this row.
+                        _rec_url = st.session_state.get(_rec_url_key)
+                        if _rec_url:
+                            st.video(_rec_url)
+                            # Allow the user to close/refresh the player without deleting.
+                            if st.button("✖ Close player", key=f"rec_close_{_row.session_id}"):
+                                st.session_state.pop(_rec_url_key, None)
+                                st.rerun()
+                            st.markdown("---")
 
 def _render_static_result(result: Dict[str, Any], filename: str) -> None:
     verdict = str(result.get("verdict", "INCONCLUSIVE") or "INCONCLUSIVE").upper()
@@ -258,6 +315,69 @@ def _render_static_result(result: Dict[str, Any], filename: str) -> None:
         """,
         unsafe_allow_html=True,
     )
+
+    # ── Session Recording panel ─────────────────────────────────────────────
+    # Only visible when a video was recorded for this session (live mode only).
+    # The video_key is attached to the result dict in build_live_face_scan_result.
+    video_key = result.get("video_key")
+    session_id_for_video = result.get("trace", {}).get("decision_trace_id", "")
+    # Use the filename to derive the session_id for API calls (filename contains it).
+    _live_filename = str(result.get("filename", ""))
+    _live_sid = None
+    if _live_filename.startswith("face_scan_live_"):
+        _live_sid = _live_filename.replace("face_scan_live_", "").replace(".jpg", "")
+
+    if video_key and _live_sid:
+        with st.expander("🎥 Session Recording", expanded=True):
+            # State keys scoped to this session_id so multiple results don't clash.
+            _video_url_key = f"face_scan_video_url_{_live_sid}"
+            _video_deleted_key = f"face_scan_video_deleted_{_live_sid}"
+
+            if st.session_state.get(_video_deleted_key):
+                st.info("🗑️ Recording has been deleted.", icon="ℹ️")
+            else:
+                # Load or refresh the presigned URL (1-hour expiry).
+                if st.button("▶ Watch Recording", key=f"face_scan_video_load_{_live_sid}"):
+                    try:
+                        _vid_resp = requests.get(
+                            f"{_API_INTERNAL}/api/v1/face-scan/sessions/{_live_sid}/video",
+                            timeout=10,
+                        )
+                        if _vid_resp.status_code == 200:
+                            st.session_state[_video_url_key] = _vid_resp.json().get("video_url")
+                        else:
+                            st.error(f"Could not load video: {_vid_resp.status_code} {_vid_resp.text}")
+                    except requests.RequestException as _ve:
+                        st.error(f"Failed to reach API: {_ve}")
+
+                presigned = st.session_state.get(_video_url_key)
+                if presigned:
+                    st.video(presigned)
+
+                st.caption(
+                    f"Recorded session · auto-deleted after {__import__('os').environ.get('FACE_SCAN_VIDEO_RETENTION_DAYS', '90')} days"
+                )
+
+                # Delete recording — requires a confirmation checkbox before firing.
+                st.markdown("---")
+                _confirm_key = f"face_scan_video_confirm_del_{_live_sid}"
+                confirmed = st.checkbox("I confirm I want to permanently delete this recording", key=_confirm_key)
+                if confirmed:
+                    if st.button("🗑 Delete Recording", type="secondary", key=f"face_scan_video_del_{_live_sid}"):
+                        try:
+                            _del_resp = requests.delete(
+                                f"{_API_INTERNAL}/api/v1/face-scan/sessions/{_live_sid}/video",
+                                timeout=10,
+                            )
+                            if _del_resp.status_code == 200:
+                                st.success("Recording deleted successfully.")
+                                st.session_state[_video_deleted_key] = True
+                                st.session_state.pop(_video_url_key, None)
+                                st.rerun()
+                            else:
+                                st.error(f"Delete failed: {_del_resp.status_code} {_del_resp.text}")
+                        except requests.RequestException as _de:
+                            st.error(f"Failed to reach API: {_de}")
 
     highlighted = _syntax_highlight_json(payload)
     st.markdown(

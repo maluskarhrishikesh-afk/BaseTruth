@@ -1392,6 +1392,7 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
     import asyncio as _asyncio
 
     from basetruth.face_scan import live as _face_scan_live
+    from basetruth.face_scan import ml_scorer_live as _ml_scorer_live
     from basetruth.logger import get_logger as _get_logger
 
     _face_scan_live_log = _get_logger("basetruth.face_scan.live")
@@ -1450,7 +1451,7 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
         from fastapi.responses import HTMLResponse as _FaceScanHTMLResponse  # noqa: PLC0415
 
         session = _face_scan_live_store.get(session_id)
-        if not session:
+        if not session or session.status == "expired":
             return _FaceScanHTMLResponse(
                 "<html><body style='font-family:sans-serif;background:#0f172a;color:#f87171;display:flex;justify-content:center;align-items:center;height:100vh;margin:0'><h2>Session not found or has expired.</h2></body></html>",
                 status_code=404,
@@ -1493,6 +1494,10 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
                 if session.result is not None and not bool(session.result.get("narrative_pending")):
                     break
             if session.result is not None and not bool(session.result.get("narrative_pending")):
+                # Save training sample for sessions whose original WebSocket
+                # connection dropped during the LLM build phase.  idempotent —
+                # safe even if the main loop already wrote the row.
+                _ml_scorer_live.append_training_sample(session.result)
                 await websocket.send_json({"type": "result", **session.result})
             else:
                 await websocket.send_json({"type": "processing", "message": "Still verifying your results. Please wait\u2026"})
@@ -1544,6 +1549,12 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
                         _face_scan_live.build_live_face_scan_result,
                         session,
                     )
+                    # Save training sample BEFORE sending to the browser.  If the
+                    # WebSocket send below throws (e.g. client already closed),
+                    # we still want the row in the CSV.  append_training_sample
+                    # is idempotent per session_id so a later reconnect replay
+                    # is harmless.
+                    _ml_scorer_live.append_training_sample(final_result)
                     await websocket.send_json({"type": "result", **final_result})
                     _face_scan_live_log.info(
                         "Face Scan live session completed",
@@ -1578,6 +1589,83 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
                 await websocket.close(code=1000)
             except RuntimeError:
                 pass
+
+    @app.get(
+        "/api/v1/face-scan/sessions/{session_id}/video",
+        tags=["Scan"],
+        summary="Get Face Scan Session Video URL",
+        responses={
+            200: {"description": "Presigned URL for the recorded MP4"},
+            403: {"description": "Video recording is disabled (FACE_SCAN_RECORD_VIDEO=false)"},
+            404: {"description": "Session not found or no video recorded for this session"},
+        },
+    )
+    def get_face_scan_video(session_id: str) -> Dict[str, Any]:
+        """Return a presigned MinIO URL for the recorded MP4 of a completed Face Scan session.
+
+        The URL expires after 1 hour. The endpoint does NOT stream the video bytes
+        through the API process — it returns a short-lived direct MinIO URL so the
+        browser fetches the file directly.
+
+        Returns 403 when FACE_SCAN_RECORD_VIDEO is not enabled.
+        Returns 404 when the session has no video (e.g. recording failed or flag was off).
+        """
+        import os as _os_vid  # noqa: PLC0415
+        if _os_vid.environ.get("FACE_SCAN_RECORD_VIDEO", "false").lower() != "true":
+            raise HTTPException(status_code=403, detail="Video recording is not enabled on this deployment.")
+
+        from basetruth.db import get_face_scan_live_result  # noqa: PLC0415
+        from basetruth.store import get_face_scan_video_presigned_url  # noqa: PLC0415
+
+        row = get_face_scan_live_result(session_id)
+        if row is None or not row.video_key:
+            raise HTTPException(status_code=404, detail="No video recorded for this session.")
+
+        presigned_url = get_face_scan_video_presigned_url(row.video_key, expires_seconds=3600)
+        if presigned_url is None:
+            raise HTTPException(status_code=404, detail="Video not found in storage.")
+
+        return {
+            "session_id": session_id,
+            "video_url": presigned_url,
+            "video_key": row.video_key,
+            "expires_in_seconds": 3600,
+            "verdict": row.verdict,
+        }
+
+    @app.delete(
+        "/api/v1/face-scan/sessions/{session_id}/video",
+        tags=["Scan"],
+        summary="Delete Face Scan Session Video",
+        responses={
+            200: {"description": "Video deleted successfully"},
+            404: {"description": "Session not found or no video to delete"},
+        },
+    )
+    def delete_face_scan_video_endpoint(session_id: str) -> Dict[str, Any]:
+        """Delete the recorded MP4 for a Face Scan session from MinIO.
+
+        Also nulls the video_key column in the database so the UI stops showing
+        the player.  Returns 404 when no video exists for this session.
+        """
+        from basetruth.db import get_face_scan_live_result, update_face_scan_live_video_key  # noqa: PLC0415
+        from basetruth.store import delete_face_scan_video  # noqa: PLC0415
+
+        row = get_face_scan_live_result(session_id)
+        if row is None or not row.video_key:
+            raise HTTPException(status_code=404, detail="No video found for this session.")
+
+        key = row.video_key
+        deleted = delete_face_scan_video(key)
+
+        # Null out the DB column regardless of MinIO result so the UI is consistent.
+        update_face_scan_live_video_key(session_id, None)
+
+        _face_scan_live_log.info(
+            "face_scan video deleted by operator",
+            extra={"session_id": session_id, "key": key, "minio_deleted": deleted},
+        )
+        return {"deleted": True, "key": key, "session_id": session_id}
 
     @app.get(
         "/api/v1/reports",
@@ -1766,6 +1854,25 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
                 brightness_mean=_brightness,
             )
             if not stable_ok:
+                # Log the exact measured values so we can diagnose which condition
+                # keeps resetting the counter — the feedback string tells us the
+                # reason but not the numbers that triggered it.
+                _kyc_log.debug(
+                    "KYC stability gate rejected frame.",
+                    extra={
+                        "reason": stable_feedback,
+                        "confidence": round(features["det_score"], 4),
+                        "bbox_area_ratio": round(_bbox_area_ratio, 4),
+                        "nose_rel_x": round(features["nose_rel_x"], 4),
+                        "nose_rel_y": round(features.get("nose_rel_y", 0.50), 4),
+                        "yaw": round(features.get("yaw", 0.0), 4),
+                        "pitch": round(features.get("pitch", 0.0), 4),
+                        "texture_score": round(_texture, 2),
+                        "brightness_mean": round(_brightness, 2),
+                        "face_count": len(faces),
+                        "stable_frames_so_far": session.face_stable_frames,
+                    },
+                )
                 # Reset on any validation failure — must be a continuous clean window.
                 session.face_stable_frames = 0
                 session.face_stable_yaw_buffer.clear()
@@ -2812,6 +2919,11 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
             csv = str(_r / "fraud_model" / "data" / "training_data_pdf.csv")
             pkl = str(_r / "fraud_model" / "models" / "ml_scorer_pdf.pkl")
             return _train_pdf([csv], pkl, progress_cb=progress_cb)
+        elif model_type == "face_scan_live":
+            from basetruth.face_scan.ml_scorer_live import train as _train_live  # noqa: PLC0415
+            csv = str(_r / "fraud_model" / "data" / "training_data_face_scan_live.csv")
+            pkl = str(_r / "fraud_model" / "models" / "ml_scorer_face_scan_live.pkl")
+            return _train_live(csv, pkl, progress_cb=progress_cb)
         else:
             raise ValueError(f"Unknown model type: {model_type!r}")
 
@@ -2848,7 +2960,7 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
         if not isinstance(models_to_train, list):
             models_to_train = ["image"]
         # Only allow known types — guard against injection of arbitrary model names
-        models_to_train = [m for m in models_to_train if m in {"image", "pdf"}]
+        models_to_train = [m for m in models_to_train if m in {"image", "pdf", "face_scan_live"}]
         if not models_to_train:
             await websocket.send_json({"type": "error", "message": "Specify at least one of: image, pdf."})
             await websocket.close(code=1008)

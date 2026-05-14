@@ -60,6 +60,15 @@ def _completed_session(history: List[Dict[str, Any]]):
     session.last_face_box = history[-1]["face_box"]
     session.environment["observed_fps"] = 5.0
     session.environment["camera_resolution"] = [640, 480]
+    # Split history evenly across challenge windows so _score_per_challenge can
+    # evaluate each challenge in its own frame window (the real session always does this).
+    n = len(history)
+    third = n // 3
+    session.challenge_frame_history = {
+        "ch_0": history[:third],
+        "ch_1": history[third : 2 * third],
+        "ch_2": history[2 * third:],
+    }
     return session
 
 
@@ -67,8 +76,20 @@ def test_build_live_face_scan_result_marks_stable_session_genuine() -> None:
     from basetruth.face_scan import live
 
     hashes = _frame_hashes()
+    # Add small organic oscillation (0.006 * idx%3) to each axis so that the
+    # combined second-derivative jitter exceeds the _LIVENESS_FLOOR (0.025) and
+    # the stillness-risk penalty does not fire for this genuine session.
+    # Perfectly linear motion (0.02*idx with no variation) would have zero
+    # second derivative, which the temporal check now correctly flags as suspicious.
     history = [
-        _metric_frame(idx, yaw=0.02 * idx, pitch=0.01 * idx, nose_rel_x=0.03 * idx, frame_hash=hashes[idx % len(hashes)], brightness=126.0 + idx)
+        _metric_frame(
+            idx,
+            yaw=0.02 * idx + 0.006 * (idx % 3),
+            pitch=0.01 * idx + 0.006 * (idx % 3),
+            nose_rel_x=0.03 * idx + 0.006 * (idx % 3),
+            frame_hash=hashes[idx % len(hashes)],
+            brightness=126.0 + idx,
+        )
         for idx in range(12)
     ]
     session = _completed_session(history)
@@ -593,12 +614,32 @@ def test_build_live_result_includes_all_new_check_keys() -> None:
     assert "screen_frequency"  in checks, "screen_frequency check block must be present"
     assert "frame_timing"      in checks, "frame_timing check block must be present"
     assert "depth_consistency" in checks, "depth_consistency check block must be present"
+    assert "still_challenge_replay" in checks, "still_challenge_replay check block must be present"
+    assert "per_challenge_scores"   in checks, "per_challenge_scores check block must be present"
 
     for key in ("saccade_analysis", "screen_frequency", "frame_timing", "depth_consistency"):
         block = checks[key]
         assert "status"      in block, f"{key} must have a status field"
         assert "score_0_100" in block, f"{key} must have a score_0_100 field"
         assert block["status"] in ("pass", "review"), f"{key} status must be pass or review"
+
+    still_block = checks["still_challenge_replay"]
+    assert "status"              in still_block
+    assert "repeat_frame_score"  in still_block
+    assert "still_frames_used"   in still_block
+    assert still_block["status"] in ("pass", "review")
+
+    # Each completed challenge should have an entry in per_challenge_scores
+    per_ch = checks["per_challenge_scores"]
+    assert len(per_ch) > 0, "per_challenge_scores must contain at least one entry"
+    for ch_name, ch_data in per_ch.items():
+        assert "status"              in ch_data, f"{ch_name} must have a status field"
+        assert "combined_risk"       in ch_data, f"{ch_name} must have a combined_risk field"
+        assert "repeat_frame_score"  in ch_data, f"{ch_name} must have a repeat_frame_score field"
+        assert "reason"              in ch_data, f"{ch_name} must have a reason field"
+        assert ch_data["status"]     in ("pass", "warn", "review"), (
+            f"{ch_name} status must be pass, warn, or review, got {ch_data['status']}"
+        )
 
 
 # ── Perceptual hash / difference hash ────────────────────────────────────────
@@ -758,21 +799,19 @@ def test_build_live_face_scan_result_carries_narrative_source(monkeypatch) -> No
 
 # ── advance_challenge stability reset ────────────────────────────────────────
 
-def test_advance_challenge_resets_stability_gate_for_turn_challenges() -> None:
-    """advance_challenge() must reset the stability gate when completing a turn
-    challenge (turn_left or turn_right), so the user must return to neutral before
-    the next challenge starts accumulating frames.
+def test_advance_challenge_does_not_reset_stability_gate_for_turn_to_turn_transition() -> None:
+    """advance_challenge() must NOT reset the stability gate on turn->turn transitions.
 
-    Turn challenges leave significant yaw residual (typically ±0.20).  Without the
-    reset, the first frames of the next challenge still carry that residual yaw and
-    immediately fire the wrong-direction guard before the user has had any chance to act.
+    Turn challenges are now hold-only and confirmed via green flash + beep. Requiring
+    an intermediate re-stabilisation window between turn_left and turn_right forces the
+    user to look straight for 10 frames, which is unnecessary and degrades UX.
     """
     from basetruth.face_scan import live
     from basetruth.kyc.liveness import FACE_STABLE_FRAMES_REQUIRED
 
     for completed_turn in ("turn_left", "turn_right"):
         session = live.FaceScanLiveSession(
-            session_id=f"stability-reset-{completed_turn}",
+            session_id=f"stability-no-reset-turn-to-turn-{completed_turn}",
             challenges=[completed_turn, "turn_right"],
         )
 
@@ -783,14 +822,47 @@ def test_advance_challenge_resets_stability_gate_for_turn_challenges() -> None:
 
         session.advance_challenge()
 
+        assert session.face_stable_frames == FACE_STABLE_FRAMES_REQUIRED, (
+            f"face_stable_frames must NOT reset after {completed_turn} when next challenge is also a turn"
+        )
+        assert len(session.face_stable_yaw_buffer) == 5, (
+            f"face_stable_yaw_buffer must NOT clear after {completed_turn} when next challenge is also a turn"
+        )
+        assert session.blink_observed_in_stability is True, (
+            f"blink_observed_in_stability must NOT reset after {completed_turn} when next challenge is also a turn"
+        )
+
+
+def test_advance_challenge_resets_stability_gate_for_turn_to_non_turn_transition() -> None:
+    """advance_challenge() must reset the stability gate on turn->non-turn transitions.
+
+    A turn leaves large yaw residual; when the next challenge is non-turn (e.g. blink),
+    forcing a fresh stability window prevents residual pose from contaminating early
+    challenge frames.
+    """
+    from basetruth.face_scan import live
+    from basetruth.kyc.liveness import FACE_STABLE_FRAMES_REQUIRED
+
+    for completed_turn in ("turn_left", "turn_right"):
+        session = live.FaceScanLiveSession(
+            session_id=f"stability-reset-turn-to-non-turn-{completed_turn}",
+            challenges=[completed_turn, "blink"],
+        )
+
+        session.face_stable_frames = FACE_STABLE_FRAMES_REQUIRED
+        session.face_stable_yaw_buffer = [-0.05, -0.03, -0.04, -0.02, -0.06]
+        session.blink_observed_in_stability = True
+
+        session.advance_challenge()
+
         assert session.face_stable_frames == 0, (
-            f"face_stable_frames must be 0 after completing {completed_turn}"
+            f"face_stable_frames must reset after {completed_turn} when next challenge is non-turn"
         )
         assert len(session.face_stable_yaw_buffer) == 0, (
-            f"face_stable_yaw_buffer must be cleared after {completed_turn}"
+            f"face_stable_yaw_buffer must clear after {completed_turn} when next challenge is non-turn"
         )
         assert session.blink_observed_in_stability is False, (
-            f"blink_observed_in_stability must reset after {completed_turn}"
+            f"blink_observed_in_stability must reset after {completed_turn} when next challenge is non-turn"
         )
 
 
@@ -1104,7 +1176,350 @@ def test_quality_metrics_face_in_oval_does_not_flag_too_small() -> None:
         )
 
 
-def test_quality_metrics_genuinely_small_face_flags_too_small() -> None:
+# ── Static-photo stillness detection (temporal consistency check) ────────────
+
+def test_temporal_consistency_flags_static_photo_as_high_risk() -> None:
+    """_compute_temporal_consistency must return a high score when all frames show
+    near-zero combined motion — consistent with a static photograph held in front
+    of the camera.
+
+    A live person at rest has combined jitter ≥ ~0.025 from breathing and natural
+    head sway.  A static photo produces only face-detector rounding noise, which
+    lands well below 0.020 combined.  The stillness penalty must raise the score
+    above 25 in this case, which will push the overall risk_score above the
+    SUSPICIOUS threshold when replay_score is also elevated.
+    """
+    from basetruth.face_scan.live import _compute_temporal_consistency
+
+    # Simulate look_straight frames from a static photograph: face-detector noise
+    # of ~0.001 std — only the alternating +/- pattern gives non-zero second diffs.
+    photo_frames = [
+        {"yaw": 0.050 + 0.001 * (i % 2),  "pitch": 0.020 + 0.001 * (i % 2),
+         "nose_rel_x": 0.500 + 0.001 * (i % 2)}
+        for i in range(10)
+    ]
+    result = _compute_temporal_consistency([photo_frames])
+
+    assert result["score_0_100"] >= 25.0, (
+        f"Static-photo look_straight must score ≥ 25 temporal risk, "
+        f"got {result['score_0_100']:.2f}. The stillness penalty should have fired."
+    )
+
+
+def test_temporal_consistency_does_not_penalise_genuine_live_person_at_rest() -> None:
+    """_compute_temporal_consistency must NOT heavily penalise a live person who
+    is holding reasonably still during look_straight.
+
+    A genuine person breathing naturally produces organic micro-tremors that keep
+    the combined jitter above the liveness floor (~0.025).  They must score < 20.
+    """
+    from basetruth.face_scan.live import _compute_temporal_consistency
+
+    # Simulate look_straight for a live person: small but consistent head sway
+    # from breathing produces jitter comfortably above the 0.025 liveness floor.
+    live_frames = [
+        {"yaw": 0.000 + 0.012 * (i % 3 - 1),
+         "pitch": 0.020 + 0.010 * (i % 3 - 1),
+         "nose_rel_x": 0.500 + 0.010 * (i % 3 - 1)}
+        for i in range(10)
+    ]
+    result = _compute_temporal_consistency([live_frames])
+
+    assert result["score_0_100"] < 20.0, (
+        f"Genuine live person at rest must score < 20 temporal risk, "
+        f"got {result['score_0_100']:.2f}. False positive: genuine user would be penalised."
+    )
+
+
+def test_build_live_face_scan_result_flags_static_photo_look_straight_as_suspicious() -> None:
+    """A session where look_straight was completed with a static photo (near-zero
+    motion, many repeated frame hashes) must be flagged SUSPICIOUS.
+
+    This mirrors the real-world hybrid attack: user holds a photo for the
+    look_straight challenge, then performs nod/turn/right challenges live.  The
+    look_straight still-group has near-zero combined jitter, which the temporal
+    stillness penalty raises to a high risk score.  With 40 identical-hash photo
+    frames (~80% of all frames), repeat_frame_score > 70 and replay_score > 50,
+    so max(replay, temporal) >= 50 AND risk_score >= 35 → SUSPICIOUS.
+    """
+    from basetruth.face_scan import live
+
+    hashes = _frame_hashes()
+    photo_hash = "aaaaaaaaaaaaaa00"  # constant hash — identical frames from a static photo
+    # 40 look_straight photo frames: near-zero motion, identical hashes.
+    look_straight_frames = [
+        _metric_frame(i, yaw=0.050 + 0.001 * (i % 2), pitch=0.020 + 0.001 * (i % 2),
+                      nose_rel_x=0.500 + 0.001 * (i % 2), frame_hash=photo_hash,
+                      brightness=145.0)
+        for i in range(40)
+    ]
+    # 10 motion frames: live person doing nod/turn with varied hashes.
+    motion_frames = [
+        _metric_frame(40 + i, yaw=0.02 * (i + 1) * (1 if i < 5 else -1),
+                      pitch=0.03 * (i % 3), nose_rel_x=0.50 + 0.05 * (i % 3),
+                      frame_hash=hashes[i % len(hashes)], brightness=130.0)
+        for i in range(10)
+    ]
+    # Simulate realistic 3D depth: IOD decreases as |yaw| increases on turn frames.
+    for i, frame in enumerate(motion_frames[5:]):
+        frame["interocular_px_norm"] = round(0.44 - 0.8 * abs(frame["yaw"]), 4)
+
+    all_frames = look_straight_frames + motion_frames
+
+    session = live.FaceScanLiveSession(
+        session_id="photo-attack-test",
+        challenges=["look_straight", "nod", "turn_left", "turn_right"],
+    )
+    session.current_challenge_idx = 4
+    session.challenge_results = [
+        {"index": 0, "challenge": "look_straight", "passed": True},
+        {"index": 1, "challenge": "nod",          "passed": True},
+        {"index": 2, "challenge": "turn_left",    "passed": True},
+        {"index": 3, "challenge": "turn_right",   "passed": True},
+    ]
+    session.challenge_frame_history = {
+        "ch_0": look_straight_frames,
+        "ch_1": motion_frames[:3],
+        "ch_2": motion_frames[3:6],
+        "ch_3": motion_frames[6:],
+    }
+    session.all_frame_history = all_frames
+    session.frames_received = len(all_frames)
+    session.best_live_frame_bytes = b"jpeg-bytes"
+    session.last_face_box = all_frames[-1]["face_box"]
+    session.environment["observed_fps"] = 10.0
+
+    result = live.build_live_face_scan_result(session)
+
+    temporal_score     = result["checks"]["temporal_consistency"]["score_0_100"]
+    replay_score       = result["checks"]["replay_heuristics"]["score_0_100"]
+    still_replay_score = result["checks"]["still_challenge_replay"]["score_0_100"]
+    risk_score         = result["risk_score_0_100"]
+    assert result["verdict"] in ("SUSPICIOUS", "DEEPFAKE"), (
+        f"Static-photo look_straight attack must be flagged SUSPICIOUS or DEEPFAKE, "
+        f"got {result['verdict']}. temporal={temporal_score:.1f}, "
+        f"replay={replay_score:.1f}, still_replay={still_replay_score:.1f}, risk={risk_score:.1f}"
+    )
+
+
+def test_build_live_result_hybrid_attack_photo_for_still_live_for_motion() -> None:
+    """Attack 2: static photo held for look_straight + 9 wrong-motion attempts (turn/nod)
+    performed live. The many genuine motion frames dilute the overall replay score below
+    50, but the per-still-challenge replay must catch the photo because those 15 frames
+    are near-identical hashes.  The verdict must be SUSPICIOUS.
+    """
+    from basetruth.face_scan import live
+
+    hashes = _frame_hashes()
+    photo_hash = "ffffffffffffffff"   # constant — all photo frames identical
+    # 15 look_straight photo frames: minimal motion, identical hashes
+    look_straight_frames = [
+        _metric_frame(
+            i,
+            yaw=0.04 + 0.001 * (i % 2),
+            pitch=0.02 + 0.001 * (i % 2),
+            nose_rel_x=0.50 + 0.001 * (i % 2),
+            frame_hash=photo_hash,
+            brightness=142.0,
+        )
+        for i in range(15)
+    ]
+    # 35 motion frames (9 wrong attempts at turn_left, then successful nod/turn).
+    # Each gets a unique hash to simulate genuine varied motion frames.
+    motion_frames = [
+        _metric_frame(
+            15 + i,
+            yaw=0.1 * ((i % 7) - 3),          # varied yaw — real movement
+            pitch=0.05 * (i % 4),
+            nose_rel_x=0.5 + 0.04 * (i % 5),
+            frame_hash=hashes[i % len(hashes)],
+            brightness=128.0,
+        )
+        for i in range(35)
+    ]
+
+    all_frames = look_straight_frames + motion_frames
+
+    # Session: look_straight passed (photo), then 9 wrong turn attempts spread
+    # across ch_1/ch_2/ch_3 history, plus successful nod + turn at the end.
+    session = live.FaceScanLiveSession(
+        session_id="hybrid-attack-2",
+        challenges=["look_straight", "nod", "turn_left", "turn_right"],
+    )
+    session.current_challenge_idx = 4
+    session.challenge_results = [
+        {"index": 0, "challenge": "look_straight", "passed": True},
+        {"index": 1, "challenge": "nod",            "passed": True},
+        {"index": 2, "challenge": "turn_left",      "passed": True},
+        {"index": 3, "challenge": "turn_right",     "passed": True},
+    ]
+    session.challenge_frame_history = {
+        "ch_0": look_straight_frames,           # 15 photo frames
+        "ch_1": motion_frames[:5],              # nod frames (5)
+        "ch_2": motion_frames[5:20],            # turn_left: 9 wrong attempts + success (15)
+        "ch_3": motion_frames[20:],             # turn_right: success (15)
+    }
+    session.all_frame_history = all_frames
+    session.frames_received = len(all_frames)
+    session.best_live_frame_bytes = b"jpeg-bytes"
+    session.last_face_box = all_frames[-1]["face_box"]
+    session.environment["observed_fps"] = 15.0
+    # Simulate wrong-motion events from the 9 failed turn attempts
+    session.challenge_wrong_actions = [
+        {"challenge": "turn_left", "detected": "nod", "frame_index": 15 + j}
+        for j in range(9)
+    ]
+
+    result = live.build_live_face_scan_result(session)
+
+    checks         = result["checks"]
+    overall_replay = checks["replay_heuristics"]["score_0_100"]
+    still_replay   = checks["still_challenge_replay"]
+    still_rfs      = still_replay["repeat_frame_score"]
+    still_score    = still_replay["score_0_100"]
+    risk_score     = result["risk_score_0_100"]
+
+    # Per-challenge: look_straight must independently flag the photo (no dilution from
+    # the 35 motion frames — those are scored in their own windows).
+    per_ch = checks["per_challenge_scores"]
+    assert "look_straight" in per_ch, "look_straight must have a per-challenge entry"
+    ls_ch = per_ch["look_straight"]
+    assert ls_ch["combined_risk"] >= 50.0, (
+        f"look_straight per-challenge risk must be >= 50 for a static photo, got {ls_ch['combined_risk']:.1f}"
+    )
+    assert ls_ch["status"] == "review", (
+        f"look_straight per-challenge status must be 'review', got {ls_ch['status']}"
+    )
+
+    # The overall session replay should be diluted by the motion frames, so
+    # it is expected to be below 50 for this specific attack configuration.
+    # (This confirms the *reason* the hard gate is needed.)
+    assert overall_replay < 55.0, (
+        f"Overall replay should be partially diluted by 35 motion frames, got {overall_replay:.1f}"
+    )
+
+    # The per-still replay must detect the photo: 15 identical-hash frames
+    # → nearly all 300ms-apart pairs will match → repeat_frame_score near 100.
+    assert still_rfs >= 70.0, (
+        f"Still-challenge repeat_frame_score must be >= 70 for a static photo, got {still_rfs:.1f}"
+    )
+    assert still_score >= 50.0, (
+        f"Still-challenge replay score must be >= 50 for a static photo, got {still_score:.1f}"
+    )
+
+    assert result["verdict"] in ("SUSPICIOUS", "DEEPFAKE"), (
+        f"Hybrid photo attack (Attack 2) must be SUSPICIOUS or DEEPFAKE. "
+        f"overall_replay={overall_replay:.1f}, still_rfs={still_rfs:.1f}, "
+        f"still_score={still_score:.1f}, risk={risk_score:.1f}"
+    )
+
+
+def test_motion_challenge_hold_phase_does_not_flag_genuine_nod() -> None:
+    """A genuine nod with a hold phase (repeat_frame_score ~57%) must NOT be SUSPICIOUS.
+
+    During a nod challenge the subject must hold the down-pose for the camera to
+    confirm it. Those held frames look nearly identical, naturally pushing the
+    repeat_frame_score into the 50-65 range for a real live person.  The motion
+    challenge SUSPICIOUS gate is set at 70% (not 50%) precisely to avoid these
+    false positives. This test pins that contract.
+
+    The session is: photo for look_straight + genuine nod/turns (the exact attack
+    scenario reported in testing where nod was incorrectly flagged suspicious while
+    the photo window passed undetected).
+    """
+    from basetruth.face_scan import live
+
+    hashes = _frame_hashes()
+    photo_hash = "cccccccccccccccc"
+
+    # look_straight: photo, but only 4 frames (real session often has few still frames)
+    # — not enough for the 300 ms pair search to produce a high repeat_frame_score.
+    look_straight_frames = [
+        _metric_frame(i, yaw=0.04, pitch=0.02, nose_rel_x=0.50, frame_hash=photo_hash)
+        for i in range(4)
+    ]
+
+    # nod: genuine person, hold phase produces ~57% repeat.
+    # Simulate: first 3 frames varying (motion), next 4 frames nearly identical (hold),
+    # last 3 frames varying (return). Use the same hash for the hold phase to mimic
+    # the real repeat_frame_score of ~57% seen in the reported false positive.
+    hold_hash = hashes[0]
+    nod_frames = (
+        [_metric_frame(4 + i, yaw=0.0, pitch=0.05 * (i + 1), nose_rel_x=0.50,
+                       frame_hash=hashes[(i + 1) % len(hashes)]) for i in range(3)]
+        + [_metric_frame(7 + i, yaw=0.0, pitch=0.20, nose_rel_x=0.50,
+                         frame_hash=hold_hash) for i in range(4)]
+        + [_metric_frame(11 + i, yaw=0.0, pitch=0.20 - 0.07 * (i + 1), nose_rel_x=0.50,
+                         frame_hash=hashes[(i + 3) % len(hashes)]) for i in range(3)]
+    )
+
+    # turn_right: 6 attempts, varied hashes throughout
+    turn_frames = [
+        _metric_frame(14 + i, yaw=0.1 * ((i % 5) - 2), pitch=0.0, nose_rel_x=0.50,
+                      frame_hash=hashes[i % len(hashes)]) for i in range(12)
+    ]
+
+    session = live.FaceScanLiveSession(
+        session_id="nod-false-positive-test",
+        challenges=["look_straight", "nod", "turn_right"],
+    )
+    session.current_challenge_idx = 3
+    session.challenge_results = [
+        {"index": 0, "challenge": "look_straight", "passed": True},
+        {"index": 1, "challenge": "nod",            "passed": True},
+        {"index": 2, "challenge": "turn_right",     "passed": True},
+    ]
+    session.challenge_frame_history = {
+        "ch_0": look_straight_frames,
+        "ch_1": nod_frames,
+        "ch_2": turn_frames,
+    }
+    all_frames = look_straight_frames + nod_frames + turn_frames
+    session.all_frame_history = all_frames
+    session.frames_received = len(all_frames)
+    session.best_live_frame_bytes = b"jpeg-bytes"
+    session.last_face_box = all_frames[-1]["face_box"]
+    session.environment["observed_fps"] = 10.0
+    session.challenge_wrong_actions = [
+        {"challenge": "turn_right", "detected": "nod", "frame_index": 14 + j}
+        for j in range(6)
+    ]
+
+    result = live.build_live_face_scan_result(session)
+
+    per_ch = result["checks"]["per_challenge_scores"]
+
+    # The nod challenge must NOT be 'review' — its repeat_frame_score is in the
+    # 50-65 range from the hold phase, which is below the 70% motion-challenge gate.
+    if "nod" in per_ch:
+        assert per_ch["nod"]["status"] != "review", (
+            f"Nod with hold-phase repeat_frame_score ~57% must NOT be 'review' "
+            f"(motion gate is 70%, not 50%); got status={per_ch['nod']['status']}, "
+            f"combined_risk={per_ch['nod']['combined_risk']:.1f}"
+        )
+
+    # The verdict may legitimately be SUSPICIOUS if look_straight photo was detected,
+    # but the reason must NOT be the nod. Confirm: nod status is 'pass' and its
+    # combined_risk is below the 70% motion gate.
+    if "nod" in per_ch:
+        assert per_ch["nod"]["combined_risk"] < 70.0, (
+            f"Nod combined_risk must be below 70% motion gate for a genuine hold phase; "
+            f"got {per_ch['nod']['combined_risk']:.1f}"
+        )
+        assert per_ch["nod"]["status"] != "review", (
+            f"Nod status must not be 'review' for a genuine hold phase; "
+            f"got {per_ch['nod']['status']}"
+        )
+
+    # Also verify: if SUSPICIOUS, it was NOT caused by the nod challenge.
+    if result["verdict"] == "SUSPICIOUS":
+        nod_data = per_ch.get("nod", {})
+        assert nod_data.get("status") != "review", (
+            f"SUSPICIOUS must not be caused by the nod hold phase. "
+            f"nod data: {nod_data}"
+        )
+
+
     """A face below 6 % of the frame (user is far from the camera, not in the
     oval) must still score face_size_risk >= 50 so the warning fires.
     """
@@ -1125,3 +1540,178 @@ def test_quality_metrics_genuinely_small_face_flags_too_small() -> None:
             f"A truly small face at {area*100:.1f} % of frame should score "
             f"face_size_risk >= 50 (got {risk:.1f})."
         )
+
+
+# ── Video recording ───────────────────────────────────────────────────────────
+
+def test_raw_frame_buffer_populated_when_flag_on(monkeypatch) -> None:
+    """When FACE_SCAN_RECORD_VIDEO=true, raw JPEG bytes must accumulate in raw_frame_buffer."""
+    import cv2
+    import numpy as np
+    import base64
+    import os
+    from basetruth.face_scan import live
+
+    monkeypatch.setenv("FACE_SCAN_RECORD_VIDEO", "true")
+
+    session = live.FaceScanLiveSession(session_id="vid-test-1", challenges=["look_straight"])
+
+    # Create a tiny synthetic JPEG and encode it as base64 to simulate a browser frame.
+    img = np.full((48, 64, 3), 128, dtype=np.uint8)
+    _, buf = cv2.imencode(".jpg", img)
+    b64 = base64.b64encode(buf.tobytes()).decode()
+
+    # Must call the real face detection path but we only care about the buffer side effect.
+    # Monkeypatch _detect_faces to return an empty list so no further processing happens.
+    monkeypatch.setattr(live, "_detect_faces", lambda img, attach_ear=False: [])
+
+    live.process_live_frame_message(session, b64)
+
+    assert len(session.raw_frame_buffer) == 1, (
+        "raw_frame_buffer must have one entry after processing one frame with FACE_SCAN_RECORD_VIDEO=true"
+    )
+    assert session.raw_frame_buffer[0] == buf.tobytes()
+
+
+def test_raw_frame_buffer_empty_when_flag_off(monkeypatch) -> None:
+    """When FACE_SCAN_RECORD_VIDEO is not set (default), raw_frame_buffer must stay empty."""
+    import cv2
+    import numpy as np
+    import base64
+    from basetruth.face_scan import live
+
+    monkeypatch.delenv("FACE_SCAN_RECORD_VIDEO", raising=False)
+
+    session = live.FaceScanLiveSession(session_id="vid-test-2", challenges=["look_straight"])
+
+    img = np.full((48, 64, 3), 128, dtype=np.uint8)
+    _, buf = cv2.imencode(".jpg", img)
+    b64 = base64.b64encode(buf.tobytes()).decode()
+
+    monkeypatch.setattr(live, "_detect_faces", lambda img, attach_ear=False: [])
+
+    live.process_live_frame_message(session, b64)
+
+    assert len(session.raw_frame_buffer) == 0, (
+        "raw_frame_buffer must remain empty when FACE_SCAN_RECORD_VIDEO is not set"
+    )
+
+
+def test_raw_frame_buffer_respects_hard_cap(monkeypatch) -> None:
+    """The frame buffer must never exceed MAX_FRAME_BUFFER (oldest frames are dropped)."""
+    import cv2
+    import numpy as np
+    import base64
+    from basetruth.face_scan import live
+
+    monkeypatch.setenv("FACE_SCAN_RECORD_VIDEO", "true")
+    monkeypatch.setattr(live, "MAX_FRAME_BUFFER", 5)  # Lower cap for fast testing
+    monkeypatch.setattr(live, "_detect_faces", lambda img, attach_ear=False: [])
+
+    session = live.FaceScanLiveSession(session_id="vid-cap-test", challenges=["look_straight"])
+
+    # Send 8 frames — buffer should cap at 5 (the latest 5).
+    for color in range(8):
+        img = np.full((48, 64, 3), color * 30, dtype=np.uint8)
+        _, buf = cv2.imencode(".jpg", img)
+        b64 = base64.b64encode(buf.tobytes()).decode()
+        live.process_live_frame_message(session, b64)
+
+    assert len(session.raw_frame_buffer) == 5, (
+        f"Frame buffer must be capped at MAX_FRAME_BUFFER=5, got {len(session.raw_frame_buffer)}"
+    )
+
+
+def test_build_live_face_scan_result_video_key_set_when_flag_on(monkeypatch) -> None:
+    """build_live_face_scan_result must set video_key in the result when flag is on
+    and encoding+upload succeed.
+    """
+    from unittest.mock import patch
+    from basetruth.face_scan import live, narrative
+
+    monkeypatch.setenv("FACE_SCAN_RECORD_VIDEO", "true")
+    monkeypatch.setattr(
+        narrative, "generate_face_scan_narrative",
+        lambda _result: ("Test narrative.", "heuristic"),
+    )
+
+    hashes = _frame_hashes()
+    history = [
+        _metric_frame(idx, yaw=0.02 * idx, pitch=0.01 * idx, nose_rel_x=0.50,
+                      frame_hash=hashes[idx % len(hashes)])
+        for idx in range(12)
+    ]
+    session = _completed_session(history)
+    # Pre-load a small frame buffer so encoding has something to work with.
+    session.raw_frame_buffer = [b"fake-jpeg"] * 5
+
+    with patch("basetruth.face_scan.video_encoder.encode_frames_to_mp4", return_value=b"fake-mp4"), \
+         patch("basetruth.store.save_face_scan_video", return_value="face-scan-video/session-live-1.mp4"), \
+         patch("basetruth.db.save_face_scan_live_result", return_value=True):
+        result = live.build_live_face_scan_result(session)
+
+    assert result.get("video_key") == "face-scan-video/session-live-1.mp4", (
+        f"video_key must be set in the result when recording flag is on, got {result.get('video_key')}"
+    )
+    # Buffer must be cleared after encoding to free memory.
+    assert len(session.raw_frame_buffer) == 0, "raw_frame_buffer must be cleared after encoding"
+
+
+def test_build_live_face_scan_result_video_key_none_when_flag_off(monkeypatch) -> None:
+    """build_live_face_scan_result must set video_key=None when FACE_SCAN_RECORD_VIDEO is false."""
+    from basetruth.face_scan import live, narrative
+
+    monkeypatch.delenv("FACE_SCAN_RECORD_VIDEO", raising=False)
+    monkeypatch.setattr(
+        narrative, "generate_face_scan_narrative",
+        lambda _result: ("Test narrative.", "heuristic"),
+    )
+
+    hashes = _frame_hashes()
+    history = [
+        _metric_frame(idx, yaw=0.02 * idx, pitch=0.01 * idx, nose_rel_x=0.50,
+                      frame_hash=hashes[idx % len(hashes)])
+        for idx in range(12)
+    ]
+    session = _completed_session(history)
+
+    from unittest.mock import patch
+    with patch("basetruth.db.save_face_scan_live_result", return_value=True):
+        result = live.build_live_face_scan_result(session)
+
+    assert result.get("video_key") is None, (
+        "video_key must be None when FACE_SCAN_RECORD_VIDEO is not set"
+    )
+
+
+def test_build_live_face_scan_result_video_key_none_on_encoding_failure(monkeypatch) -> None:
+    """When encoding raises VideoEncoderError, video_key must be None (soft failure)."""
+    from unittest.mock import patch
+    from basetruth.face_scan import live, narrative
+    from basetruth.face_scan.video_encoder import VideoEncoderError
+
+    monkeypatch.setenv("FACE_SCAN_RECORD_VIDEO", "true")
+    monkeypatch.setattr(
+        narrative, "generate_face_scan_narrative",
+        lambda _result: ("Test narrative.", "heuristic"),
+    )
+
+    hashes = _frame_hashes()
+    history = [
+        _metric_frame(idx, yaw=0.02 * idx, pitch=0.01 * idx, nose_rel_x=0.50,
+                      frame_hash=hashes[idx % len(hashes)])
+        for idx in range(12)
+    ]
+    session = _completed_session(history)
+    session.raw_frame_buffer = [b"fake-jpeg"] * 5
+
+    with patch("basetruth.face_scan.video_encoder.encode_frames_to_mp4",
+               side_effect=VideoEncoderError("mock encoding failure")), \
+         patch("basetruth.db.save_face_scan_live_result", return_value=True):
+        result = live.build_live_face_scan_result(session)
+
+    # Encoding failed → video_key must be None, result must still be valid.
+    assert result.get("video_key") is None, (
+        "video_key must be None when encoding fails (soft failure must not block result)"
+    )
+    assert "verdict" in result, "result must contain a verdict even when encoding failed"

@@ -168,7 +168,7 @@ The system watches the camera feed in real time and checks whether the behaviour
 
 ### How the session starts
 
-1. The operator goes to the Face Scan screen and picks the challenges they want: Blink, Turn Left, Nod, Turn Right, or Look Straight. The default set is blink, turn left, and nod.
+1. The operator goes to the Face Scan screen and picks the challenges they want: Blink, Nod, Turn Left, Turn Right, or Look Straight. The default set is **blink, nod, turn left, and turn right**. The API always prepends `look_straight` automatically, so the full default sequence is: **look_straight → blink → nod → turn_left → turn_right**.
 2. The operator clicks "Generate Live Challenge Link". The system creates a new live session with a unique session ID and stores it in memory.
 3. The system generates a link like: http://127.0.0.1:8000/face-scan/live/{session_id}
 4. That link opens a dedicated browser page served directly by the backend.
@@ -257,13 +257,13 @@ This counter only increments when a frame passes **all five** of these checks si
 3. **Face area ≥ 6% of frame** — the stability gate is stricter than the 5% live-challenge threshold. At 6%, the bounding box is at least ~125×125 px at 640×480, giving the landmark model reliable results before challenges start.
 4. **Nose within the horizontal centre band** (35%–65% of frame width) — the person's face must be roughly centred horizontally.
 5. **Nose within the vertical centre band** (30%–70% of frame height) — prevents partial faces, tilted cameras, and bad landmark geometry from a very low or high camera position.
-6. **Head near-frontal** — |yaw| ≤ 0.08 and |pitch| ≤ 0.08 (roughly ±5°). The user must face straight at the camera before challenges begin.
+6. **Head near-frontal** — |yaw| ≤ 0.12 (roughly ±7°). The user must face roughly straight at the camera before challenges begin. Pitch is intentionally not checked here — the 2D pitch value (nose-y minus eye-midpoint-y, normalised by interocular distance) is an anatomical constant (~0.4–0.7 for any real forward-facing face) and cannot distinguish head tilt from a face simply being close to the camera. The vertical centering check (condition 5) already guards against extreme camera angles.
 7. **Texture richness (adaptive)** — the face crop must have sufficient local texture variation (measured as mean per-patch standard deviation across a 6×6 grid). The threshold adapts to ambient brightness: in a dark frame (brightness mean < 80) the threshold relaxes to 14.0 to avoid false rejects; in normal light it is 18.0. A flat screen, printed photo, or uniform background scores < 15; a real face at selfie distance typically scores 25–70.
 8. **Geometry invariants pass** — the face must look like a real human face (eyes above nose, mouth below eyes, proportions within normal ranges).
 
 Additionally, once the window of qualifying frames is complete, the server checks two anti-spoofing signals:
 
-1. **Yaw micro-movement variance** — A real person always has small involuntary oscillations (breathing, muscle tremor); their yaw variance over 10 frames is typically 1×10⁻³ to 1×10⁻². A static screen or printed photo has machine-precision-flat yaw values — variance ≈ 0. If the variance is below 2×10⁻⁴, the window is rejected and the counter resets with the message: "No natural movement detected — ensure you are using a live camera."
+1. **Yaw micro-movement variance** — A real person always has small involuntary oscillations (breathing, muscle tremor). With our 5-point InsightFace landmark yaw formula, real users at a laptop webcam produce variance in the range 4×10⁻⁶ to 1×10⁻⁴. A static screen or printed photo with a frozen frame has near-zero floating-point variance (≈ 10⁻⁸ to 10⁻⁷). If the variance is below 1×10⁻⁶, the window is rejected and the counter resets with the message: "No natural movement detected — ensure you are using a live camera."
 
 2. **Yaw jitter naturalness** — A real person's micro-movement direction changes occasionally but not on every frame. An attacker who shakes a screen to pass the variance check produces a high-frequency alternating signal: yaw direction reverses on almost every frame. If more than 80% of consecutive diff-pairs alternate sign, the motion is flagged as unnatural. The window resets with the message: "Unnatural movement detected — ensure you are using a live camera, not a video." This is controlled by `FACE_STABILITY_YAW_JITTER_ALTERNATION_MAX = 0.80`.
 
@@ -277,6 +277,12 @@ While the counter is below 10, the server responds with:
 
 Once the counter reaches 10 and the yaw variance check passes, `face_stable: true` is set on all subsequent status messages, and the normal challenge-accumulation logic begins.
 
+### Stability Gate Reset Between Challenges
+
+When one challenge completes and the session moves to the next, the stability gate is **only reset for turn challenges** (`turn_left` and `turn_right`). Non-turn challenges (`look_straight`, `blink`, `nod`) leave the gate state intact.
+
+Why: turn challenges require the person to move significantly away from the frontal position, so after a turn challenge the face needs to return to stable frontal position before the next challenge begins. For still challenges (look straight, blink, nod), the person typically remains near-frontal throughout, so resetting the gate would waste time and require the user to pass 10 more stability frames unnecessarily.
+
 ### Constants (in `src/basetruth/kyc/liveness.py`)
 
 | Constant | Value | Meaning |
@@ -286,9 +292,8 @@ Once the counter reaches 10 and the yaw variance check passes, `face_stable: tru
 | `FACE_STABILITY_AREA_MIN` | 0.06 | Minimum face area (6%) for the stability gate |
 | `FACE_STABILITY_X_MIN` / `X_MAX` | 0.35 / 0.65 | Horizontal centering band |
 | `FACE_STABILITY_Y_MIN` / `Y_MAX` | 0.30 / 0.70 | Vertical centering band |
-| `FACE_STABILITY_YAW_MAX` | 0.08 | Maximum absolute yaw before challenges (~±5°) |
-| `FACE_STABILITY_PITCH_MAX` | 0.08 | Maximum absolute pitch before challenges (~±5°) |
-| `FACE_STABILITY_YAW_VARIANCE_MIN` | 0.0002 | Minimum yaw variance over stability window (micro-movement check) |
+| `FACE_STABILITY_YAW_MAX` | 0.12 | Maximum absolute yaw before challenges (~±7°); pitch is intentionally not checked (see note above) |
+| `FACE_STABILITY_YAW_VARIANCE_MIN` | 1×10⁻⁶ | Minimum yaw variance over stability window (micro-movement check); calibrated for 5-point landmark formula |
 | `FACE_STABILITY_YAW_JITTER_ALTERNATION_MAX` | 0.80 | Maximum fraction of alternating yaw diffs before jitter is flagged as artificial |
 | `MIN_FACE_TEXTURE_SCORE` | 18.0 | Minimum local texture richness score in normal light |
 | `LOW_BRIGHTNESS_THRESHOLD` | 80 | Brightness mean below which the relaxed texture threshold applies |
@@ -296,6 +301,12 @@ Once the counter reaches 10 and the yaw variance check passes, `face_stable: tru
 | `CHALLENGE_TIMEOUT_SECONDS` | 10.0 | Seconds before a challenge that has not been completed resets |
 | `MIN_FACE_DETECTION_CONFIDENCE` | 0.55 | Minimum confidence during active challenges |
 | `MIN_FACE_AREA_RATIO` | 0.05 | Minimum face area (5%) at all times during active challenges |
+| `_NOD_DOWN_DELTA` | 0.08 | Minimum pitch deviation from baseline to count as a nod (gentle chin-dip) |
+| `_NOD_HOLD_FRAMES` | 6 | Consecutive frames of sustained nod position required (~0.6 s at 10 FPS) |
+| `_NOD_BASELINE_FRAMES` | 3 | Frames at challenge start used to compute the neutral-pitch baseline |
+| `_STRAIGHT_STABLE_FRAMES` | 10 | Consecutive centred + frontal frames required for look_straight (~1 s at 10 FPS) |
+| `_STRAIGHT_X_MIN` / `X_MAX` | 0.40 / 0.60 | Horizontal centering band for look_straight |
+| `_STRAIGHT_YAW_MAX` | 0.12 | Maximum absolute yaw accepted during look_straight |
 
 ---
 
@@ -342,12 +353,18 @@ This challenge asks the person to face the camera directly and hold still.
 It is optional but useful — when it passes, the server saves the current frame as the best face capture for the session.
 
 How it detects this:
-It looks at the nose's horizontal position within the face bounding box across the last 3 consecutive frames.
-The nose must stay between 40% and 60% of the face width (roughly centred) for all 3 of those frames.
-3 frames at 10 FPS takes about 300 milliseconds.
+It looks at the nose's horizontal position within the face bounding box across the last **10 consecutive frames** (`_STRAIGHT_STABLE_FRAMES = 10`).
+All 10 frames must satisfy three conditions simultaneously:
+
+1. **Horizontal centering** — nose stays between 40% and 60% of the face width (roughly centred).
+2. **Low yaw** — nose is no more than 0.12 away from the eye midpoint (direct measure of head rotation; catches a face that is centred yet still rotated sideways).
+3. **Detection confidence** ≥ 0.65 — rejects blurry or marginal detections so the saved selfie is always a clean shot.
+
+10 frames at 10 FPS takes about 1 second of steady hold.
 
 If the nose is too far left, the feedback says "Move slightly to YOUR right to centre."
 If the nose is too far right, the feedback says "Move slightly to YOUR left to centre."
+If the yaw is too large (head is rotated), the feedback says "Look directly into the camera lens…"
 
 ### Blink
 
@@ -372,16 +389,23 @@ This is enough to capture the baseline, dip, and reopen.
 
 ### Nod
 
-This challenge asks the person to nod their head down and back up.
+This challenge asks the person to gently tilt their chin down toward their chest.
+No return-to-neutral is required — once the hold is met the challenge passes immediately.
 
-How it detects this:
-It watches the pitch measurement (how far the nose is below the eye midpoint).
-When you nod your chin down, the nose drops further below the eyes, increasing the pitch.
-When you bring your head back up, the pitch decreases.
+How it detects this (hold-based approach):
+1. **Baseline** — the server records the neutral pitch from the first 3 challenge frames (the user was just looking straight after the stability gate).
+2. **Threshold** — pitch must deviate from that baseline by at least **0.08** (`_NOD_DOWN_DELTA = 0.08`). This is a gentle chin-dip; the user does not need to bend far down.
+3. **Hold** — the server finds the longest contiguous run of frames where the deviation is ≥ 0.08. That run must reach **6 consecutive frames** (`_NOD_HOLD_FRAMES = 6`) — approximately 0.6 seconds at 10 FPS.
+4. **Direction-agnostic** — both positive and negative pitch deviations are accepted, because different camera heights produce different pitch directions for the same "chin down" motion.
 
-The system checks the last 4 frames and measures the range: (maximum pitch minus minimum pitch).
-If that range is at least 0.12 (meaning the nose moved at least 12% of the eye-to-eye distance up and down), the nod is detected.
-4 frames at 10 FPS takes about 400 milliseconds — long enough to catch a real nod.
+Once the 6-frame hold quota is met, the challenge passes and a green flash signals completion.
+
+Wrong-motion guard: if the person shakes their head side-to-side (yaw range much larger than pitch range, yaw range > 0.10), the server detects it as a wrong motion and tells the user to tilt their chin DOWN, not sideways.
+
+Feedback progression:
+- Before any deviation: **"Gently tilt your chin down…"**
+- Once deviation starts building: **"Keep looking down… (N more frames)"**
+- Hold quota met: **"✅ Nod completed!"
 
 ### Turn Left
 
@@ -394,13 +418,16 @@ When you turn left, the nose moves toward the left side of the image (away from 
 The check passes if the most negative yaw value seen in the last 20 frames is at or below -0.16
 (meaning the nose has swung at least 16% of the eye-to-eye distance to the left).
 
-There is also a fallback: if the person started centred and the nose shifted left by at least 10% of the face width AND the yaw changed by at least 0.09 from the starting position, that also counts as a turn.
+There is also a fallback: if the person started centred and the nose shifted left by at least **12%** of the face width AND the yaw changed by at least **0.12** from the starting position, that also counts as a turn.
 This fallback helps people who cannot do a large turn due to physical constraints.
+
+The 0.12/0.12 thresholds were tightened from 0.09/0.10 specifically to prevent false passes. After the stability gate passes, the user's face may be resting at a very slightly off-centre baseline. Drifting back to neutral from that starting pose could accumulate a small delta, which at the older looser thresholds would incorrectly register as a successful turn. The tighter thresholds require a clear deliberate turn, not just a return-to-centre drift.
 
 ### Turn Right
 
 Exactly the same logic as Turn Left, but in the opposite direction.
 Yaw must reach at least +0.16 (nose swung to the right).
+The relative-delta fallback also requires at least 0.12 yaw delta and 0.12 nose shift (same tightened thresholds as turn left).
 
 ---
 
@@ -431,7 +458,7 @@ Natural lighting has small stable fluctuations. A screen being filmed flickers w
 
     Final replay score = 70% x repeat frame score + 30% x flicker score
 
-### Check 2 — Movement Consistency (weight: 25%)
+### Check 2 — Movement Consistency (weight: 7%)
 
 This checks whether the head movements during the challenges look smooth and natural, or jerky and unnatural.
 
@@ -442,13 +469,65 @@ If your speed changes smoothly, that is natural human motion. If your speed chan
 
 Formally: jerk = average of |change in (change in yaw)| across consecutive frames.
 
-A real person moving their head: the jerk will be low, because human muscles produce smooth, continuous movements.
-A static photo being physically moved or a looped video: the detector measurements jump erratically because the face tracking loses and re-acquires the face at random positions, producing high jerk.
-
 Important: this check only uses frames from still challenges (Look Straight and Blink).
 During turn and nod challenges, the person is intentionally accelerating and decelerating, which naturally produces high jerk even for a real person.
 Using those frames for this check would give false alarms.
 Restricting to still challenges means we are only measuring jitter in frames where a real face should be almost completely motionless.
+
+This check now detects **two distinct attack patterns**, not just one:
+
+**High-jitter risk (replay loops):** A looped or injected video stream sometimes causes erratic, unnaturally high jerk because the face tracking jumps between positions at fixed intervals. This is captured by the existing formula `score = jerk × 240 + ...`.
+
+**Stillness risk (static photographs):** A live person at rest always has micro-tremors from breathing and natural head sway. These produce a combined (yaw + pitch + nose) jitter of at least ~0.025. A static photograph held in front of the camera produces only face-detector rounding noise, which lands below 0.020 combined. If the combined jitter across the still-challenge group falls below a **liveness floor of 0.025**, a proportional stillness-risk penalty is added — up to 55 points at absolute zero motion. This means a static photo used for Look Straight will raise the temporal risk score substantially, pushing the overall risk score above the SUSPICIOUS threshold when the replay check is also elevated.
+
+In the real-world hybrid Attack 1 (static photo for Look Straight, `combined_jitter ≈ 0.014`): `stillness_risk ≈ 24 points`. This raises the temporal score from ~4 to ~28.
+
+In the harder **hybrid Attack 2** (static photo for Look Straight + many wrong-motion attempts diluting overall replay), `combined_jitter ≈ 0.024` is just barely below the liveness floor, so the stillness penalty only adds ~3 points. The temporal weight is 7% (reduced from 22%), so this check alone cannot push the score over SUSPICIOUS. The **Still-Challenge Replay check (Check 2b)** covers this gap instead.
+
+    Temporal score = replay_jitter_risk + stillness_risk
+    where:
+        replay_jitter_risk = (yaw_jerk × 240) + (pitch_jerk × 240) + (nose_jitter × 320)
+        stillness_risk     = max(0, liveness_floor − combined_jitter) / liveness_floor × 55
+        liveness_floor     = 0.025 (minimum expected combined jitter for a live person at rest)
+
+### Check 2b — Still-Challenge Replay (weight: 15%)
+
+This is the primary defence against the hybrid attack where a static photo is held for the Look Straight challenge while the real person performs the motion challenges.
+
+**Why a dedicated check is needed:**  
+The overall Replay Detection check (Check 1) operates on *all session frames*. When 9 wrong-motion attempts are made before passing a turn challenge, the 30+ genuine motion frames produce varied hashes that pull the session-wide `repeat_frame_score` below 50, preventing the Check 1 SUSPICIOUS gate from firing — even though the 15 Look Straight photo frames are near-identical.
+
+**Per-challenge scoring (the key architectural change):**  
+Every completed challenge is now scored independently in its own frame window. For still challenges (Look Straight and Blink), both temporal jitter and replay heuristics are computed on only that challenge's frames. For motion challenges (Nod, Turn Left, Turn Right), only replay is computed (temporal jitter during intentional motion is naturally high for any genuine person).
+
+Scoring each challenge independently means:
+- A clean blink window cannot dilute the score of a suspicious look_straight window, or vice versa.
+- A looped Turn Left window is detected even if Look Straight was genuine.
+- The session result always reflects the *worst* single challenge — the most suspicious evidence window.
+
+The session-level `temporal` and `still_replay` scores used in the risk formula are taken from the worst (highest-risk) single still-challenge, not a pooled average.
+
+**Per-challenge SUSPICIOUS gate (asymmetric thresholds):**  
+Because still and motion challenges have fundamentally different natural replay baselines, the gate uses different thresholds for each type:
+
+- **Still challenges** (`look_straight`, `blink`): `combined_risk ≥ 50` → SUSPICIOUS.
+  A breathing, blinking person sitting in front of the camera always has enough micro-movement (head sway, expression changes, detector noise) to keep per-still-challenge replay well below 50%. Any score above this floor is therefore very unlikely to be innocent.
+  Combined formula: `40% × temporal_score + 60% × replay_score`
+
+- **Motion challenges** (`nod`, `turn_left`, `turn_right`): `combined_risk ≥ 70` → SUSPICIOUS.
+  During a nod or turn the subject must hold the confirmed position for the camera to register it. That hold phase produces several consecutive near-identical frames, naturally pushing `repeat_frame_score` into the 50–65 range even for a completely genuine person. Setting the threshold at 70% eliminates these false positives while still catching a looped or replayed motion challenge video, which produces 90–100% near-identical pairs.
+  Combined formula: `100% × replay_score` (temporal is excluded — see verdict table notes above)
+
+**Hard gate (independent of overall risk score):**  
+If `repeat_frame_score ≥ 70%` *and* at least 8 frames were captured in the worst still-challenge window, the verdict is automatically SUSPICIOUS regardless of the overall risk score. A live person breathing during look_straight never produces 70%+ near-identical frame pairs; only a static photo source does. The frame-count guard (≥ 8) prevents accidental hash collisions in very short windows from triggering this gate.
+
+**Evidence — named challenge:**  
+When any challenge fires the suspicious gate, the evidence bullets name the exact challenge and explain why: e.g. *"Challenge 'Look Straight' was flagged suspicious (score=82/100): 95% of frame pairs were near-identical (expected < 30% for a live face) — static photo suspected."*
+
+    Per-challenge combined_risk:
+        still challenge = 40% × temporal_score + 60% × replay_score
+        motion challenge = 100% × replay_score
+    Hard gate: worst_still_challenge.repeat_frame_score ≥ 70 AND frames_used ≥ 8 → SUSPICIOUS
 
 ### Check 3 — Image Quality (weight: 10%)
 
@@ -458,9 +537,11 @@ How it works:
 It averages the blur score, brightness balance, and face size ratio across all frames.
 - Blur risk: same as the static check — low edge variance = blurry = high blur risk.
 - Brightness risk: same as static — too dark or too bright = high risk.
-- Face size risk: same as static — face too small in the frame = high risk.
+- Face size risk (live-calibrated): the scale is calibrated for the live session oval, not for photos. Real sessions where the person fills the browser oval have a face area ratio of roughly 7–12% of the frame. The scoring scale is (0.05, 0.10): face area at or below 5% scores risk 100, face area at or above 10% scores risk 0. This is intentionally tighter than the static photo scale because the oval guides the user to a predictable framing — if the face is genuinely small during a live session, it means the person is too far away or not positioned in the oval.
 
     Quality risk = 50% x blur risk + 30% x brightness risk + 20% x face size risk
+
+The narrative reports "face too small in frame" when face size risk reaches 50 or above (face area below ~7.5%). At normal webcam distance with the face filling the oval, the face area ratio is above 10%, which scores 0 risk and suppresses this warning entirely.
 
 This does not affect the verdict directly; it mainly reduces the confidence score.
 
@@ -481,7 +562,7 @@ It calculates the standard deviation of that residual for each of the four coord
 - Standard deviation above 0.003 to 0.004 — normal live eye movement — low risk.
 - Standard deviation below 0.0005 — eyes are suspiciously frozen — high stillness risk.
 
-### Check 5 — Screen Frequency Pattern (weight: 5%)
+### Check 5 — Screen Frequency Pattern (weight: 4%)
 
 This checks whether the face was being filmed from a phone or computer screen rather than in real life.
 
@@ -501,7 +582,7 @@ The system averages the concentration ratio across all measured frames.
 - Mean ratio below 0.20 — looks like a real face — no additional risk.
 - Mean ratio above 0.40 — looks like a filmed screen — high screen risk.
 
-### Check 6 — Frame Delivery Timing (weight: 3%)
+### Check 6 — Frame Delivery Timing (weight: 1%)
 
 This checks whether frames arrived at suspiciously uniform intervals — a sign that a replay tool is sending them rather than a real browser.
 
@@ -519,7 +600,7 @@ A replay injection tool: it sends frames at a perfectly fixed interval, like a m
 
 Gaps larger than 2 seconds are excluded (those are reconnection pauses, not the normal delivery rhythm).
 
-### Check 7 — 3D Depth Consistency (weight: 2%)
+### Check 7 — 3D Depth Consistency (weight: 8%)
 
 This checks whether the face has real 3D depth by watching how the eye separation changes during head turns.
 
@@ -534,9 +615,17 @@ The system looks at all the frames captured during turn challenges.
 For each frame, it records how much the head has turned (yaw) and the eye separation ratio (distance between eyes divided by face width).
 It then computes the Pearson correlation between these two series.
 
-- Strong negative correlation (below -0.30): as the head turned more, eye separation shrank — real 3D face — low risk.
+- Strong negative correlation (below -0.50): as the head turned more, eye separation shrank — real 3D face — low risk.
+- Correlation between -0.50 and 0.00: shallow or absent depth — borderline source (e.g. a close-fitting 3D-printed mask or a doll) — moderate to high risk.
 - Correlation near zero or positive: eye separation did not decrease even when the head turned — flat source — high risk.
 - If the eye separation never changes at all across all turn frames — that is extremely suspicious — risk score of 80 immediately.
+
+The risk formula is: `flat_face_risk = scale(correlation + 1.0, 0.50, 1.00)`. This was calibrated against real session data:
+- Real human faces: `iod_yaw_correlation` typically −0.40 to −0.99 → risk 0.
+- Plastic doll (shallow 3D, measured at −0.12): risk ≈ 77 → SUSPICIOUS.
+- Flat photo or mask (correlation ≈ 0 to +0.30): risk 100 → SUSPICIOUS.
+
+The previous (0.70, 1.20) calibration was too lenient — a plastic doll scored only ~37, staying below the 65-point SUSPICIOUS threshold.
 
 This check is skipped entirely if no turn challenges were included in the session.
 
@@ -557,17 +646,60 @@ This flag does not change the risk score directly, but it appears in the evidenc
 
 ## How the Final Live Risk Score Is Calculated
 
-Once all challenges are done and all seven checks have run, the risk score is:
+Once all challenges are done and all seven checks have run, the heuristic risk score is:
 
-    Risk score = (50% x replay) + (25% x consistency) + (10% x quality risk) + (5% x eye jitter) + (5% x screen) + (3% x timing) + (2% x depth)
+    Risk score = (50% × replay) + (7% × temporal) + (15% × still_replay) + (10% × quality) + (5% × eye_jitter) + (4% × screen_fft) + (1% × timing) + (8% × depth)
+    Weights: 0.50 + 0.07 + 0.15 + 0.10 + 0.05 + 0.04 + 0.01 + 0.08 = 1.00
 
 All scores are 0–100. The total is clamped between 0 and 100.
 
-Weights are empirically tuned based on internal testing and observed fraud patterns. Replay carries the largest share because repeated-frame injection is both the most common attack vector and the most directly measurable signal. The four newer signals (eye jitter, screen frequency, timing, depth) carry small shares because sessions that lack the required challenges score 0 on those checks — keeping the scale fair for shorter sessions.
+| Signal | Weight | Why this weight |
+|---|---|---|
+| Replay (session-wide) | 50% | Repeated-frame injection is the most common and most directly measurable attack vector. Session-wide scope catches looped video that spans the whole session. |
+| Still-Challenge Replay | 15% | Isolates replay specifically within Look Straight and Blink windows. Prevents dilution by genuine motion frames in hybrid attacks (e.g. photo for look_straight + live person for turns). |
+| Temporal consistency | 7% | Reduced from 22% because `still_replay` now covers the overlap. Temporal still contributes the stillness-risk penalty for near-zero jitter (static photo signal). |
+| Image quality | 10% | Poor quality (blur, lighting) can mask the other checks; factoring it in reduces false confidence. |
+| Eye micro-jitter | 5% | Sessions without the correct challenge produce 0 on this check — kept small so short sessions are not penalised. |
+| Screen frequency | 4% | Reliable when a screen is filmed; absent for non-screen attacks. Small weight for consistency. |
+| Frame delivery timing | 1% | Very small because many legitimate setups (screen recorders, remote desktop) naturally produce metronomic timing even when the user is genuine. |
+| 3D depth | 8% | Strong signal against flat-face attacks; skipped (0 risk) for sessions with no turn challenges. |
 
-Replay is weighted most heavily because it is the most reliable and direct signal of a fraud attempt.
-The four newer signals (eye jitter, screen, timing, depth) each contribute a small share so that sessions without those specific challenges do not get unfairly penalised.
-For example, a session with no turn challenges scores 0 on depth, which adds zero risk.
+### Phase 1 — XGBoost ML Scorer (active, cold-start mode)
+
+A machine-learning risk scorer (`src/basetruth/face_scan/ml_scorer_live.py`) has been implemented alongside the heuristic formula.
+It uses the same 20 signals as inputs and trains an XGBoost binary classifier (genuine=0, spoof=1) to learn optimal weights from labeled session data.
+
+How it works:
+- When the model file `fraud_model/models/ml_scorer_face_scan_live.pkl` exists, the ML model replaces the fixed-weight heuristic formula and returns a spoof probability (0–1) converted to a 0–100 risk score.
+- When the model file does not exist (cold-start, before enough training data has been collected), the heuristic formula above runs unchanged. The `scoring_method` field in the result JSON shows `"ML"` or `"heuristic"` so operators can see which mode is active.
+- Every completed session — regardless of verdict — is appended as a row to `fraud_model/data/training_data_face_scan_live.csv`. The CSV stores all 20 feature values plus the system verdict and a `label` column (−1 = unconfirmed, 0 = confirmed genuine, 1 = confirmed spoof).
+- Once enough verified examples are collected (~50 minimum, 500+ for production), the model is trained by running: `src/basetruth/face_scan/ml_scorer_live.py train`. A 5-fold stratified cross-validation is run and the model is saved only if ROC AUC ≥ 0.75.
+- SHAP feature contributions are supported via `explain(feature_vector)` — the same pattern as the image document ML scorer.
+
+The 20 features the ML scorer uses:
+
+| Feature | Source check |
+|---|---|
+| `yaw_jerk` | Temporal consistency |
+| `pitch_jerk` | Temporal consistency |
+| `nose_jitter` | Temporal consistency |
+| `temporal_consistency_score` | Temporal consistency |
+| `repeat_frame_score` | Replay heuristics |
+| `flicker_score` | Replay heuristics |
+| `brightness_instability` | Replay heuristics |
+| `mean_eye_jitter` | Eye micro-jitter |
+| `iod_yaw_correlation` | 3D depth consistency |
+| `mean_fft_grid_peak` | Screen frequency |
+| `interval_cv` | Frame delivery timing |
+| `observed_fps` | Session environment |
+| `frame_drop_rate` | Session environment |
+| `mean_face_area_ratio` | Quality assessment |
+| `blur_risk_0_100` | Quality assessment |
+| `brightness_risk_0_100` | Quality assessment |
+| `wrong_action_count` | Active liveness |
+| `challenge_count` | Active liveness |
+| `frames_without_face` | Face detection |
+| `virtual_camera_suspected` | Virtual camera flag |
 
 ### Confidence Score (Live)
 
@@ -579,13 +711,36 @@ Confidence is clamped between 5 and 99.
 
 ### Verdict Thresholds (Live)
 
-| Condition checked in order | Verdict |
-|---|---|
-| Challenges were not all completed | LIVENESS_FAILED |
-| Confidence below 35 | INCONCLUSIVE |
-| Replay score above 80 | DEEPFAKE |
-| Replay score OR consistency score is 50 or above | SUSPICIOUS |
-| Everything else | GENUINE |
+Conditions are evaluated **in this exact order**. The first match wins.
+
+| Step | Condition | Verdict | Notes |
+|---|---|---|---|
+| 1 | Not all challenges completed | LIVENESS_FAILED | Session abandoned or timed out |
+| 2 | `confidence < 35` | INCONCLUSIVE | Image or tracking quality too poor to decide |
+| 3 | `replay_score > 80` | DEEPFAKE | Extremely high session-wide repeated frames — near-certainty of looped source |
+| 4 | **Per-challenge gate** — any still challenge (`look_straight`, `blink`) has `combined_risk ≥ 50`, **or** any motion challenge (`nod`, `turn_left`, `turn_right`) has `combined_risk ≥ 70` | SUSPICIOUS | Still threshold is 50: even moderate repeat frames in a still window are suspicious (a breathing person never holds steady enough to hit 50%). Motion threshold is raised to 70 because the hold phase of a genuine nod or turn naturally produces 50–65% repeat frames — requiring 70% eliminates these false positives while still catching looped motion video. |
+| 5 | `max(replay_score, temporal_score, still_replay_score) ≥ 50` **AND** `risk_score ≥ 35` | SUSPICIOUS | Belt-and-braces: any one strongly elevated sub-score, corroborated by a 35+ overall risk. The `still_replay_score` is included so a photo used for `look_straight` (which drives still_replay very high) is caught here even if overall session replay is diluted by genuine motion frames. The `risk_score ≥ 35` guard prevents isolated spikes (e.g. dark-room hash collisions) from triggering SUSPICIOUS in an otherwise clean session. |
+| 6 | **Hard still-replay gate** — `still_replay.repeat_frame_score ≥ 70` **AND** `still_frames_used ≥ 8` | SUSPICIOUS | No risk_score guard needed: 70%+ of 300 ms-apart pairs near-identical within the worst still-challenge window is virtually impossible for a live person. The frame-count condition (≥ 8) prevents spurious collisions in very short windows from triggering this gate. |
+| 7 | `depth_score ≥ 65` | SUSPICIOUS | Flat-face gate: turn challenges completed but 3D IOD change is near zero — consistent with a physical photo or flat object being moved in front of the camera. |
+| 8 | None of the above | GENUINE | — |
+
+**Per-challenge combined_risk formula (used in step 4):**
+
+    Still challenge  (look_straight, blink):  combined_risk = 40% × temporal_score + 60% × replay_score
+    Motion challenge (nod, turn_left, turn_right): combined_risk = 100% × replay_score
+
+Temporal score is excluded from motion challenges because intentional acceleration and deceleration during a turn or nod naturally produces high jitter even for a genuinely live person — using temporal there would cause constant false alarms.
+
+**Worked examples:**
+
+| Scenario | Key scores | Gate that fires | Verdict |
+|---|---|---|---|
+| Live person, all clear | replay=8, still_replay=12, temporal=5, risk=9 | None | GENUINE |
+| Genuine nod, hold phase (57% repeat) | nod combined_risk=57 (< 70 motion gate), risk=27 | None | GENUINE |
+| Photo for look_straight, live for rest | look_straight combined_risk=64 (≥ 50 still gate) | Step 4 | SUSPICIOUS |
+| Photo for look_straight (few frames), live motion fills session | still_replay=85, risk=38 | Step 5 (still_replay ≥ 50 AND risk ≥ 35) | SUSPICIOUS |
+| Full replay loop, all challenges looped | replay=91 | Step 3 | DEEPFAKE |
+| Flat photo tilted for turns, zero IOD change | depth=78 | Step 7 | SUSPICIOUS |
 
 ---
 
@@ -651,13 +806,16 @@ The static and live modes use independent analysis pipelines because the availab
 | Static photo check logic | src/basetruth/face_scan/service.py |
 | Live session orchestration, all 7 checks, browser page HTML | src/basetruth/face_scan/live.py |
 | Challenge pass/fail logic (blink, nod, turns, look straight, stability gate) | src/basetruth/kyc/liveness.py |
-| Session state (face_stable_frames counter, challenge history) | src/basetruth/kyc/session.py |
-| Face Scan live session state (face_stable_frames counter) | src/basetruth/face_scan/live.py |
-| Session state (face_stable_frames counter, challenge history) | src/basetruth/kyc/session.py |
+| Face Scan live session state (face_stable_frames counter, challenge history) | src/basetruth/face_scan/live.py |
+| XGBoost ML scorer: feature extraction, predict(), train(), explain(), CSV append | src/basetruth/face_scan/ml_scorer_live.py |
+| Plain-English narrative generation (Gemma4 LLM + rule-based fallback) | src/basetruth/face_scan/narrative.py |
 | Face detection (InsightFace + MediaPipe fallback) | src/basetruth/vision/face.py |
 | API routes (session create, WebSocket, result fetch) | src/basetruth/api.py |
 | Streamlit UI page (two tabs, challenge picker, result display) | src/basetruth/ui/pages/face_scan.py |
-| Unit tests for live checks | tests/test_face_scan_live.py |
-| Unit tests for challenge detection | tests/test_kyc_liveness.py |
+| Unit tests for live checks and ML scorer | tests/test_face_scan_live.py |
+| Unit tests for challenge detection and stability gate | tests/test_kyc_liveness.py |
 | Unit tests for static scan | tests/test_face_scan_service.py |
 | Unit tests for API routes | tests/test_face_scan_api.py |
+| Unit tests for ML scorer (train, predict, explain, CSV append) | tests/test_ml_scorer_live.py |
+| Labeled training data (one row per completed live session) | fraud_model/data/training_data_face_scan_live.csv |
+| Trained XGBoost model (absent until first training run) | fraud_model/models/ml_scorer_face_scan_live.pkl |

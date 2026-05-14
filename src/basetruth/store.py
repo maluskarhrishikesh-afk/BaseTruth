@@ -2180,7 +2180,7 @@ def get_entity_identity_checks(entity_ref: str) -> List[Dict[str, Any]]:
         return []
 
 
-_DB_VIEWER_TABLES = {"entities", "scans", "document_extractions", "identity_checks", "entity_reports", "video_kyc_checks"}
+_DB_VIEWER_TABLES = {"entities", "scans", "document_extractions", "identity_checks", "entity_reports", "video_kyc_checks", "face_scan_live_results"}
 
 
 def db_table_counts() -> Dict[str, int]:
@@ -2192,6 +2192,7 @@ def db_table_counts() -> Dict[str, int]:
         "identity_checks",
         "entity_reports",
         "video_kyc_checks",
+        "face_scan_live_results",
     )
     counts: Dict[str, int] = {}
     try:
@@ -2285,6 +2286,16 @@ def db_table_rows(table: str, limit: int = 500) -> tuple[List[Dict[str, Any]], i
                     ),
                     {"lim": limit},
                 ).mappings().all()
+            elif table == "face_scan_live_results":
+                # Exclude report_json for fast display — it can be a large JSONB blob.
+                rows_raw = session.execute(
+                    text(
+                        "SELECT id, session_id, verdict, risk_score, confidence, "
+                        "best_frame_key, video_key, created_at, updated_at "
+                        "FROM face_scan_live_results ORDER BY created_at DESC LIMIT :lim"
+                    ),
+                    {"lim": limit},
+                ).mappings().all()
             else:
                 rows_raw = session.execute(
                     text(f"SELECT * FROM {table} ORDER BY id DESC LIMIT :lim"),  # noqa: S608
@@ -2306,7 +2317,8 @@ def reset_db() -> bool:
             session.execute(
                 text(
                     "TRUNCATE TABLE entity_reports, document_extractions, "
-                    "identity_checks, video_kyc_checks, scans, entities "
+                    "identity_checks, video_kyc_checks, scans, entities, "
+                    "face_scan_live_results "
                     "RESTART IDENTITY CASCADE"
                 )
             )
@@ -2326,6 +2338,7 @@ _TRUNCATABLE_TABLES = frozenset({
     "identity_checks",
     "entity_reports",
     "video_kyc_checks",
+    "face_scan_live_results",
 })
 
 
@@ -2370,6 +2383,7 @@ _DB_VIEWER_CRUD_TABLES: frozenset = frozenset({
     "identity_checks",
     "entity_reports",
     "video_kyc_checks",
+    "face_scan_live_results",
 })
 
 # Per-table metadata that drives form generation in database.py.
@@ -2503,6 +2517,23 @@ _DB_VIEWER_TABLE_META: dict = {
             {"name": "second_level_approval_comment","label": "2nd Level Comment",               "ui": "textarea"},
         ],
         "fk": {"entity_id": "entities"},
+        "json_cols": {"report_json"},
+    },
+    # face_scan_live_results stores results of completed Live Face Scan sessions.
+    # session_id is the natural key — one row per browser session.
+    "face_scan_live_results": {
+        "pk": "id",
+        "readonly": {"id", "created_at", "updated_at"},
+        "editable": [
+            {"name": "session_id",    "label": "Session ID",              "ui": "text"},
+            {"name": "verdict",       "label": "Verdict",                  "ui": "select", "choices": ["GENUINE", "SUSPICIOUS", "DEEPFAKE", "INCONCLUSIVE", "LIVENESS_FAILED"]},
+            {"name": "risk_score",   "label": "Risk Score (0–100)",       "ui": "float", "nullable": True},
+            {"name": "confidence",   "label": "Confidence (0–1)",         "ui": "float", "nullable": True},
+            {"name": "best_frame_key","label": "Best Frame MinIO Key",     "ui": "text"},
+            {"name": "video_key",    "label": "Video MinIO Key (MP4)",    "ui": "text"},
+            {"name": "report_json",  "label": "Report JSON",              "ui": "json", "nullable": True},
+        ],
+        "fk": {},
         "json_cols": {"report_json"},
     },
 }
@@ -2827,6 +2858,12 @@ def db_viewer_delete_row(table: str, row_id: int) -> "tuple[bool, str]":
 
 
 _s3_client: Optional[Any] = None
+# Separate client used only for presigning — configured with the external
+# endpoint so the Host header baked into the AWS4 signature matches the
+# hostname the browser will actually use.  Presigning is pure computation;
+# no network connection is made, so using localhost:9000 inside Docker is fine.
+_s3_presign_client: Optional[Any] = None
+
 
 def _get_minio_s3_client() -> Optional[Any]:
     global _s3_client
@@ -2835,10 +2872,10 @@ def _get_minio_s3_client() -> Optional[Any]:
     endpoint = _os.environ.get("MINIO_ENDPOINT", "localhost:9000")
     access_key = _os.environ.get("MINIO_ACCESS_KEY", "minioadmin")
     secret_key = _os.environ.get("MINIO_SECRET_KEY", "minioadmin")
-    
+
     if not endpoint.startswith("http://") and not endpoint.startswith("https://"):
         endpoint = f"http://{endpoint}"
-        
+
     if not (endpoint and access_key and secret_key):
         return None
     try:
@@ -2856,6 +2893,54 @@ def _get_minio_s3_client() -> Optional[Any]:
         return None
     except Exception as exc:
         log.warning("_get_minio_s3_client failed: %s", exc)
+        return None
+
+
+def _get_minio_s3_presign_client() -> Optional[Any]:
+    """Return a boto3 S3 client whose endpoint is the *external* MinIO URL.
+
+    AWS4 signatures include the ``host`` header, so presigned URLs must be
+    signed with the hostname the browser will actually send in its ``Host``
+    header.  Inside Docker the regular client uses ``minio:9000`` (internal),
+    but the browser hits ``localhost:9000`` (external).  Using a dedicated
+    presign client eliminates the SignatureDoesNotMatch error.
+
+    MINIO_EXTERNAL_ENDPOINT is optional — if not set this falls back to the
+    same endpoint as the regular client (which works when both are identical,
+    e.g. in non-Docker local dev).
+
+    Presigning never makes a network request, so creating a client pointed at
+    an unreachable host (from inside Docker) is perfectly safe.
+    """
+    global _s3_presign_client
+    if _s3_presign_client is not None:
+        return _s3_presign_client
+    # Use the external endpoint when available; otherwise fall back to internal.
+    external = _os.environ.get("MINIO_EXTERNAL_ENDPOINT", "").strip()
+    endpoint = external if external else _os.environ.get("MINIO_ENDPOINT", "localhost:9000")
+    access_key = _os.environ.get("MINIO_ACCESS_KEY", "minioadmin")
+    secret_key = _os.environ.get("MINIO_SECRET_KEY", "minioadmin")
+
+    if not endpoint.startswith("http://") and not endpoint.startswith("https://"):
+        endpoint = f"http://{endpoint}"
+
+    if not (endpoint and access_key and secret_key):
+        return None
+    try:
+        import boto3
+        from botocore.config import Config
+        _s3_presign_client = boto3.client(
+            "s3",
+            endpoint_url=endpoint,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            config=Config(signature_version="s3v4"),
+        )
+        return _s3_presign_client
+    except ImportError:
+        return None
+    except Exception as exc:
+        log.warning("_get_minio_s3_presign_client failed: %s", exc)
         return None
 
 
@@ -3059,6 +3144,75 @@ def minio_get_object(key: str) -> Optional[bytes]:
 
 
 # ---------------------------------------------------------------------------
+# Face Scan live video — MinIO helpers
+# ---------------------------------------------------------------------------
+
+def save_face_scan_video(session_id: str, mp4_bytes: bytes) -> str:
+    """Upload the MP4 recording for *session_id* to MinIO and return the object key.
+
+    The key follows the pattern ``face-scan-video/{session_id}.mp4`` so that
+    a MinIO bucket lifecycle rule on the ``face-scan-video/`` prefix can
+    automatically expire recordings after the configured retention window.
+
+    Args:
+        session_id: The live Face Scan session identifier.
+        mp4_bytes: Raw H.264 MP4 bytes produced by encode_frames_to_mp4().
+
+    Returns:
+        The MinIO object key (string), e.g. ``"face-scan-video/abc123.mp4"``.
+
+    Raises:
+        RuntimeError: When the MinIO upload fails so the caller can log the
+            failure and skip recording gracefully (never blocks the verdict).
+    """
+    key = f"face-scan-video/{session_id}.mp4"
+    ok = minio_upload(key, mp4_bytes, content_type="video/mp4")
+    if not ok:
+        raise RuntimeError(f"MinIO upload failed for face-scan video key: {key}")
+    return key
+
+
+def get_face_scan_video_presigned_url(key: str, expires_seconds: int = 3600) -> Optional[str]:
+    """Return a time-limited presigned GET URL for a face-scan video object.
+
+    Presigned URLs expire after *expires_seconds* (default 1 hour). This is
+    intentionally short: biometric video is sensitive data and should not be
+    permanently accessible via a static link.
+
+    Uses the dedicated presign client (configured with MINIO_EXTERNAL_ENDPOINT)
+    so the Host header baked into the AWS4 signature matches what the user's
+    browser sends — avoiding SignatureDoesNotMatch errors when MinIO runs inside
+    Docker with an internal hostname.
+
+    Returns None when the key does not exist in MinIO or MinIO is unavailable.
+    Never raises.
+    """
+    bucket = _os.environ.get("MINIO_BUCKET", "basetruth-reports")
+    client = _get_minio_s3_presign_client()
+    if client is None:
+        return None
+    try:
+        url = client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": bucket, "Key": key},
+            ExpiresIn=expires_seconds,
+        )
+        return url
+    except Exception as exc:
+        log.warning("get_face_scan_video_presigned_url(%s) failed: %s", key, exc)
+        return None
+
+
+def delete_face_scan_video(key: str) -> bool:
+    """Delete the face-scan video object from MinIO.
+
+    Returns True on success (or when the object did not exist).
+    Returns False on unexpected errors. Never raises.
+    """
+    return minio_delete_object(key)
+
+
+# ---------------------------------------------------------------------------
 # MinIO docs bucket — stores platform reference files (DATABASE.md, prompts,
 # etc.) so that Docker containers can always load the latest versions even
 # when the docs/ directory is not mounted into the container filesystem.
@@ -3165,6 +3319,26 @@ def minio_list_docs_objects(limit: int = 200) -> List[Dict[str, Any]]:
     except Exception as exc:
         log.warning("minio_list_docs_objects failed: %s", exc)
         return []
+
+
+def minio_docs_delete(key: str) -> bool:
+    """Delete a single object from the 'basetruth-docs' MinIO bucket.
+
+    Returns True on success or when the object did not exist.
+    Returns False on unexpected errors (e.g. MinIO unavailable).
+    Never raises — callers can always rely on the boolean return value.
+    """
+    client = _get_minio_s3_client()
+    if client is None:
+        log.warning("minio_docs_delete: no S3 client — MinIO not configured")
+        return False
+    try:
+        client.delete_object(Bucket=_DOCS_BUCKET, Key=key)
+        log.info("minio_docs_delete: deleted '%s' from '%s'", key, _DOCS_BUCKET)
+        return True
+    except Exception as exc:
+        log.warning("minio_docs_delete(%s) failed: %s", key, exc)
+        return False
 
 
 def get_all_entities_with_scans(limit: int = 200) -> List[Dict[str, Any]]:

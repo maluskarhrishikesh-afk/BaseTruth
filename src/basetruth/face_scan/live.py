@@ -12,6 +12,7 @@ import base64
 import binascii
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+import os
 import secrets
 import threading
 import time
@@ -75,6 +76,11 @@ REPLAY_ABORT_SCORE_THRESHOLD: float = 80.0
 # give them a clean window before the abort clock starts counting again.
 CHALLENGE_TRANSITION_GRACE_SECONDS: float = 2.5
 
+# Hard cap on the raw_frame_buffer used for video recording.
+# At 10 FPS × 30 KB/frame × 2 min = ~36 MB worst-case per session.
+# When this cap is reached the oldest frames are dropped (sliding window).
+MAX_FRAME_BUFFER: int = 1200
+
 DEFAULT_FACE_SCAN_CHALLENGES: List[str] = ["blink", "nod", "turn_left", "turn_right"]
 FACE_SCAN_CHALLENGE_LABELS: Dict[str, str] = {
     "look_straight": "LOOK AT THE CAMERA",
@@ -86,9 +92,9 @@ FACE_SCAN_CHALLENGE_LABELS: Dict[str, str] = {
 FACE_SCAN_CHALLENGE_INSTRUCTIONS: Dict[str, str] = {
     "look_straight": "Look into the camera and hold still — your face will be captured automatically.",
     "blink": "Blink naturally — close both eyes fully and open them. We need 2 blinks.",
-    "turn_left": "Slowly turn your head to YOUR LEFT. Hold that position. Then look straight ahead.",
-    "turn_right": "Slowly turn your head to YOUR RIGHT. Hold that position. Then look straight ahead.",
-    "nod": "Slowly look DOWN — tilt your chin toward your chest. Hold it. Then look back up.",
+    "turn_left": "Slowly turn your head to YOUR LEFT and hold it. You will see a green light and hear a beep when done — no need to look back.",
+    "turn_right": "Slowly turn your head to YOUR RIGHT and hold it. You will see a green light and hear a beep when done — no need to look back.",
+    "nod": "Slowly tilt your chin DOWN. Hold it until you see a green light and hear a beep — then you're done.",
 }
 
 # Per-challenge timeout overrides (seconds).  Hold-and-return challenges need more
@@ -114,6 +120,11 @@ _VIRTUAL_CAMERA_TOKENS: frozenset = frozenset({
     "mmhmm", "iriun", "camo", "e2esim",
     "ndi virtual input", "wirecast", "logitech capture",
 })
+
+# Challenges where the subject must hold still. Temporal jitter and still-replay
+# checks only apply to these windows; during motion challenges the intentional
+# acceleration / deceleration naturally produces high jerk for any genuine person.
+_STILL_CHALLENGES: frozenset = frozenset({"look_straight", "blink"})
 
 _FACE_SCAN_LIVE_PAGE_HTML = """<!DOCTYPE html>
 <html lang=\"en\">
@@ -142,6 +153,11 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
 .res-title{font-size:1.1rem;font-weight:800;margin-bottom:.45rem}
 .res-meta{font-size:.82rem;color:#94a3b8;line-height:1.7}
 .list{margin-top:.8rem;padding-left:1.05rem;color:#cbd5e1;line-height:1.65;font-size:.84rem}
+.flash-overlay{position:absolute;inset:0;border-radius:12px;background:rgba(34,197,94,0);pointer-events:none}
+@keyframes greenFlash{0%{background:rgba(34,197,94,.50)}100%{background:rgba(34,197,94,0)}}
+.flash-overlay.active{animation:greenFlash .65s ease-out forwards}
+.oval-pulse{border-color:rgba(34,197,94,.9)!important;box-shadow:0 0 22px 8px rgba(34,197,94,.55)}
+.consent-notice{font-size:.78rem;color:#94a3b8;line-height:1.55;margin-top:.75rem;padding:.65rem .8rem;background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.22);border-radius:8px}
 </style>
 </head>
 <body>
@@ -150,10 +166,11 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
     <div id=\"intro\" class=\"card\">
         <h2 style=\"font-size:1.12rem;font-weight:700;margin-bottom:.5rem\">Live Face Authenticity Check</h2>
         <p style=\"font-size:.84rem;color:#94a3b8;line-height:1.6\">Complete the short camera challenge. BaseTruth will verify liveness, temporal consistency, and replay heuristics from your live session.</p>
+        <p class=\"consent-notice\">⚠️ This session may be recorded for fraud investigation and system testing purposes. Recordings are stored securely and deleted automatically after __RETENTION_DAYS__ days. By continuing you consent to this recording.</p>
         <button id=\"btn-start\" class=\"btn\">Start Live Face Scan</button>
     </div>
     <div id=\"live\" class=\"card\" style=\"display:none\">
-        <div class=\"video-wrap\"><video id=\"vid\" autoplay muted playsinline></video><div class=\"oval\"></div><div class=\"badge\" id=\"face-badge\">Searching...</div></div>
+        <div class=\"video-wrap\"><video id=\"vid\" autoplay muted playsinline></video><div class=\"oval\" id=\"oval\"></div><div class=\"badge\" id=\"face-badge\">Searching...</div><div id=\"flash-overlay\" class=\"flash-overlay\"></div></div>
         <div class=\"ch-card\"><div class=\"ch-label\" id=\"ch-label\">Please wait...</div><div class=\"ch-inst\" id=\"ch-inst\">Starting camera...</div><div class=\"prog-wrap\"><div id=\"prog-fill\" class=\"prog-fill\" style=\"width:0%\"></div></div></div>
         <div class=\"fb\" id=\"fb\"></div>
     </div>
@@ -163,7 +180,7 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
 const SESSION_ID = '__SESSION_ID__';
 const CHALLENGES = __CHALLENGES_JSON__;
 const LABELS = {look_straight:'LOOK AT THE CAMERA', blink:'BLINK ONCE', turn_left:'TURN TO YOUR LEFT', turn_right:'TURN TO YOUR RIGHT', nod:'NOD ONCE'};
-const INSTR = {look_straight:'Look into the camera and hold still — your face will be captured automatically.', blink:'Blink once: slowly close both eyes completely, then open them wide.', turn_left:'Slowly turn your head to YOUR left. Hold the turn briefly, then return.', turn_right:'Slowly turn your head to YOUR right. Hold the turn briefly, then return.', nod:'Slowly nod your head down once, then look back at the camera.'};
+const INSTR = {look_straight:'Look into the camera and hold still — your face will be captured automatically.', blink:'Blink once: slowly close both eyes completely, then open them wide.', turn_left:'Slowly turn your head to YOUR left. Hold it until you see a green light and hear a beep.', turn_right:'Slowly turn your head to YOUR right. Hold it until you see a green light and hear a beep.', nod:'Slowly tilt your chin DOWN and hold it. You will see a green light and hear a beep when done — no need to look back up.'};
 let ws=null, stream=null, captureTimer=null, reconnectTimer=null;
 const CAPTURE_MS = 100;
 const RECONNECT_DELAY_MS = 1200;
@@ -175,6 +192,38 @@ let sessionFinished = false;
 // to read it before the next frame status overwrites it.
 const STICKY_HOLD_MS = 2500;
 let stickyFeedbackUntil = 0;
+
+// Play a short confirmation beep so the user hears success even when turned away
+// from the screen (e.g. during turn-left / turn-right challenges).
+function playBeep(){
+    try{
+        const ctx=new(window.AudioContext||window.webkitAudioContext)();
+        const osc=ctx.createOscillator();
+        const gain=ctx.createGain();
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.type='sine'; osc.frequency.value=880;
+        gain.gain.setValueAtTime(0.3,ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+0.28);
+        osc.start(ctx.currentTime); osc.stop(ctx.currentTime+0.28);
+    }catch(_){}
+}
+
+// Flash a green overlay on the video and pulse the oval border so the user
+// gets an immediate visual cue that the challenge was accepted.
+function flashGreen(){
+    const overlay=document.getElementById('flash-overlay');
+    const oval=document.getElementById('oval');
+    if(overlay){
+        overlay.classList.remove('active');
+        void overlay.offsetWidth; // force reflow so the animation restarts cleanly
+        overlay.classList.add('active');
+        setTimeout(()=>overlay.classList.remove('active'),700);
+    }
+    if(oval){
+        oval.classList.add('oval-pulse');
+        setTimeout(()=>oval.classList.remove('oval-pulse'),700);
+    }
+}
 
 function show(id){['intro','live','result'].forEach(x=>{const el=document.getElementById(x); if(el) el.style.display = x===id ? 'block' : 'none';});}
 function feedback(msg){const el=document.getElementById('fb'); if(el) el.textContent = msg || '';}
@@ -289,6 +338,9 @@ function handle(msg){
             feedback(msg.feedback || '');
         }
         // If the lock just expired, clear it so future messages flow normally.
+        // Green flash + beep: give the user instant audio-visual confirmation that
+        // the challenge was accepted — especially useful when they are turned away.
+        if(msg.challenge_just_passed){ playBeep(); flashGreen(); }
         return;
     }
     if(msg.type==='processing'){
@@ -393,6 +445,11 @@ class FaceScanLiveSession:
     result: Optional[Dict[str, Any]] = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     expires_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc) + FACE_SCAN_LIVE_SESSION_TTL)
+    # Accumulates raw JPEG bytes for video recording.  Only populated when the
+    # FACE_SCAN_RECORD_VIDEO env var is 'true'.  Cleared immediately after encoding
+    # to free memory.  The hard cap (MAX_FRAME_BUFFER) prevents unbounded growth
+    # for very long sessions.
+    raw_frame_buffer: List[bytes] = field(default_factory=list)
 
     def is_expired(self) -> bool:
         return datetime.now(timezone.utc) > self.expires_at
@@ -445,15 +502,19 @@ class FaceScanLiveSession:
         self.current_challenge_idx += 1
         self.challenge_frame_history[f"ch_{self.current_challenge_idx}"] = []
 
-        # Only reset the stability gate after a turn challenge.  Turn challenges
-        # leave the head pointed sideways (large yaw residual).  The gate
-        # requires |yaw| <= FACE_STABILITY_YAW_MAX (0.12), so it forces the
-        # user back to neutral before the next challenge opens — preventing the
-        # wrong-direction guard from firing on the residual yaw of the previous
-        # turn.  Resetting for non-turn challenges causes needless re-stabilisation
-        # and is the primary reason challenges used to take 4-5 attempts.
+        # Reset the stability gate only when leaving a turn challenge and the NEXT
+        # challenge is NOT also a turn.  For example, turn_left → turn_right does
+        # NOT reset the gate: both challenges are hold-only so the user can swing
+        # directly from one side to the other without having to look straight first.
+        # The wrong-direction guard in liveness.py handles residual yaw naturally —
+        # it fires once during the brief swing, resets the last 2 history frames,
+        # and the user is already facing the correct direction.
+        #
+        # The gate IS reset when a turn challenge is followed by a non-turn
+        # challenge (e.g. turn_right → blink), because the large yaw residual
+        # would otherwise confuse the stability check for the next challenge.
         _TURN_CHALLENGES = frozenset({"turn_left", "turn_right"})
-        if completed_challenge in _TURN_CHALLENGES:
+        if completed_challenge in _TURN_CHALLENGES and self.current_challenge not in _TURN_CHALLENGES:
             self.face_stable_frames = 0
             self.face_stable_yaw_buffer.clear()
             self.blink_observed_in_stability = False
@@ -823,7 +884,24 @@ def _no_face_tick(session: "FaceScanLiveSession") -> Optional[Dict[str, Any]]:
 
 
 def _compute_temporal_consistency(history_groups: List[List[Dict[str, Any]]]) -> Dict[str, float]:
-    """Estimate frame-to-frame motion consistency within completed challenge windows."""
+    """Detect two distinct classes of non-live sources in still-challenge windows.
+
+    **Replay / artificial jitter detection** (original purpose):
+    Measures the second derivative (jerk/acceleration) of head pose across frames.
+    A looped or injected pre-recorded stream sometimes creates unnatural periodic
+    motion artefacts that manifest as abnormally HIGH jerk — the existing score
+    term `jerk × high_multiplier` catches this.
+
+    **Static photo detection** (new):
+    A genuine person at rest always has micro-tremors from breathing, micro-saccades,
+    and organic head sway. These produce a combined (yaw+pitch+nose) jitter well
+    above the pure detector-noise floor (~0.010–0.015). A static photograph has NO
+    organic movement — only face-detector rounding noise, which lands below 0.020
+    combined. When combined jitter falls below _LIVENESS_FLOOR (0.025), a proportional
+    stillness penalty is added to the score, capping at 55 points at absolute zero
+    motion. This means a static photo used for look_straight or blink will raise the
+    temporal risk score and push the overall risk_score above the SUSPICIOUS threshold.
+    """
     usable_groups = [group for group in history_groups if len(group) >= 3]
     if not usable_groups:
         flattened = [frame for group in history_groups for frame in group]
@@ -854,7 +932,25 @@ def _compute_temporal_consistency(history_groups: List[List[Dict[str, Any]]]) ->
     yaw_jerk = weighted_yaw_jerk / max(total_weight, 1.0)
     pitch_jerk = weighted_pitch_jerk / max(total_weight, 1.0)
     nose_jitter = weighted_nose_jitter / max(total_weight, 1.0)
-    score = _clamp((yaw_jerk * 240.0) + (pitch_jerk * 240.0) + (nose_jitter * 320.0))
+
+    # ── Replay / high-jitter risk (detects loop artefacts and injected streams) ──
+    # High second-derivative motion is unnatural for a human holding still and
+    # indicates an artificially injected or looped video stream.
+    replay_jitter_risk = (yaw_jerk * 240.0) + (pitch_jerk * 240.0) + (nose_jitter * 320.0)
+
+    # ── Stillness risk (detects static photographs used for still challenges) ──
+    # A live person at rest produces combined micro-jitter ≥ ~0.025 from breathing
+    # and organic head sway. A static photo held in front of the camera produces
+    # only detector rounding noise, giving combined jitter of ~0.010–0.020.
+    # When combined jitter is below the liveness floor, add a proportional risk
+    # penalty — up to 55 points when motion is literally zero.
+    _LIVENESS_FLOOR = 0.025
+    combined_jitter = yaw_jerk + pitch_jerk + nose_jitter
+    stillness_excess = max(0.0, _LIVENESS_FLOOR - combined_jitter)
+    # Scale linearly: floor→0 risk, 0 motion→55 risk
+    stillness_risk = (stillness_excess / _LIVENESS_FLOOR) * 55.0
+
+    score = _clamp(replay_jitter_risk + stillness_risk)
     return {
         "score_0_100": round(score, 2),
         "yaw_jerk": round(yaw_jerk, 4),
@@ -1306,6 +1402,8 @@ def _build_evidence(
     session: FaceScanLiveSession,
     temporal: Dict[str, float],
     replay: Dict[str, float],
+    still_replay: Dict[str, float],
+    per_challenge_scores: List[Dict[str, Any]],
     quality: Dict[str, float],
     saccade: Dict[str, float],
     screen_fft: Dict[str, float],
@@ -1332,9 +1430,31 @@ def _build_evidence(
             f"User made {len(wrong_actions)} wrong-motion attempt(s) before self-correcting ({summary}) "
             f"\u2014 consistent with genuine real-time interaction with challenge feedback."
         )
-    if replay["score_0_100"] >= 60.0:
+    # Per-challenge evidence — name every challenge that triggered a suspicious score.
+    # Different thresholds apply: 50 for still challenges, 70 for motion challenges
+    # (see the per-challenge gate in the verdict chain for the rationale).
+    suspicious_challenges = [
+        p for p in per_challenge_scores
+        if (
+            (p["challenge"] in _STILL_CHALLENGES and p["combined_risk"] >= 50.0)
+            or (p["challenge"] not in _STILL_CHALLENGES and p["combined_risk"] >= 70.0)
+        )
+    ]
+    if suspicious_challenges:
+        for p in sorted(suspicious_challenges, key=lambda x: x["combined_risk"], reverse=True):
+            ch_display = p["challenge"].replace("_", " ").title()
+            evidence.append(
+                f"Challenge '{ch_display}' was flagged suspicious "
+                f"(score={p['combined_risk']:.0f}/100): {p['reason']}."
+            )
+    elif still_replay["repeat_frame_score"] >= 70.0:
+        evidence.append(
+            f"Still-challenge frames showed {still_replay['repeat_frame_score']:.0f}% near-identical pairs "
+            f"— strong evidence that a static photograph was used during a still challenge."
+        )
+    elif replay["score_0_100"] >= 60.0:
         evidence.append("Replay heuristics found repeated frames or unstable brightness patterns consistent with a screen attack.")
-    elif replay["score_0_100"] <= 20.0:
+    elif replay["score_0_100"] <= 20.0 and still_replay["repeat_frame_score"] <= 20.0:
         evidence.append("No strong repeated-frame or replay-screen pattern was found in the live capture.")
     if temporal["score_0_100"] >= 50.0:
         evidence.append("Face movement across frames showed elevated temporal instability during challenge responses.")
@@ -1387,6 +1507,104 @@ def _honest_review(verdict: str) -> str:
     return "The live session looks genuine based on the current challenge-response and replay checks."
 
 
+def _score_per_challenge(session: "FaceScanLiveSession") -> List[Dict[str, Any]]:
+    """Score every completed challenge independently using its own frame window.
+
+    Why per-challenge instead of a combined pool?
+    A clean blink window can otherwise mask a suspicious look_straight window
+    when their frames are merged before scoring.  Evaluating each window alone
+    removes cross-challenge dilution: a static photo used for look_straight
+    produces near-identical hashes ONLY in that window, and a per-challenge
+    repeat_frame_score near 100 is unambiguous evidence regardless of what
+    happened during nod or turn.
+
+    For still challenges (look_straight, blink):
+        - Temporal jitter: near-zero jitter in a still window means the source
+          cannot be a live face (which always has breathing micro-tremors).
+        - Replay heuristics: near-identical 300 ms-apart pairs = static source.
+        - Combined risk = 40% temporal + 60% replay.
+
+    For motion challenges (nod, turn_left, turn_right):
+        - Intentional acceleration / deceleration makes temporal jitter naturally
+          high for any genuine person — it would produce constant false alarms.
+        - Only replay heuristics are applied; combined risk = 100% replay.
+
+    Returns a list of per-challenge dicts sorted by challenge index.
+    """
+    results: List[Dict[str, Any]] = []
+
+    for item in session.challenge_results:
+        if not item.get("passed"):
+            continue
+
+        ch_name = item["challenge"]
+        frames = list(session.challenge_frame_history.get(f"ch_{item['index']}", []))
+        if not frames:
+            continue
+
+        replay = _compute_replay_heuristics(frames)
+
+        if ch_name in _STILL_CHALLENGES:
+            temporal = _compute_temporal_consistency([frames])
+            # 40% temporal + 60% replay: replay dominates because the repeat-frame
+            # test is the sharpest discriminator for a static photo (near-identical
+            # hashes vs. organic movement). Temporal adds coverage for photos that
+            # tremble slightly but still have far less jitter than a live face.
+            combined = _clamp(0.40 * temporal["score_0_100"] + 0.60 * replay["score_0_100"])
+        else:
+            temporal = None
+            # Motion challenges: replay is the only meaningful check here.
+            combined = _clamp(replay["score_0_100"])
+
+        # Build a concise, operator-readable reason string for the evidence bullets.
+        rfs = replay["repeat_frame_score"]
+        if ch_name in _STILL_CHALLENGES and temporal is not None:
+            ts = temporal["score_0_100"]
+            if rfs >= 70.0:
+                reason = (
+                    f"{rfs:.0f}% of frame pairs were near-identical "
+                    f"(expected < 30% for a live face) — static photo suspected"
+                )
+            elif ts >= 50.0:
+                reason = (
+                    f"near-zero movement (temporal_score={ts:.1f}) — a live person "
+                    f"at rest always has organic micro-tremors; this window had none"
+                )
+            elif combined >= 35.0:
+                reason = (
+                    f"elevated signals: repeat_frame_score={rfs:.1f}%, "
+                    f"temporal_score={ts:.1f}"
+                )
+            else:
+                reason = "no significant anomalies detected"
+        else:
+            if rfs >= 70.0:
+                reason = (
+                    f"{rfs:.0f}% of frame pairs were near-identical during this "
+                    f"motion challenge — looped or replayed source suspected"
+                )
+            elif combined >= 50.0:
+                # 50-69 range for a motion challenge: borderline, not enough to flag SUSPICIOUS
+                # on its own (gate is at 70) but worth noting as a warn-level signal.
+                reason = f"borderline replay signal: repeat_frame_score={rfs:.1f}% (threshold for SUSPICIOUS is 70%)"
+            elif combined >= 35.0:
+                reason = f"mild replay signal: repeat_frame_score={rfs:.1f}%"
+            else:
+                reason = "no significant anomalies detected"
+
+        results.append({
+            "challenge":    ch_name,
+            "index":        item["index"],
+            "frames_used":  len(frames),
+            "temporal":     temporal,   # None for motion challenges
+            "replay":       replay,
+            "combined_risk": round(combined, 2),
+            "reason":       reason,
+        })
+
+    return results
+
+
 def build_live_face_scan_result(session: FaceScanLiveSession) -> Dict[str, Any]:
     """Build the canonical Face Scan payload for a completed live session."""
     history = session.all_frame_history
@@ -1397,23 +1615,34 @@ def build_live_face_scan_result(session: FaceScanLiveSession) -> Dict[str, Any]:
     ]
     completed_groups = [group for group in completed_groups if group]
 
-    # Temporal consistency should only be evaluated on STILL challenges (look_straight,
-    # blink). During motion challenges (turn_left, turn_right, nod) the person is
-    # intentionally accelerating and decelerating — the second-derivative (jerk) of yaw
-    # and pitch will naturally be large even for a completely genuine person, and would
-    # produce false SUSPICIOUS verdicts. A static photo or replay, by contrast, shows
-    # near-zero jerk even during a look_straight hold because nothing moves at all.
-    _STILL_CHALLENGES = frozenset({"look_straight", "blink"})
-    still_groups = [
-        list(session.challenge_frame_history.get(f"ch_{item['index']}", []))
-        for item in session.challenge_results
-        if item.get("passed") and item.get("challenge") in _STILL_CHALLENGES
-    ]
-    still_groups = [group for group in still_groups if group]
-    # Fall back to all completed groups if no still-challenge data is available
-    # (e.g. a session that only had turn challenges)
-    temporal = _compute_temporal_consistency(still_groups or completed_groups or [history])
+    # Score every completed challenge in its own independent frame window.
+    # Using per-challenge scores prevents a clean window from masking a suspicious one:
+    # a genuine blink window would previously dilute the look_straight photo window
+    # when both were pooled into a single flat_still_frames list before scoring.
+    per_challenge_scores = _score_per_challenge(session)
+    still_ch_scores = [p for p in per_challenge_scores if p["challenge"] in _STILL_CHALLENGES]
 
+    # Temporal: take the worst (highest-risk) still-challenge score.
+    # This ensures a suspicious look_straight window cannot be hidden by a clean blink.
+    if still_ch_scores:
+        worst_still_temporal = max(still_ch_scores, key=lambda p: p["temporal"]["score_0_100"])
+        temporal = worst_still_temporal["temporal"]
+    else:
+        # Pure motion-challenge session — fall back to combined evaluation.
+        temporal = _compute_temporal_consistency(completed_groups or [history])
+
+    # Still-challenge replay: worst (highest repeat_frame_score) single still challenge.
+    # Using the single worst prevents a genuine blink window from diluting the
+    # repeat_frame_score of a photo-based look_straight window.
+    if still_ch_scores:
+        worst_still_replay = max(still_ch_scores, key=lambda p: p["replay"]["repeat_frame_score"])
+        still_replay = worst_still_replay["replay"]
+        still_frames_used = worst_still_replay["frames_used"]
+    else:
+        still_replay = _compute_replay_heuristics(history)
+        still_frames_used = 0
+
+    # Full-session replay (all frames) — broad coverage that catches session-wide loops
     replay = _compute_replay_heuristics(history)
     quality = _compute_quality_metrics(history)
 
@@ -1436,15 +1665,20 @@ def build_live_face_scan_result(session: FaceScanLiveSession) -> Dict[str, Any]:
         (0.5 * quality["blur_risk_0_100"]) + (0.3 * quality["brightness_risk_0_100"]) + (0.2 * quality["face_size_risk_0_100"]),
         2,
     )
-    # Risk-score formula — weights revised to incorporate the 4 new signals.
-    # replay and temporal remain the dominant factors; depth (3D flat-face check)
-    # is raised from 2% to 8% because it is the most physically meaningful signal
-    # against photo/palm/printed-mask attacks. Temporal and screen_fft are reduced
-    # slightly to keep the total at 100%.
+    # Risk-score formula — weights revised to add still_replay as an independent
+    # signal. The overall replay (50%) captures session-wide repeated frames.
+    # still_replay (15%) targets repeat frames specifically within still challenges;
+    # this is the strongest signal against the hybrid attack (photo for look_straight,
+    # live person for motion challenges) because the photo frames are not diluted by
+    # the genuine motion frames. Temporal weight is reduced from 22% to 7% because
+    # still_replay overlaps conceptually — both check still-challenge frame quality.
+    # Weights sum to exactly 1.00:
+    # 0.50 + 0.07 + 0.15 + 0.10 + 0.05 + 0.04 + 0.01 + 0.08 = 1.00
     risk_score = round(
         _clamp(
             (0.50 * replay["score_0_100"])
-            + (0.22 * temporal["score_0_100"])
+            + (0.07 * temporal["score_0_100"])
+            + (0.15 * still_replay["score_0_100"])
             + (0.10 * quality_risk)
             + (0.05 * saccade["score_0_100"])
             + (0.04 * screen_fft["score_0_100"])
@@ -1475,15 +1709,38 @@ def build_live_face_scan_result(session: FaceScanLiveSession) -> Dict[str, Any]:
         verdict = "INCONCLUSIVE"
     elif replay["score_0_100"] > 80.0:
         verdict = "DEEPFAKE"
-    elif max(replay["score_0_100"], temporal["score_0_100"]) >= 50.0 and risk_score >= 35.0:
-        # 50.0 sub-score threshold: temporal alone (computed only on still challenges) must be
-        # clearly elevated to trigger SUSPICIOUS. A score of 35-49 on still frames is
-        # borderline and not strong enough standalone evidence without replay support.
-        # The additional risk_score >= 35.0 guard prevents individual sub-score spikes
-        # (e.g. elevated repeat_frame_score from dark-frame hash collisions in a dim
-        # room) from overriding a low overall risk score and producing a false SUSPICIOUS
-        # verdict for a genuine live user.  If the overall evidence only yields risk < 35,
-        # the verdict should align with that low-risk assessment.
+    elif per_challenge_scores and (
+        # Still challenges (look_straight, blink): threshold 50 — even moderate
+        # repeated-frame patterns in a still window are suspicious because a live
+        # person breathing always has enough micro-movement to keep replay low.
+        any(p["combined_risk"] >= 50.0 for p in per_challenge_scores if p["challenge"] in _STILL_CHALLENGES)
+        or
+        # Motion challenges (nod, turn_left, turn_right): threshold raised to 70.
+        # During a nod or turn the subject must hold the position for the camera to
+        # confirm it — a genuine person's hold phase naturally produces some consecutive
+        # near-identical frames, which pushes replay up into the 50-60 range even for
+        # real live sessions.  Requiring 70+ for motion challenges eliminates these
+        # false positives while still catching looped/replayed motion challenge video.
+        any(p["combined_risk"] >= 70.0 for p in per_challenge_scores if p["challenge"] not in _STILL_CHALLENGES)
+    ):
+        verdict = "SUSPICIOUS"
+    elif max(replay["score_0_100"], temporal["score_0_100"], still_replay["score_0_100"]) >= 50.0 and risk_score >= 35.0:
+        # 50.0 sub-score threshold: any single strongly elevated signal triggers
+        # SUSPICIOUS when the overall risk_score also exceeds 35. still_replay is
+        # included in the max() because a static photo used for look_straight produces
+        # a still-challenge repeat_frame_score of 90-100 (very high still_replay score)
+        # even when the overall session replay score is diluted by motion frames.
+        # The risk_score >= 35.0 guard prevents individual sub-score spikes (e.g.
+        # dark-frame hash collisions in a dim room) from triggering a false SUSPICIOUS.
+        verdict = "SUSPICIOUS"
+    elif still_replay["repeat_frame_score"] >= 70.0 and still_frames_used >= 8:
+        # Hard still-replay gate (no risk_score guard).
+        # If 70%+ of 300ms-apart frame pairs within the worst still-challenge window are
+        # near-identical, a static source was almost certainly used for look_straight.
+        # A live person holds still during this challenge but always has micro-tremors
+        # from breathing that keep the per-still repeat rate well below 70%.
+        # This gate fires independently of the overall risk score because the signal
+        # is so focused and high-precision that it does not need corroboration.
         verdict = "SUSPICIOUS"
     elif depth["score_0_100"] >= 65.0:
         # Hard flat-face gate: the 3D depth check strongly indicates a flat source
@@ -1528,7 +1785,7 @@ def build_live_face_scan_result(session: FaceScanLiveSession) -> Dict[str, Any]:
         "confidence_reason": _confidence_reason(quality, session),
         "overall_explanation": _overall_explanation(verdict),
         "honest_review": _honest_review(verdict),
-        "evidence": _build_evidence(session, temporal, replay, quality, saccade, screen_fft, timing, depth, confidence),
+        "evidence": _build_evidence(session, temporal, replay, still_replay, per_challenge_scores, quality, saccade, screen_fft, timing, depth, confidence),
         "trace": {
             "decision_trace_id": f"fs_live_{uuid.uuid4().hex[:12]}",
             "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
@@ -1565,6 +1822,37 @@ def build_live_face_scan_result(session: FaceScanLiveSession) -> Dict[str, Any]:
             "replay_heuristics": {
                 "status": "review" if replay["score_0_100"] >= 35.0 else "pass",
                 **replay,
+            },
+            # Replay computed only on still-challenge (look_straight / blink) frames.
+            # Replay computed only on the worst single still-challenge window.
+            # Using per-challenge isolation means a genuine blink window cannot dilute
+            # the repeat_frame_score of a photo-based look_straight window.
+            "still_challenge_replay": {
+                "status": "review" if still_replay["repeat_frame_score"] >= 50.0 else "pass",
+                # still_frames_used: frame count of the worst single still-challenge window.
+                "still_frames_used": still_frames_used,
+                **still_replay,
+            },
+            # Per-challenge breakdown: each completed challenge scored independently.
+            # The worst-scoring challenge drives the per-challenge SUSPICIOUS gate so
+            # a suspicious look_straight window cannot be masked by a clean blink or turn.
+            "per_challenge_scores": {
+                p["challenge"]: {
+                    "status": (
+                        "review" if (
+                            (p["challenge"] in _STILL_CHALLENGES and p["combined_risk"] >= 50.0)
+                            or (p["challenge"] not in _STILL_CHALLENGES and p["combined_risk"] >= 70.0)
+                        )
+                        else ("warn" if p["combined_risk"] >= 35.0 else "pass")
+                    ),
+                    "combined_risk":      p["combined_risk"],
+                    "frames_used":        p["frames_used"],
+                    "replay_score":       p["replay"]["score_0_100"],
+                    "repeat_frame_score": p["replay"]["repeat_frame_score"],
+                    "temporal_score":     p["temporal"]["score_0_100"] if p["temporal"] else None,
+                    "reason":             p["reason"],
+                }
+                for p in per_challenge_scores
             },
             "active_liveness": {
                 "status": "pass" if session.all_done else "fail",
@@ -1650,6 +1938,62 @@ def build_live_face_scan_result(session: FaceScanLiveSession) -> Dict[str, Any]:
     # even when this function ran in a background executor after the WS handler exited.
     session.status = "completed"
 
+    # ── Video recording ──────────────────────────────────────────────────────────
+    # Encode the accumulated JPEG frames into an H.264 MP4 and upload to MinIO.
+    # Recording is gated by the FACE_SCAN_RECORD_VIDEO env var.
+    # For testing we record ALL verdicts; in production you may restrict this to
+    # suspicious/deepfake/inconclusive by filtering on `verdict` here.
+    # The encoding runs AFTER session.status is set to "completed" so any Streamlit
+    # poll that fires during encoding already sees the verdict.  Encoding failure
+    # is always a soft failure — it never overwrites or blocks the final result.
+    video_key: Optional[str] = None
+    if os.environ.get("FACE_SCAN_RECORD_VIDEO", "false").lower() == "true" and session.raw_frame_buffer:
+        try:
+            from basetruth.face_scan.video_encoder import encode_frames_to_mp4  # noqa: PLC0415
+            from basetruth.store import save_face_scan_video  # noqa: PLC0415
+            mp4_bytes = encode_frames_to_mp4(session.raw_frame_buffer, fps=10)
+            video_key = save_face_scan_video(session.session_id, mp4_bytes)
+            log.info(
+                "face_scan_live: video recorded — session=%s key=%s size=%d bytes",
+                session.session_id,
+                video_key,
+                len(mp4_bytes),
+            )
+        except Exception as _enc_exc:
+            log.warning(
+                "face_scan_live: video encoding/upload failed (soft failure) — session=%s error=%s",
+                session.session_id,
+                _enc_exc,
+            )
+        finally:
+            # Always free the frame buffer immediately regardless of encoding outcome.
+            session.raw_frame_buffer.clear()
+
+    # Attach video_key to the result so the Streamlit UI can show the player.
+    result["video_key"] = video_key
+
+    # ── Persist the completed session result to the DB ───────────────────────────
+    # This is a soft write — failure is logged but never raises so the result is
+    # still returned to the caller (and ultimately the browser) even when the DB
+    # is down.
+    try:
+        from basetruth.db import save_face_scan_live_result  # noqa: PLC0415
+        save_face_scan_live_result(
+            session_id=session.session_id,
+            verdict=str(result.get("verdict", "")),
+            risk_score=result.get("risk_score_0_100"),
+            confidence=result.get("confidence_0_100"),
+            report_json=result,
+            best_frame_key=None,  # future: upload best_live_frame_bytes here
+            video_key=video_key,
+        )
+    except Exception as _db_exc:
+        log.warning(
+            "face_scan_live: DB persistence failed (soft failure) — session=%s error=%s",
+            session.session_id,
+            _db_exc,
+        )
+
     return result
 
 
@@ -1672,6 +2016,14 @@ def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> 
             return {"type": "status", "face_detected": False, "feedback": "Invalid frame."}
     except binascii.Error:
         return {"type": "status", "face_detected": False, "feedback": "Decode error."}
+
+    # Accumulate raw JPEG bytes for video recording when the feature flag is on.
+    # We keep at most MAX_FRAME_BUFFER frames (sliding window) to bound memory use.
+    if os.environ.get("FACE_SCAN_RECORD_VIDEO", "false").lower() == "true":
+        session.raw_frame_buffer.append(raw)
+        # Drop the oldest frame when the cap is exceeded
+        if len(session.raw_frame_buffer) > MAX_FRAME_BUFFER:
+            session.raw_frame_buffer.pop(0)
 
     try:
         # Only run the MediaPipe EAR pipeline when processing a blink challenge.
@@ -2174,4 +2526,10 @@ def process_live_frame_message(session: FaceScanLiveSession, b64_frame: str) -> 
 def render_live_page_html(session_id: str, challenges: List[str]) -> str:
     """Return the lightweight customer-facing Face Scan live page HTML."""
     challenges_json = str(challenges).replace("'", '"')
-    return _FACE_SCAN_LIVE_PAGE_HTML.replace("__SESSION_ID__", session_id).replace("__CHALLENGES_JSON__", challenges_json)
+    retention_days = os.environ.get("FACE_SCAN_VIDEO_RETENTION_DAYS", "90")
+    return (
+        _FACE_SCAN_LIVE_PAGE_HTML
+        .replace("__SESSION_ID__", session_id)
+        .replace("__CHALLENGES_JSON__", challenges_json)
+        .replace("__RETENTION_DAYS__", retention_days)
+    )

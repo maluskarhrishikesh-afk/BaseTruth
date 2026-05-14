@@ -38,8 +38,10 @@ warnings.filterwarnings("ignore", category=UserWarning)
 _REPO_ROOT   = Path(__file__).resolve().parent.parent.parent.parent.parent
 _IMAGE_CSV   = _REPO_ROOT / "fraud_model" / "data"   / "training_data_image.csv"
 _PDF_CSV     = _REPO_ROOT / "fraud_model" / "data"   / "training_data_pdf.csv"
+_LIVE_CSV    = _REPO_ROOT / "fraud_model" / "data"   / "training_data_face_scan_live.csv"
 _IMAGE_PKL   = _REPO_ROOT / "fraud_model" / "models" / "ml_scorer_image.pkl"
 _PDF_PKL     = _REPO_ROOT / "fraud_model" / "models" / "ml_scorer_pdf.pkl"
+_LIVE_PKL    = _REPO_ROOT / "fraud_model" / "models" / "ml_scorer_face_scan_live.pkl"
 
 # ─── API server connection ─────────────────────────────────────────────────────
 _API_PORT = 8000
@@ -48,6 +50,9 @@ _API_PORT = 8000
 # ─── Class colours — binary palette ──────────────────────────────────────────
 _CLASS_COLORS  = ["#22c55e", "#ef4444"]
 _CLASS_LABELS  = ["ORIGINAL", "FAKE/EDITED"]
+
+# Face Scan Live binary labels (used by the live model card and charts).
+_LIVE_CLASS_LABELS = ["GENUINE", "SPOOF"]
 
 # ─── Plain-English guide to the image forensic signals ───────────────────────
 # Each entry: (signal_name, emoji, one_line_summary, longer_explanation)
@@ -397,6 +402,196 @@ _PDF_SIGNAL_GUIDE = [
     ),
 ]
 
+# ─── Plain-English guide to the Face Scan Live signals ───────────────────────
+# Each entry: (signal_name, emoji, one_line_summary, longer_explanation)
+# These 20 signals match FEATURE_NAMES in basetruth.face_scan.ml_scorer_live exactly.
+_LIVE_SIGNAL_GUIDE = [
+    (
+        "yaw_jerk",
+        "↔️",
+        "Yaw jerk — how abruptly the head turned left or right between frames",
+        "A real person turns their head smoothly and continuously. A screen recording "
+        "or replay attack plays back at a fixed frame rate, often with quantised motion that "
+        "jumps abruptly between frames. Yaw jerk is the mean absolute second derivative of "
+        "the left-right head-angle signal. High values indicate non-smooth motion — suspicious.",
+    ),
+    (
+        "pitch_jerk",
+        "↕️",
+        "Pitch jerk — how abruptly the head nodded up or down between frames",
+        "Analogous to yaw_jerk but for the up-down nodding axis. Real nods have smooth "
+        "acceleration and deceleration curves. Replayed or synthesised video often has "
+        "step-function jumps in pitch because the source video was edited or speed-ramped. "
+        "High pitch_jerk combined with high yaw_jerk strongly indicates non-live content.",
+    ),
+    (
+        "nose_jitter",
+        "👃",
+        "Nose jitter — frame-to-frame variability of the nose tip landmark position",
+        "InsightFace localises the nose tip in every frame. A real person sitting still has "
+        "sub-pixel micro-tremor from breathing and muscle activity. A static photo held in "
+        "front of the camera has near-zero jitter. A screen recording has only encoding "
+        "noise. Unusually low jitter is a spoofing indicator.",
+    ),
+    (
+        "temporal_consistency_score",
+        "📈",
+        "Temporal consistency score — overall smoothness of head motion across all frames (0–100)",
+        "A composite 0–100 score (higher = more suspicious) that combines yaw jerk, pitch "
+        "jerk, and nose jitter into a single heuristic. Computed by the temporal consistency "
+        "check inside the Face Scan Live pipeline. The ML model learns when this heuristic "
+        "is well-calibrated and when it needs correction.",
+    ),
+    (
+        "repeat_frame_score",
+        "🔁",
+        "Repeat frame score — fraction of consecutive frame pairs that are nearly identical (0–100)",
+        "Replay attacks often loop a short video clip or pause on a single frame. This score "
+        "measures how often consecutive frames have a very high perceptual hash similarity. "
+        "A genuine live session always has at least small changes between every frame pair "
+        "due to breathing, blinking, and micro-saccades.",
+    ),
+    (
+        "flicker_score",
+        "💡",
+        "Flicker score — strength of periodic brightness oscillation across frames (0–100)",
+        "Camera-facing-a-screen attacks introduce a characteristic brightness flicker caused "
+        "by the mismatch between the screen's refresh rate and the camera's shutter speed. "
+        "This score measures the amplitude of the periodic brightness component in the "
+        "brightness time-series. High flicker = possible screen.",
+    ),
+    (
+        "brightness_instability",
+        "🌓",
+        "Brightness instability — non-periodic variance in frame brightness",
+        "While flicker_score captures periodic oscillations, brightness_instability captures "
+        "random brightness jumps. This is useful for detecting low-quality replay attacks "
+        "where the source video had poor exposure control, or where the attacker is physically "
+        "moving the replay device during the session.",
+    ),
+    (
+        "mean_eye_jitter",
+        "👁️",
+        "Mean eye jitter — average involuntary micro-movement of both eyes across frames",
+        "Human eyes are never perfectly still — involuntary micro-saccades cause tiny "
+        "movements even when staring straight ahead. A photo or a screen recording has "
+        "zero eye jitter because the eye pixels are static. This is one of the strongest "
+        "single-frame liveness signals: near-zero eye jitter almost always indicates a "
+        "non-live source.",
+    ),
+    (
+        "iod_yaw_correlation",
+        "📏",
+        "IOD-yaw correlation — relationship between head rotation and inter-ocular distance",
+        "When a real 3D head turns sideways, one eye gets closer to the camera and the "
+        "other gets further away — so the inter-ocular distance (IOD, the pixel distance "
+        "between the two eyes) changes with yaw angle. A flat 2D photo or screen does not "
+        "have this 3D property: IOD stays roughly constant even when the head appears to "
+        "turn. High correlation = 3D depth = real person.",
+    ),
+    (
+        "mean_fft_grid_peak",
+        "📡",
+        "Mean FFT grid peak — strength of the regular spatial grid pattern in the Fourier transform",
+        "Screens emit light in a regular pixel grid. When a camera photographs or films a "
+        "screen, the grid creates a distinctive peak in the image's Fourier transform (the "
+        "same moiré pattern that causes rainbow patterns when you photograph a TV). This "
+        "signal measures the average height of those grid peaks. High values indicate "
+        "the camera is pointed at a screen rather than a real face.",
+    ),
+    (
+        "interval_cv",
+        "⏱️",
+        "Interval CV — coefficient of variation of the inter-frame delivery intervals",
+        "A genuine browser stream has small random jitter in the WebSocket delivery times "
+        "because TCP scheduling and browser rendering are non-deterministic. A replay tool "
+        "that injects frames programmatically delivers them at metronomically uniform "
+        "intervals. CV = standard deviation ÷ mean of all inter-frame gaps. Very low CV "
+        "(near 0) indicates a clock-driven injection rather than a live camera.",
+    ),
+    (
+        "observed_fps",
+        "🎞️",
+        "Observed FPS — actual frames per second received at the server",
+        "The browser is asked to send ~10 FPS. A genuine session delivers 8–12 FPS "
+        "depending on CPU load and network. A heavily throttled replay or a very slow "
+        "machine may deliver fewer frames. Combined with interval_cv, deviations from "
+        "the expected 10 FPS help distinguish genuine sessions from programmatic injection.",
+    ),
+    (
+        "frame_drop_rate",
+        "📉",
+        "Frame drop rate — fraction of expected frames that were not received",
+        "If the session received significantly fewer frames than expected given its "
+        "duration, that suggests the client was throttled, paused, or that frames were "
+        "selectively dropped by a replay tool to reduce detection. High drop rates combined "
+        "with low interval_cv are a suspicious combination.",
+    ),
+    (
+        "mean_face_area_ratio",
+        "🤳",
+        "Mean face area ratio — average fraction of the frame filled by the face bounding box",
+        "A genuine user sitting ~40–60 cm from their webcam fills roughly 15–35% of the "
+        "frame with their face. A photo held very close to a phone camera may fill 70–90%. "
+        "A photo held far away or a very small window may fill only 5%. Extreme values in "
+        "either direction correlate with spoofing.",
+    ),
+    (
+        "blur_risk_0_100",
+        "🔵",
+        "Blur risk — how blurry the face region is across all frames (0=sharp, 100=very blurry)",
+        "A live face in motion has natural, frame-consistent blur during movement and sharp "
+        "focus when still. A printed photo held at an angle, or a screen filmed from a bad "
+        "angle, may produce unusual blur distributions. Very consistently high blur across "
+        "all frames is suspicious.",
+    ),
+    (
+        "brightness_risk_0_100",
+        "☀️",
+        "Brightness risk — how far the face lighting deviates from the expected range (0–100)",
+        "A well-lit live face has a brightness in the 80–180 range (8-bit gray). An "
+        "overexposed screen, an unlit room, or a very dark phone camera all push brightness "
+        "outside that range. Combined with flicker_score, this helps detect screen-facing attacks.",
+    ),
+    (
+        "wrong_action_count",
+        "❌",
+        "Wrong action count — number of challenges where the user performed the wrong action",
+        "During challenges (blink, turn left, nod), the system detects whether the user "
+        "completed the correct action. A replay video prepared for a different session "
+        "will perform the wrong actions for this session's challenge sequence — because "
+        "the attacker cannot know in advance which challenges will be issued. High counts "
+        "indicate a pre-recorded video attack.",
+    ),
+    (
+        "challenge_count",
+        "🎯",
+        "Challenge count — total number of challenges issued in this session",
+        "Normally 3 challenges are issued per session. If the session ended early (timeout "
+        "or error), fewer challenges were issued. The model learns that partial sessions "
+        "have different risk profiles from complete sessions.",
+    ),
+    (
+        "frames_without_face",
+        "🚫",
+        "Frames without face — total frames where no face was detected",
+        "Occasional frames without a face are normal during head turns. A very high count "
+        "suggests the attacker was using an intermittent or partial image rather than a "
+        "live face directly facing the camera. Also useful for filtering out sessions "
+        "where network issues caused excessive frame loss.",
+    ),
+    (
+        "virtual_camera_suspected",
+        "🖥️",
+        "Virtual camera suspected — 1 if the browser reported a non-physical camera device",
+        "The browser sends the camera device label when the user grants permission. "
+        "OBS Virtual Camera, Snap Camera, and similar tools typically include words like "
+        "'virtual', 'obs', 'snap', or 'screen' in their device label. This binary flag is "
+        "set to 1 if the device label matched any of those patterns. It is the single "
+        "most direct signal for virtual-camera injection attacks.",
+    ),
+]
+
 # ─── API helpers ───────────────────────────────────────────────────────────────
 
 @st.cache_resource
@@ -495,8 +690,15 @@ def _get_model_status(model_type: str) -> Dict[str, Any]:
     Loads the pkl, reads sample counts from the CSV, and returns basic facts
     for the status cards at the top of the page.
     """
-    pkl_path = _IMAGE_PKL if model_type == "image" else _PDF_PKL
-    csv_path = _IMAGE_CSV if model_type == "image" else _PDF_CSV
+    if model_type == "face_scan_live":
+        pkl_path = _LIVE_PKL
+        csv_path = _LIVE_CSV
+    elif model_type == "pdf":
+        pkl_path = _PDF_PKL
+        csv_path = _PDF_CSV
+    else:
+        pkl_path = _IMAGE_PKL
+        csv_path = _IMAGE_CSV
 
     status: Dict[str, Any] = {
         "model_type": model_type,
@@ -1441,17 +1643,17 @@ def _render_signal_guide(
 
 def _render_status_section() -> None:
     """Show current model file status for both image and PDF models."""
-    img_st = _get_model_status("image")
-    pdf_st = _get_model_status("pdf")
+    img_st  = _get_model_status("image")
+    pdf_st  = _get_model_status("pdf")
+    live_st = _get_model_status("face_scan_live")
 
-    def _card(s: Dict) -> str:
-        mt = s["model_type"].title()
+    def _card(s: Dict, label: str) -> str:
         if s["model_exists"]:
             n  = s["n_samples"]
             nf = s["n_features"]
             ts = s["last_modified"] or "unknown"
             return _metric_card(
-                f"{mt} Model",
+                f"{label} Model",
                 "✅ Trained",
                 f"{n} samples · {nf} signals · last updated {ts}",
                 "good",
@@ -1459,21 +1661,25 @@ def _render_status_section() -> None:
         elif s["csv_exists"]:
             n = s["n_samples"]
             return _metric_card(
-                f"{mt} Model",
+                f"{label} Model",
                 "⚠️ Not trained",
                 f"Training CSV found ({n} samples) — click Start Training to build",
                 "warn",
             )
         else:
             return _metric_card(
-                f"{mt} Model",
+                f"{label} Model",
                 "❌ No data",
-                "Training CSV not found — run the sample collection script first",
+                "Training CSV not found — run collect_live_scan_samples.py first",
                 "bad",
             )
 
     st.markdown(
-        '<div class="mlt-status-grid">' + _card(img_st) + _card(pdf_st) + "</div>",
+        '<div class="mlt-status-grid">'
+        + _card(img_st,  "Image")
+        + _card(pdf_st,  "PDF")
+        + _card(live_st, "Face Scan Live")
+        + "</div>",
         unsafe_allow_html=True,
     )
 
@@ -2309,12 +2515,14 @@ def render() -> None:
 
     # ── Tab 3: Signal Reference ──────────────────────────────────────────────
     with tab_signals:
-        img_st = _get_model_status("image")
-        pdf_st = _get_model_status("pdf")
+        img_st  = _get_model_status("image")
+        pdf_st  = _get_model_status("pdf")
+        live_st = _get_model_status("face_scan_live")
 
-        sig_img_tab, sig_pdf_tab = st.tabs([
+        sig_img_tab, sig_pdf_tab, sig_live_tab = st.tabs([
             f"🖼️ Image Signals ({len(_SIGNAL_GUIDE)})",
             f"📄 PDF Signals ({len(_PDF_SIGNAL_GUIDE)})",
+            f"🎥 Face Scan Live Signals (20)",
         ])
 
         with sig_img_tab:
@@ -2358,6 +2566,23 @@ def render() -> None:
                 ),
             )
 
+        with sig_live_tab:
+            from basetruth.face_scan.ml_scorer_live import FEATURE_NAMES as _LIVE_FN  # noqa: PLC0415
+            live_active = (
+                set(_LIVE_FN[: live_st["n_features"]]) if live_st["model_exists"] else None
+            )
+            _render_signal_guide(
+                guide=_LIVE_SIGNAL_GUIDE,
+                active_names=live_active,
+                title="Understanding the 20 Face Scan Live Signals",
+                intro=(
+                    "The **Face Scan Live model** is trained on **20 signals** captured during a "
+                    "real-time webcam session. These signals measure head-motion smoothness, "
+                    "eye micro-movement, replay artefacts, depth cues, and screen-frequency "
+                    "patterns to distinguish a genuine live person from a replay or virtual-camera attack."
+                ),
+            )
+
 
 def _render_controls() -> None:
     """Render the model selection checkboxes and Start Training button."""
@@ -2366,7 +2591,9 @@ def _render_controls() -> None:
     img_avail = _IMAGE_CSV.exists()
     pdf_avail = _PDF_CSV.exists()
 
-    col1, col2 = st.columns(2)
+    live_avail = _LIVE_CSV.exists()
+
+    col1, col2, col3 = st.columns(3)
     with col1:
         train_image = st.checkbox(
             "🖼️  Train Image Model",
@@ -2381,12 +2608,21 @@ def _render_controls() -> None:
             disabled=not pdf_avail,
             help="Uses fraud_model/data/training_data_pdf.csv — binary (genuine / tampered)" if pdf_avail else "training_data_pdf.csv not found",
         )
+    with col3:
+        train_live = st.checkbox(
+            "🎥  Train Face Scan Live Model",
+            value=False,
+            disabled=not live_avail,
+            help="Uses fraud_model/data/training_data_face_scan_live.csv — binary (GENUINE / SPOOF). Run scripts/collect_live_scan_samples.py first to build this CSV." if live_avail else "training_data_face_scan_live.csv not found — run scripts/collect_live_scan_samples.py first",
+        )
 
     models_to_train = []
     if train_image and img_avail:
         models_to_train.append("image")
     if train_pdf and pdf_avail:
         models_to_train.append("pdf")
+    if train_live and live_avail:
+        models_to_train.append("face_scan_live")
 
     if not models_to_train:
         st.info(

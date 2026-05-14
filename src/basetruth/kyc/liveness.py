@@ -48,12 +48,12 @@ import numpy as np
 _TURN_YAW_THRESHOLD = 0.16  # |yaw| must exceed this to register a valid head turn
                              # Tuned for low-FPS webcams so smaller real turns still register
 
-# Turn hold-and-return constants — used by the turn_left/turn_right challenges.
+# Turn hold constants — used by the turn_left/turn_right challenges.
 # Once the user crosses the yaw threshold, they must hold their head turned for
-# _TURN_HOLD_FRAMES frames, then return to centre before the challenge passes.
-_TURN_HOLD_FRAMES   = 40    # frames of sustained turn ≈ 4 s at 10 FPS; satisfies "hold 5 s" UX
+# _TURN_HOLD_FRAMES frames. Challenge passes immediately at that point — no
+# return-to-centre required. A green flash + beep signals completion.
+_TURN_HOLD_FRAMES   = 10    # frames of sustained turn ≈ 1 s at 10 FPS
 _TURN_HOLD_LENIENCY = 0.04  # allow this much yaw relaxation during hold (natural camera wobble)
-_TURN_CENTRE_YAW    = 0.10  # |yaw| must drop below this to count as "returned to centre"
 
 # look_straight: nose_rel_x must stay within this central band for several frames.
 # We only check the horizontal position — pitch (nose below eye midpoint) is always
@@ -418,18 +418,20 @@ def is_face_stable(
     return True, ""
 
 
-# Nod hold-and-return constants — used by the nod challenge.
-# The user must tilt their head down (pitch deviates from neutral by ≥ _NOD_DOWN_DELTA),
-# hold that position for _NOD_HOLD_FRAMES frames, then look back up.
+# Nod hold constants — used by the nod challenge.
+# The user must tilt their head down (pitch deviates from neutral by ≥ _NOD_DOWN_DELTA)
+# and hold that position for _NOD_HOLD_FRAMES frames. No return-to-neutral required:
+# the challenge completes as soon as the hold quota is met, signalled by a green
+# flash and beep so the user knows they can relax — no looping back up needed.
 # Baseline neutral pitch is computed from the first _NOD_BASELINE_FRAMES challenge frames
 # (user was just looking straight after the stability gate).
-# _NOD_DOWN_DELTA: typical nod moves pitch by 0.15–0.40; static noise is < 0.04.
+# _NOD_DOWN_DELTA: a gentle chin-dip typically moves pitch by 0.08–0.15; static noise
+# is < 0.04. Threshold lowered from 0.12 → 0.08 so users don't have to bend far down.
 # Direction is not assumed — we detect deviation in either direction so the
 # challenge works regardless of which way pitch changes for "chin down" on
 # each user's camera setup.
-_NOD_HOLD_FRAMES    = 10    # frames of sustained head-down position ≈ 1 s at 10 FPS
-_NOD_DOWN_DELTA     = 0.12  # pitch must deviate this much from neutral to count as "down"
-_NOD_RETURN_DELTA   = 0.08  # pitch must return within this of neutral = "looking back up"
+_NOD_HOLD_FRAMES    = 6     # frames of sustained head-down position ≈ 0.6 s at 10 FPS
+_NOD_DOWN_DELTA     = 0.08  # pitch must deviate this much from neutral to count as "down"
 _NOD_BASELINE_FRAMES = 3    # first N challenge frames used to estimate neutral pitch
 
 # Blink: number of distinct eye-close/open cycles required to pass the challenge.
@@ -683,14 +685,11 @@ def analyze_challenge(
     # when the subject turns to their own left the nose swings toward image-left,
     # making yaw negative.
     #
-    # The challenge now requires a HOLD-AND-RETURN sequence to prove a genuine turn:
+    # Hold-only sequence (no return-to-centre required):
     #   Phase 1 — User turns left until |yaw| crosses _TURN_YAW_THRESHOLD.
     #   Phase 2 — User holds that turned position for _TURN_HOLD_FRAMES frames.
-    #             _TURN_HOLD_LENIENCY allows slight yaw relaxation during the hold.
-    #   Phase 3 — User looks straight again (|yaw| drops below _TURN_CENTRE_YAW).
-    # Only after all three phases does the challenge pass.
+    #             Challenge passes immediately — green flash + beep signals done.
     if challenge == "turn_left":
-        # Use the full filtered history so the complete turn→hold→return arc is visible.
         turn_hist = filtered_history
         if len(turn_hist) < 3:
             return {"passed": False, "feedback": "Slowly turn your head to YOUR LEFT…"}
@@ -703,11 +702,9 @@ def analyze_challenge(
         if len(turn_hist) >= 5 and max(yaws) >= _TURN_YAW_THRESHOLD:
             return {"passed": False, "feedback": "Wrong direction — turn to YOUR LEFT.", "reset_needed": True, "wrong_motion": "turned_right"}
 
-        # Phase detection: find the longest contiguous run of frames where the user
-        # is comfortably in the "turned left" zone, i.e. yaw ≤ hold_zone.
-        # hold_zone is slightly less strict than _TURN_YAW_THRESHOLD to tolerate
-        # small wobble while the user is holding their head turned.
-        hold_zone = -(_TURN_YAW_THRESHOLD - _TURN_HOLD_LENIENCY)   # e.g. -0.12
+        # Find the longest contiguous run of frames where yaw is in the turned-left zone.
+        # _TURN_HOLD_LENIENCY allows slight relaxation during the hold (natural wobble).
+        hold_zone = -(_TURN_YAW_THRESHOLD - _TURN_HOLD_LENIENCY)
         best_start, best_len, cur_start, cur_len = -1, 0, -1, 0
         for i, y in enumerate(yaws):
             if y <= hold_zone:
@@ -728,21 +725,13 @@ def analyze_challenge(
         )
 
         if best_len >= _TURN_HOLD_FRAMES and crossed_threshold:
-            # Hold achieved — now look for the return to centre.
-            after_hold = yaws[best_start + best_len:]
-            if after_hold and any(abs(y) <= _TURN_CENTRE_YAW for y in after_hold):
-                return {"passed": True, "feedback": "✅ Turn completed!"}
-            if after_hold:
-                return {"passed": False, "feedback": "Good! Now look STRAIGHT ahead…"}
-            held_sec   = best_len / 10.0
-            target_sec = _TURN_HOLD_FRAMES / 10.0
-            return {"passed": False, "feedback": f"Hold it… ({held_sec:.0f}s / {target_sec:.0f}s) — then look straight"}
+            # Hold quota met — pass immediately, no return required.
+            return {"passed": True, "feedback": "✅ Turn completed!"}
 
-        if best_len > 5 and crossed_threshold:
-            # Partial hold — show progress and encourage them to keep holding.
-            held_sec   = best_len / 10.0
-            target_sec = _TURN_HOLD_FRAMES / 10.0
-            return {"passed": False, "feedback": f"Good! Hold it… ({held_sec:.0f}s / {target_sec:.0f}s)"}
+        if best_len > 0 and crossed_threshold:
+            # Partial hold — show countdown to keep user informed.
+            remaining = max(_TURN_HOLD_FRAMES - best_len, 0)
+            return {"passed": False, "feedback": f"Keep looking left… ({remaining} more frames)"}
 
         # User has not turned enough or just started turning.
         min_yaw = min(yaws)
@@ -756,9 +745,8 @@ def analyze_challenge(
     # ─── Turn Right (subject's right → nose image-RIGHT → yaw POSITIVE) ─────────
     # When the subject turns to their own right in a mirrored frame, the nose swings
     # toward image-right, making yaw positive.
-    # Same hold-and-return sequence as turn_left with sign flipped.
+    # Same hold-only sequence as turn_left with sign flipped — no return required.
     if challenge == "turn_right":
-        # Use the full filtered history so the complete turn→hold→return arc is visible.
         turn_hist = filtered_history
         if len(turn_hist) < 3:
             return {"passed": False, "feedback": "Slowly turn your head to YOUR RIGHT…"}
@@ -771,7 +759,7 @@ def analyze_challenge(
             return {"passed": False, "feedback": "Wrong direction — turn to YOUR RIGHT.", "reset_needed": True, "wrong_motion": "turned_left"}
 
         # hold_zone for right turn: yaw ≥ +(_TURN_YAW_THRESHOLD - _TURN_HOLD_LENIENCY).
-        hold_zone = _TURN_YAW_THRESHOLD - _TURN_HOLD_LENIENCY   # e.g. +0.12
+        hold_zone = _TURN_YAW_THRESHOLD - _TURN_HOLD_LENIENCY
         best_start, best_len, cur_start, cur_len = -1, 0, -1, 0
         for i, y in enumerate(yaws):
             if y >= hold_zone:
@@ -790,19 +778,13 @@ def analyze_challenge(
         )
 
         if best_len >= _TURN_HOLD_FRAMES and crossed_threshold:
-            after_hold = yaws[best_start + best_len:]
-            if after_hold and any(abs(y) <= _TURN_CENTRE_YAW for y in after_hold):
-                return {"passed": True, "feedback": "✅ Turn completed!"}
-            if after_hold:
-                return {"passed": False, "feedback": "Good! Now look STRAIGHT ahead…"}
-            held_sec   = best_len / 10.0
-            target_sec = _TURN_HOLD_FRAMES / 10.0
-            return {"passed": False, "feedback": f"Hold it… ({held_sec:.0f}s / {target_sec:.0f}s) — then look straight"}
+            # Hold quota met — pass immediately, no return required.
+            return {"passed": True, "feedback": "✅ Turn completed!"}
 
-        if best_len > 5 and crossed_threshold:
-            held_sec   = best_len / 10.0
-            target_sec = _TURN_HOLD_FRAMES / 10.0
-            return {"passed": False, "feedback": f"Good! Hold it… ({held_sec:.0f}s / {target_sec:.0f}s)"}
+        if best_len > 0 and crossed_threshold:
+            # Partial hold — show countdown.
+            remaining = max(_TURN_HOLD_FRAMES - best_len, 0)
+            return {"passed": False, "feedback": f"Keep looking right… ({remaining} more frames)"}
 
         max_yaw = max(yaws)
         if max_yaw >= _TURN_YAW_THRESHOLD:
@@ -811,8 +793,8 @@ def analyze_challenge(
         hint = "a little more…" if gap < 0.10 else "turn further to YOUR right…"
         return {"passed": False, "feedback": f"Keep turning — {hint}"}
 
-    # ─── Nod (vertical head tilt → hold down → return up) ────────────────────
-    # The challenge requires a HOLD-AND-RETURN sequence:
+    # ─── Nod (vertical head tilt → hold down) ──────────────────────────────────
+    # The challenge requires a HOLD sequence — no return-to-neutral:
     #   Phase 1 — Collect a neutral-pitch baseline from the first few frames
     #             (user was looking straight after the stability gate).
     #   Phase 2 — User tilts head down until pitch deviates ≥ _NOD_DOWN_DELTA
@@ -820,8 +802,8 @@ def analyze_challenge(
     #             cameras and user heights produce different pitch directions for
     #             "chin toward chest".
     #   Phase 3 — User holds that deviated position for _NOD_HOLD_FRAMES frames.
-    #   Phase 4 — User looks back up: pitch returns within _NOD_RETURN_DELTA of
-    #             the original baseline.
+    #             Challenge passes immediately at this point — green flash + beep
+    #             tells the user they are done. No look-up required.
     if challenge == "nod":
         # Use the full filtered history to detect the complete down→hold→return arc.
         nod_hist = filtered_history
@@ -863,22 +845,20 @@ def analyze_challenge(
                 cur_start, cur_len = -1, 0
 
         if best_len >= _NOD_HOLD_FRAMES:
-            # Phase 4: after the hold, check that pitch returned toward baseline.
-            after_hold = pitches[best_start + best_len:]
-            if after_hold and any(abs(p - baseline_pitch) <= _NOD_RETURN_DELTA for p in after_hold):
-                return {"passed": True, "feedback": "✅ Nod completed!"}
-            if after_hold:
-                return {"passed": False, "feedback": "Look UP again..."}
-            return {"passed": False, "feedback": "Look UP again..."}
+            # Hold quota met — pass immediately. The green flash + beep in the
+            # browser tells the user they are done; no return-to-neutral needed.
+            return {"passed": True, "feedback": "✅ Nod completed!"}
 
         if best_len > 0:
-            # Partial hold — show countdown.
+            # Partial hold — show countdown so the user knows they are making progress.
             remaining = max(_NOD_HOLD_FRAMES - best_len, 0)
             if remaining == 0:
-                return {"passed": False, "feedback": "Good! Now look UP again..."}
-            return {"passed": False, "feedback": f"Keep looking down... ({remaining} frames remaining)"}
+                return {"passed": False, "feedback": "Hold still..."}
+            return {"passed": False, "feedback": f"Keep looking down... ({remaining} more frames)"}
 
-        return {"passed": False, "feedback": f"Look DOWN... ({_NOD_HOLD_FRAMES} frames remaining)"}
+        # No frames have met the threshold yet — give a gentle, encouraging prompt
+        # without a frame counter (which confused users into thinking they were stuck).
+        return {"passed": False, "feedback": "Gently tilt your chin down…"}
 
     # ─── Blink ────────────────────────────────────────────────────────────────
     if challenge == "blink":

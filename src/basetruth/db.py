@@ -434,6 +434,40 @@ class EntityReport(Base):
     entity = relationship("Entity", back_populates="entity_reports")
 
 
+class FaceScanLiveResult(Base):
+    """Durable record of a completed live Face Scan session.
+
+    The in-memory FaceScanLiveSession objects expire after 20 minutes. This table
+    is the persistent record so operators can review results, watch recordings, and
+    issue deletions long after the session object has been garbage-collected.
+
+    video_key is NULL when:
+      - FACE_SCAN_RECORD_VIDEO env var is 'false' (recording disabled), or
+      - encoding or MinIO upload failed (soft failure — never blocks the result), or
+      - the frame buffer was empty.
+    """
+
+    __tablename__ = "face_scan_live_results"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    # session_id matches the in-memory FaceScanLiveSession.session_id (URL-safe token)
+    session_id = Column(String(50), nullable=False, unique=True)
+    # Verdict: GENUINE | SUSPICIOUS | DEEPFAKE | INCONCLUSIVE | LIVENESS_FAILED
+    verdict = Column(String(20), nullable=False)
+    risk_score = Column(Float, nullable=True)
+    confidence = Column(Float, nullable=True)
+    # Full result payload for re-display and audit
+    report_json = Column(JSONB, nullable=True)
+    # MinIO object key for the best captured still frame (e.g. "face-scan-frames/{session_id}.jpg")
+    best_frame_key = Column(String(500), nullable=True)
+    # MinIO object key for the recorded MP4 video (NULL if not recorded)
+    video_key = Column(String(500), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 # ---------------------------------------------------------------------------
 # Schema initialisation
 # ---------------------------------------------------------------------------
@@ -722,8 +756,133 @@ def init_db() -> bool:
                 """
             ))
 
+            # ── face_scan_live_results table ───────────────────────────────────────
+            # Durable record of every completed live Face Scan session.
+            # Created idempotently — safe to run on every startup.
+            conn.execute(text(
+                "CREATE TABLE IF NOT EXISTS face_scan_live_results ("
+                "id SERIAL PRIMARY KEY, "
+                "session_id VARCHAR(50) NOT NULL UNIQUE, "
+                "verdict VARCHAR(20) NOT NULL, "
+                "risk_score DOUBLE PRECISION, "
+                "confidence DOUBLE PRECISION, "
+                "report_json JSONB, "
+                "best_frame_key VARCHAR(500), "
+                "video_key VARCHAR(500), "
+                "created_at TIMESTAMPTZ DEFAULT NOW(), "
+                "updated_at TIMESTAMPTZ DEFAULT NOW()"
+                ")"
+            ))
+
         log.info("DB schema ready")
         return True
     except Exception as exc:
         log.warning("init_db failed: %s", exc)
         return False
+
+
+# ---------------------------------------------------------------------------
+# Face Scan Live Result persistence helpers
+# ---------------------------------------------------------------------------
+
+def save_face_scan_live_result(
+    session_id: str,
+    verdict: str,
+    risk_score: Optional[float],
+    confidence: Optional[float],
+    report_json: Optional[dict],
+    best_frame_key: Optional[str] = None,
+    video_key: Optional[str] = None,
+) -> bool:
+    """Insert or update a face_scan_live_results row for *session_id*.
+
+    Uses an upsert (INSERT … ON CONFLICT DO UPDATE) so calling this a second time
+    (e.g. after the video has been uploaded) simply updates the existing row rather
+    than inserting a duplicate.
+
+    Returns True on success, False when the DB is unavailable.
+    """
+    try:
+        with db_session() as session:
+            row = session.query(FaceScanLiveResult).filter_by(session_id=session_id).first()
+            if row is None:
+                row = FaceScanLiveResult(session_id=session_id, verdict=verdict)
+                session.add(row)
+            row.verdict = verdict
+            row.risk_score = risk_score
+            row.confidence = confidence
+            row.report_json = report_json
+            row.best_frame_key = best_frame_key
+            row.video_key = video_key
+        log.info(
+            "save_face_scan_live_result: saved session=%s verdict=%s video_key=%s",
+            session_id, verdict, video_key,
+        )
+        return True
+    except Exception as exc:
+        log.error("save_face_scan_live_result failed: %s", exc)
+        return False
+
+
+def get_face_scan_live_result(session_id: str) -> Optional["FaceScanLiveResult"]:
+    """Return the FaceScanLiveResult row for *session_id*, or None if not found."""
+    try:
+        with db_session() as session:
+            row = session.query(FaceScanLiveResult).filter_by(session_id=session_id).first()
+            # Detach the object from the session so it is safe to use after the
+            # session closes.  This is a simple expunge; callers read plain attributes.
+            if row is not None:
+                session.expunge(row)
+            return row
+    except Exception as exc:
+        log.warning("get_face_scan_live_result(%s) failed: %s", session_id, exc)
+        return None
+
+
+def update_face_scan_live_video_key(session_id: str, video_key: Optional[str]) -> bool:
+    """Set (or clear) the video_key column for an existing face_scan_live_results row.
+
+    Used by the delete-video endpoint to null out the key after the MinIO object
+    has been removed, without needing to reload the entire report_json.
+
+    Returns True on success, False when the row does not exist or DB is unavailable.
+    """
+    try:
+        with db_session() as session:
+            row = session.query(FaceScanLiveResult).filter_by(session_id=session_id).first()
+            if row is None:
+                return False
+            row.video_key = video_key
+        log.info("update_face_scan_live_video_key: session=%s → key=%s", session_id, video_key)
+        return True
+    except Exception as exc:
+        log.error("update_face_scan_live_video_key failed: %s", exc)
+        return False
+
+
+def list_face_scan_live_results(limit: int = 10) -> list:
+    """Return the most recent face_scan_live_results rows, newest first.
+
+    Used by the UI "Recent Recordings" panel so operators can watch or delete
+    videos from past sessions even after Streamlit's in-memory session state
+    has been cleared.  Returns an empty list when the DB is unavailable or no
+    rows exist.  Each returned object has at least these plain attributes:
+    session_id, verdict, risk_score, video_key, created_at.
+    """
+    try:
+        with db_session() as session:
+            rows = (
+                session.query(FaceScanLiveResult)
+                .order_by(FaceScanLiveResult.created_at.desc())
+                .limit(limit)
+                .all()
+            )
+            # Detach from the session so callers can safely read attributes
+            # after the context manager closes.
+            for row in rows:
+                session.expunge(row)
+            return rows
+    except Exception as exc:
+        log.warning("list_face_scan_live_results failed: %s", exc)
+        return []
+
