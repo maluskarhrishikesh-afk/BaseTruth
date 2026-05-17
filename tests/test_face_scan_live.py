@@ -201,6 +201,23 @@ def test_face_scan_live_session_status_contract_is_not_kyc() -> None:
     assert "pan_data" not in status
 
 
+def test_face_scan_live_page_supports_callback_and_autostart_hooks() -> None:
+    from basetruth.api import create_app
+
+    client = TestClient(create_app(), raise_server_exceptions=False)
+    create_resp = client.post("/api/v1/face-scan/sessions", json={"challenges": ["blink", "nod"]})
+    sid = create_resp.json()["session_id"]
+
+    resp = client.get(f"/face-scan/live/{sid}?autostart=1&callback=/kyc/sessions/demo/liveness-result&result_mode=verification")
+
+    assert resp.status_code == 200, resp.text
+    html = resp.text
+    assert "const PARAMS = new URLSearchParams(window.location.search);" in html
+    assert "const CALLBACK_URL = PARAMS.get('callback') || '';" in html
+    assert "const AUTO_START = PARAMS.get('autostart') === '1';" in html
+    assert "await postVerificationCallback(msg);" in html
+
+
 def test_face_scan_live_websocket_returns_live_result(monkeypatch) -> None:
     from basetruth.api import create_app
     from basetruth.face_scan import live
@@ -377,6 +394,28 @@ def test_saccade_analysis_returns_neutral_for_insufficient_frames() -> None:
 
     assert result["score_0_100"] == 20.0  # neutral sentinel
     assert result["mean_eye_jitter"] == 0.0
+
+
+def test_confirmed_static_still_window_requires_corroboration_for_borderline_repeat() -> None:
+    from basetruth.face_scan import live
+
+    assert live._confirmed_static_still_window(
+        repeat_frame_score=72.0,
+        temporal_score_0_100=12.0,
+        still_frames_used=10,
+        eye_stillness_score_0_100=18.0,
+    ) is False
+
+
+def test_confirmed_static_still_window_accepts_extreme_repeat_without_extra_signals() -> None:
+    from basetruth.face_scan import live
+
+    assert live._confirmed_static_still_window(
+        repeat_frame_score=92.0,
+        temporal_score_0_100=8.0,
+        still_frames_used=10,
+        eye_stillness_score_0_100=10.0,
+    ) is True
 
 
 # ── Signal 2: FFT Screen-Frequency Analysis ───────────────────────────────────
@@ -1520,6 +1559,83 @@ def test_motion_challenge_hold_phase_does_not_flag_genuine_nod() -> None:
         )
 
 
+def test_build_live_face_scan_result_does_not_escalate_borderline_still_replay_with_organic_eye_jitter(monkeypatch) -> None:
+    """Borderline still-frame replay alone must not become a static-photo verdict."""
+    from basetruth.face_scan import live
+
+    history = [
+        _metric_frame(
+            i,
+            yaw=0.03 + 0.002 * (i % 2),
+            pitch=0.02,
+            nose_rel_x=0.50,
+            frame_hash=_frame_hashes()[i % len(_frame_hashes())],
+        )
+        for i in range(12)
+    ]
+    session = live.FaceScanLiveSession(
+        session_id="borderline-still-replay-test",
+        challenges=["look_straight", "blink"],
+    )
+    session.current_challenge_idx = 2
+    session.challenge_results = [
+        {"index": 0, "challenge": "look_straight", "passed": True},
+        {"index": 1, "challenge": "blink", "passed": True},
+    ]
+    session.challenge_frame_history = {
+        "ch_0": history[:6],
+        "ch_1": history[6:],
+    }
+    session.all_frame_history = history
+    session.frames_received = len(history)
+    session.best_live_frame_bytes = b"jpeg-bytes"
+    session.last_face_box = history[-1]["face_box"]
+    session.environment["observed_fps"] = 10.0
+
+    monkeypatch.setattr(
+        live,
+        "_score_per_challenge",
+        lambda _session: [
+            {
+                "challenge": "look_straight",
+                "index": 0,
+                "frames_used": 10,
+                "temporal": {"score_0_100": 12.0},
+                "replay": {"score_0_100": 52.0, "repeat_frame_score": 74.0},
+                "combined_risk": 52.0,
+                "reason": "borderline repeated frames in low light",
+            },
+            {
+                "challenge": "blink",
+                "index": 1,
+                "frames_used": 6,
+                "temporal": {"score_0_100": 8.0},
+                "replay": {"score_0_100": 10.0, "repeat_frame_score": 5.0},
+                "combined_risk": 9.0,
+                "reason": "no significant anomalies detected",
+            },
+        ],
+    )
+    monkeypatch.setattr(live, "_compute_replay_heuristics", lambda _history: {"score_0_100": 18.0, "repeat_frame_score": 12.0, "flicker_score": 8.0, "brightness_instability": 1.0})
+    monkeypatch.setattr(live, "_compute_temporal_consistency", lambda _groups: {"score_0_100": 12.0, "yaw_jerk": 0.01, "pitch_jerk": 0.01, "nose_jitter": 0.01})
+    monkeypatch.setattr(live, "_compute_quality_metrics", lambda _history: {"blur_risk_0_100": 8.0, "brightness_risk_0_100": 42.0, "face_size_risk_0_100": 4.0})
+    monkeypatch.setattr(live, "_compute_saccade_analysis", lambda _history: {"score_0_100": 18.0, "mean_eye_jitter": 0.008, "eye_stillness_risk": 18.0})
+    monkeypatch.setattr(live, "_compute_screen_frequency_analysis", lambda _history: {"score_0_100": 0.0, "mean_fft_grid_peak": 0.0})
+    monkeypatch.setattr(live, "_compute_frame_timing_jitter", lambda _history: {"score_0_100": 0.0, "interval_std_ms": 0.0, "interval_cv": 0.0})
+    monkeypatch.setattr(live, "_compute_depth_consistency", lambda _session: {"score_0_100": 0.0, "iod_yaw_correlation": -0.5})
+    monkeypatch.setattr(live, "_compute_head_velocity_variance", lambda _history: 0.02)
+    monkeypatch.setattr(live, "_compute_blink_duration_ms", lambda _session: 180.0)
+    monkeypatch.setattr(live, "_compute_mean_reaction_latency_ms", lambda _session: 900.0)
+    monkeypatch.setattr(live._narrative_mod, "generate_face_scan_narrative", lambda result: (result["honest_review"], "rule"))
+
+    result = live.build_live_face_scan_result(session)
+
+    assert result["verdict"] == "GENUINE"
+    assert result["checks"]["still_challenge_replay"]["status"] == "warn"
+    assert "static photograph" not in " ".join(result["evidence"]).lower()
+
+
+def test_quality_metrics_flags_small_face_below_six_percent() -> None:
     """A face below 6 % of the frame (user is far from the camera, not in the
     oval) must still score face_size_risk >= 50 so the warning fires.
     """

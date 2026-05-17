@@ -68,6 +68,10 @@ class KYCSession:
     aadhaar_qr: Optional[Dict[str, Any]] = None
     pan_data: Optional[Dict[str, Any]] = None
     pan_sig_b64: Optional[str] = None
+    # PAN extraction now runs in the background after upload so the browser
+    # and Streamlit poller do not block on a long Gemma4/OCR call.
+    pan_processing: bool = False
+    pan_extraction_error: str = ""
 
     # Base64 representations of the raw uploaded documents
     aadhaar_b64: Optional[str] = None
@@ -171,6 +175,8 @@ class KYCSession:
             "aadhaar_qr": self.aadhaar_qr,
             "pan_data": self.pan_data,
             "pan_sig_b64": self.pan_sig_b64,
+            "pan_processing": self.pan_processing,
+            "pan_extraction_error": self.pan_extraction_error,
             "aadhaar_b64": self.aadhaar_b64,
             "pan_b64": self.pan_b64,
             "address_proof_b64": self.address_proof_b64,

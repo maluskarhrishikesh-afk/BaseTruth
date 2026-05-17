@@ -1,6 +1,7 @@
-"""Unit tests for the three new KYC HTTP endpoints added to api.py.
+"""Unit tests for the KYC HTTP endpoints added to api.py.
 
   POST /kyc/sessions/{sid}/upload-id
+    POST /kyc/sessions/{sid}/upload-pan
   POST /kyc/sessions/{sid}/upload-address
   POST /kyc/sessions/{sid}/location
 
@@ -10,7 +11,6 @@ Starlette TestClient is used to drive FastAPI directly.
 from __future__ import annotations
 
 import io
-import json
 from typing import Any
 
 import numpy as np
@@ -156,6 +156,71 @@ class TestKycUploadId:
         if resp.status_code == 200:
             data = resp.json()
             assert "face_found" in data
+
+
+# ---------------------------------------------------------------------------
+# POST /kyc/sessions/{sid}/upload-pan
+# ---------------------------------------------------------------------------
+
+class TestKycUploadPan:
+    def test_returns_404_for_unknown_session(self, client) -> None:
+        jpeg = _tiny_jpeg()
+        resp = client.post(
+            "/kyc/sessions/nonexistent-session-id/upload-pan",
+            files={"file": ("pan.jpg", io.BytesIO(jpeg), "image/jpeg")},
+        )
+        assert resp.status_code == 404
+
+    def test_upload_stores_pan_image_and_marks_processing(
+        self, app_and_store, monkeypatch
+    ) -> None:
+        """upload-pan must return quickly after storing the raw image.
+
+        This is a regression test for the operator Session Status poller timing
+        out while PAN extraction waited on Gemma4 and OCR in the same request.
+        The endpoint now stores the image immediately and starts background work.
+        """
+        from starlette.testclient import TestClient
+        import base64
+        import basetruth.api as api_module
+
+        app, _ = app_and_store
+        sid = _make_session(app_and_store)
+        jpeg = _tiny_jpeg()
+        captured: dict[str, Any] = {}
+
+        def _fake_spawn(session, image_bytes, doc_filename, _logger) -> None:
+            captured["session_id"] = session.session_id
+            captured["image_bytes"] = image_bytes
+            captured["doc_filename"] = doc_filename
+
+        monkeypatch.setattr(api_module, "_spawn_kyc_pan_extraction_thread", _fake_spawn)
+
+        with TestClient(app, raise_server_exceptions=False) as tc:
+            resp = tc.post(
+                f"/kyc/sessions/{sid}/upload-pan",
+                files={"file": ("pan.jpg", io.BytesIO(jpeg), "image/jpeg")},
+            )
+            status_resp = tc.get(f"/kyc/sessions/{sid}")
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["processing_started"] is True
+        assert data["pan_extracted"] is False
+        assert "background" in data["hint"].lower()
+
+        assert captured == {
+            "session_id": sid,
+            "image_bytes": jpeg,
+            "doc_filename": "pan.jpg",
+        }
+
+        assert status_resp.status_code == 200, status_resp.text
+        status = status_resp.json()
+        assert base64.b64decode(status["pan_b64"]) == jpeg
+        assert status["pan_processing"] is True
+        assert status["pan_extraction_error"] == ""
+        assert status["pan_data"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -337,3 +402,64 @@ class TestKycSaveLocation:
         # Address was successfully stored (endpoint returned 200 with the address)
         data = resp.json()
         assert data.get("address") == expected_addr
+
+
+# ---------------------------------------------------------------------------
+# POST /kyc/sessions/{sid}/liveness-result and customer-page bridge
+# ---------------------------------------------------------------------------
+
+class TestKycLivenessBridge:
+    def test_customer_page_uses_face_scan_live_contract(self, app_and_store) -> None:
+        """The KYC browser page must redirect into the shared Face Scan live page."""
+        from starlette.testclient import TestClient
+
+        app, _ = app_and_store
+        sid = _make_session(app_and_store)
+
+        with TestClient(app, raise_server_exceptions=False) as tc:
+            resp = tc.get(f"/kyc/{sid}")
+
+        assert resp.status_code == 200
+        html = resp.text
+        assert "/api/v1/face-scan/sessions" in html
+        assert "/face-scan/live/${data.session_id}?autostart=1&result_mode=verification&callback=${callback}" in html
+        assert f"/kyc/ws/${{SESSION_ID}}" not in html
+
+    def test_liveness_result_endpoint_stores_face_scan_payload(self, app_and_store) -> None:
+        """The bridge endpoint must complete the KYC session and keep the full Face Scan JSON."""
+        from starlette.testclient import TestClient
+
+        app, _ = app_and_store
+        sid = _make_session(app_and_store)
+        payload = {
+            "face_scan_session_id": "face-scan-live-123",
+            "verdict": "GENUINE",
+            "risk_score_0_100": 12.5,
+            "confidence_0_100": 91.0,
+            "honest_review": "The live scan looks genuine.",
+            "checks": {
+                "active_liveness": {
+                    "passed": True,
+                    "completed_challenges": ["look_straight", "blink"],
+                }
+            },
+        }
+
+        with TestClient(app, raise_server_exceptions=False) as tc:
+            resp = tc.post(f"/kyc/sessions/{sid}/liveness-result", json=payload)
+            assert resp.status_code == 200, resp.text
+
+            data = resp.json()
+            assert data["ok"] is True
+            assert data["passed"] is True
+            assert data["display_score"] == pytest.approx(87.5)
+            assert data["face_scan_result"]["verdict"] == "GENUINE"
+
+            status_resp = tc.get(f"/kyc/sessions/{sid}")
+
+        assert status_resp.status_code == 200, status_resp.text
+        status = status_resp.json()
+        assert status["status"] == "completed"
+        assert status["challenges_completed"] == status["total_challenges"]
+        assert status["result"]["message"] == "The live scan looks genuine."
+        assert status["result"]["face_scan_result"]["confidence_0_100"] == pytest.approx(91.0)

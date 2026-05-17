@@ -102,11 +102,31 @@ def test_kyc_session_new_fields_have_correct_defaults() -> None:
     assert session.address_dtls is None
     assert session.reference_doc_filename == ""
     assert session.address_proof_filename == ""
+    assert session.pan_processing is False
+    assert session.pan_extraction_error == ""
     assert session.current_location == ""
     assert session.address_match_result == ""
     assert session.address_distance_meters is None
     assert session.challenge_snapshots == []
     assert session.best_live_frame_bytes is None
+
+
+def test_pan_processing_fields_are_exposed_in_status_dict() -> None:
+    """to_status_dict must expose PAN background-processing state for the UI."""
+    session = KYCSession(
+        session_id="session-pan-status",
+        customer_name="Test",
+        entity_ref="BT-000012",
+        challenges=["blink"],
+        reference_embedding_b64=None,
+    )
+    session.pan_processing = True
+    session.pan_extraction_error = "still running"
+
+    d = session.to_status_dict()
+
+    assert d["pan_processing"] is True
+    assert d["pan_extraction_error"] == "still running"
 
 
 def test_session_store_create_passes_address_dtls_to_session() -> None:

@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 try:
-    from fastapi import FastAPI, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
+    from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
     from pydantic import BaseModel, Field
 
@@ -138,6 +138,88 @@ except ImportError:
 
 
 _DEFAULT_ARTIFACT_ROOT = Path("artifacts")
+
+
+def _extract_kyc_pan_details_in_background(
+    session: Any,
+    image_bytes: bytes,
+    doc_filename: str,
+    logger: Any,
+) -> None:
+    """Finish PAN extraction after the upload response is already returned.
+
+    The PAN step uses Gemma4 plus OCR and can legitimately take longer than the
+    Streamlit session-status poll timeout. We store the raw image immediately,
+    then finish field extraction in a daemon thread so the customer page and the
+    operator poller stay responsive.
+    """
+    session.pan_extraction_error = ""
+    try:
+        from basetruth.ui.pages.identity import _crop_pan_signature, _extract_pan_info
+
+        pan_d = _extract_pan_info(image_bytes)
+        if pan_d and (pan_d.get("pan_number") or pan_d.get("full_name")):
+            session.pan_data = pan_d
+            sig_b = _crop_pan_signature(
+                image_bytes,
+                precomputed_box=pan_d.get("sig_box"),
+            )
+            if sig_b:
+                import base64
+
+                session.pan_sig_b64 = base64.b64encode(sig_b).decode("utf-8")
+            logger.info(
+                "kyc_upload_pan: background extraction finished",
+                extra={
+                    "session_id": session.session_id,
+                    "doc_filename": doc_filename,
+                    "extracted": True,
+                },
+            )
+            return
+
+        session.pan_data = {}
+        session.pan_sig_b64 = None
+        session.pan_extraction_error = "Could not extract PAN details from image."
+        logger.warning(
+            "kyc_upload_pan: background extraction found no PAN fields",
+            extra={
+                "session_id": session.session_id,
+                "doc_filename": doc_filename,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        session.pan_data = {}
+        session.pan_sig_b64 = None
+        session.pan_extraction_error = str(exc)
+        logger.warning(
+            "kyc_upload_pan: background extraction failed: %s",
+            exc,
+            extra={
+                "session_id": session.session_id,
+                "doc_filename": doc_filename,
+            },
+        )
+    finally:
+        session.pan_processing = False
+
+
+def _spawn_kyc_pan_extraction_thread(
+    session: Any,
+    image_bytes: bytes,
+    doc_filename: str,
+    logger: Any,
+) -> None:
+    """Start the background PAN extraction worker for a KYC session."""
+    import threading
+
+    worker = threading.Thread(
+        target=_extract_kyc_pan_details_in_background,
+        args=(session, image_bytes, doc_filename, logger),
+        daemon=True,
+        name=f"kyc-pan-{getattr(session, 'session_id', 'unknown')}",
+    )
+    worker.start()
 
 # ---------------------------------------------------------------------------
 # Customer-facing Video KYC HTML page (served at GET /kyc/{session_id})
@@ -408,7 +490,7 @@ const INSTR = {
   nod:        'Slowly nod your head down then back up to center',
 };
 
-let ws=null, stream=null, captureTimer=null, resultShown=false;
+let resultShown=false;
 
 // ── Screen manager ────────────────────────────────────────────────────────
 function show(id){
@@ -523,14 +605,15 @@ document.getElementById('btn-pan-next').onclick=async()=>{
   const file=fPan.files[0]; if(!file) return;
   const btn=document.getElementById('btn-pan-next');
   btn.disabled=true; btn.textContent='Processing…';
-  setFb('fb-pan','⏳ Extracting PAN details…','');
+    setFb('fb-pan','⏳ Uploading PAN image…','');
 
   const fd=new FormData(); fd.append('file',file);
   try{
     const resp=await fetch(`/kyc/sessions/${SESSION_ID}/upload-pan`,{method:'POST',body:fd});
     const data=await resp.json();
     if(resp.ok){
-      setFb('fb-pan','✓ PAN details extracted successfully','pass');
+            const okMsg=data.hint||'PAN image received. Details are being processed.';
+            setFb('fb-pan','✓ '+okMsg,'pass');
       setTimeout(()=>{ show('s-3'); setStep(3); },700);
     } else {
       const msg=data.detail||data.message||'Could not extract details. Try a clearer photo.';
@@ -650,150 +733,32 @@ document.getElementById('btn-loc').onclick=()=>{
 document.getElementById('btn3-next').onclick=()=>{ startLiveness(); };
 document.getElementById('btn3-skip').onclick=()=>{ startLiveness(); };
 
-// ── Step 5: Liveness — open WebSocket, start camera, run challenges ───────
+// ── Step 5: Liveness — hand off to the shared Face Scan live page ─────────
 async function startLiveness(){
   show('s-5'); setStep(5);
+    resultShown=false;
+    document.getElementById('ch-label').textContent='Opening live verification…';
+    document.getElementById('ch-inst').textContent='You are being redirected to the secure live challenge page.';
+    setFb('fb4','⏳ Preparing camera challenge…','');
 
-  // Build dot indicators for each challenge
-  const dotsEl=document.getElementById('dots');
-  dotsEl.innerHTML='';
-  for(let i=0;i<TOTAL_CHALLENGES;i++){
-    const d=document.createElement('div');
-    d.className='dot'; d.id='dot'+i; dotsEl.appendChild(d);
-  }
-
-  // Start the camera stream
-  try{
-    stream=await navigator.mediaDevices.getUserMedia(
-      {video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}},audio:false});
-    const vid=document.getElementById('vid');
-    vid.srcObject=stream; await vid.play();
-  } catch{
-    document.getElementById('ch-label').textContent='Camera Access Denied';
-    document.getElementById('ch-inst').textContent='Please allow camera access and reload the page.';
-    return;
-  }
-
-  // Open WebSocket — the server drives the challenge sequence from here
-  const proto=location.protocol==='https:'?'wss:':'ws:';
-  ws=new WebSocket(`${proto}//${location.host}/kyc/ws/${SESSION_ID}`);
-  ws.onopen=()=>{ startCapture(); };
-  ws.onmessage=e=>{ try{ handle(JSON.parse(e.data)); } catch{} };
-  ws.onerror=()=>{ if(!resultShown) showResult(false,0,'Connection error.'); };
-  ws.onclose=e=>{ if(!resultShown && e.code!==1000) showResult(false,0,'Session disconnected.'); stopCapture(); };
-}
-
-// Capture a JPEG frame every ~100 ms and send it to the server as base64
-function startCapture(){
-  const canvas=document.createElement('canvas');
-  const ctx=canvas.getContext('2d');
-  const vid=document.getElementById('vid');
-  captureTimer=setInterval(()=>{
-    if(!ws||ws.readyState!==1||!vid.videoWidth) return;
-    // Resize to 640 px wide to keep payload manageable
-    canvas.width=640;
-    canvas.height=Math.round(640*vid.videoHeight/vid.videoWidth);
-    // Mirror the frame horizontally before sending so that left/right directions
-    // on the server match what the user sees in their mirrored video preview.
-    // The video CSS uses scaleX(-1) for display; we apply the same flip here
-    // so the server receives a frame that matches the user's perspective.
-    ctx.save();
-    ctx.scale(-1,1);
-    ctx.drawImage(vid,-canvas.width,0,canvas.width,canvas.height);
-    ctx.restore();
-    canvas.toBlob(blob=>{
-      if(!blob) return;
-      const fr=new FileReader();
-      fr.onloadend=()=>{
-        const b64=fr.result.split(',')[1];
-        if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'frame',data:b64}));
-      };
-      fr.readAsDataURL(blob);
-    },'image/jpeg',0.82);
-  },100);
-}
-
-function stopCapture(){
-  if(captureTimer){clearInterval(captureTimer);captureTimer=null;}
-  if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
-}
-
-// Route incoming WebSocket messages from the server
-function handle(msg){
-  if(msg.type==='status')       updateLivenessUI(msg);
-  else if(msg.type==='result'){ stopCapture(); if(ws) ws.close(1000); showResult(msg.passed,msg.display_score||0,msg.message||'',msg); }
-  else if(msg.type==='error'){  stopCapture(); showResult(false,0,msg.message||'Verification failed.'); }
-  // Ignore nudge/unknown messages — server sends nudges when waiting for the next frame
-}
-
-// Update the liveness challenge UI with the latest server-side status
-function updateLivenessUI(msg){
-  const badge=document.getElementById('face-badge');
-  if(msg.face_detected){badge.className='badge b-ok';badge.textContent='✓ Face detected';}
-  else{badge.className='badge b-warn';badge.textContent='Centre your face';}
-
-  if(msg.challenge){
-    document.getElementById('ch-label').textContent=LABELS[msg.challenge]||msg.challenge.toUpperCase();
-    document.getElementById('ch-inst').textContent=INSTR[msg.challenge]||'';
-  }
-
-  // Update progress bar and dots
-  const done=msg.challenges_completed||0;
-  const total=msg.total_challenges||TOTAL_CHALLENGES;
-  document.getElementById('prog-fill').style.width=total>0?(done/total*100)+'%':'0%';
-  for(let i=0;i<total;i++){
-    const d=document.getElementById('dot'+i);
-    if(d) d.className='dot'+(i<done?' done':i===done?' active':'');
-  }
-
-  if(msg.feedback){
-    const fb4=document.getElementById('fb4');
-    fb4.textContent=msg.feedback;
-    fb4.className='fb'+(msg.challenge_just_passed?' pass':'');
+    // Create a dedicated Face Scan live session, then hand off to the shared
+    // Face Scan customer page so KYC uses the exact same live-challenge UX.
+    try{
+        const resp=await fetch('/api/v1/face-scan/sessions',{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({challenges:CHALLENGES}),
+        });
+        const data=await resp.json();
+        if(!resp.ok||!data.session_id){
+            throw new Error(data.detail||data.message||'Could not start verification session.');
+        }
+        const callback=encodeURIComponent(`/kyc/sessions/${SESSION_ID}/liveness-result`);
+        window.location.assign(`/face-scan/live/${data.session_id}?autostart=1&result_mode=verification&callback=${callback}`);
+    } catch(err){
+        setFb('fb4','✗ '+((err&&err.message)||'Could not start verification session.'),'fail');
   }
 }
-
-// Build and show the final result screen
-function showResult(passed,score,message,fullResult){
-  resultShown=true;
-  show('s-result');
-  const inner=document.getElementById('res-inner');
-  const icon=document.getElementById('res-icon');
-  const title=document.getElementById('res-title');
-  const det=document.getElementById('res-det');
-
-  if(passed){
-    inner.className='res-card res-pass';
-    icon.textContent='✅';
-    title.textContent='Identity Verified';
-    det.innerHTML='Your identity has been successfully verified.<br><br>You may now close this window.';
-  } else {
-    inner.className='res-card res-fail';
-    icon.textContent='❌';
-    title.textContent='Verification Failed';
-    det.innerHTML=(message||'Verification could not be completed.')
-      +'<br><br>Please contact your agent for assistance.';
-  }
-
-  // Show address summary panel if the server returned address check fields
-  if(fullResult&&(fullResult.address_match_result||fullResult.current_location)){
-    const sumEl=document.getElementById('addr-summary');
-    sumEl.style.display='block';
-    const r=fullResult.address_match_result;
-    const addr=fullResult.current_location||'';
-    const dist=fullResult.address_distance_meters;
-    let html='<strong>Address check:</strong> ';
-    html += r==='match'   ? '<span style="color:#4ade80">✓ Match</span>' :
-            r==='partial' ? '<span style="color:#facc15">~ Partial match</span>' :
-            r==='mismatch'? '<span style="color:#f87171">✗ Mismatch</span>' :
-                            '<span style="color:#64748b">Skipped</span>';
-    if(dist!=null) html+=` <span style="color:#64748b">(${Math.round(dist)} m)</span>`;
-    if(addr) html+=`<br><span style="color:#64748b">Live address: ${addr.substring(0,120)}</span>`;
-    sumEl.innerHTML=html;
-  }
-}
-
-window.addEventListener('beforeunload',()=>{ stopCapture(); if(ws) ws.close(); });
 </script>
 </body>
 </html>
@@ -1722,6 +1687,92 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
     _kyc_store    = SessionStore()
     _kyc_face_lock = _threading.Lock()
 
+    def _face_scan_live_passed(face_scan_result: Dict[str, Any]) -> bool:
+        """Return the KYC pass/fail view of a Face Scan live result."""
+        if isinstance(face_scan_result.get("passed"), bool):
+            return bool(face_scan_result["passed"])
+        return str(face_scan_result.get("verdict", "")).upper() == "GENUINE"
+
+    def _face_scan_live_display_score(face_scan_result: Dict[str, Any]) -> float:
+        """Map the Face Scan payload onto the KYC-style 0-100 display score."""
+        raw_display = face_scan_result.get("display_score")
+        if raw_display is not None:
+            try:
+                return max(0.0, min(100.0, float(raw_display)))
+            except (TypeError, ValueError):
+                pass
+
+        raw_risk = face_scan_result.get("risk_score_0_100")
+        if raw_risk is not None:
+            try:
+                return round(max(0.0, min(100.0, 100.0 - float(raw_risk))), 2)
+            except (TypeError, ValueError):
+                pass
+
+        raw_confidence = face_scan_result.get("confidence_0_100")
+        if raw_confidence is not None:
+            try:
+                return round(max(0.0, min(100.0, float(raw_confidence))), 2)
+            except (TypeError, ValueError):
+                pass
+
+        return 100.0 if _face_scan_live_passed(face_scan_result) else 0.0
+
+    def _translate_face_scan_live_result_to_kyc(session: Any, face_scan_result: Dict[str, Any]) -> Dict[str, Any]:
+        """Bridge the Face Scan live payload into the Video KYC session contract."""
+        verdict = str(face_scan_result.get("verdict", "") or "").upper()
+        passed = _face_scan_live_passed(face_scan_result)
+        display_score = _face_scan_live_display_score(face_scan_result)
+        checks = face_scan_result.get("checks") or {}
+        active_liveness = checks.get("active_liveness") or {}
+        completed_challenges = list(active_liveness.get("completed_challenges") or [])
+
+        if not completed_challenges:
+            completed_challenges = list(session.challenges)
+
+        session.challenge_results = [
+            {"index": idx, "challenge": challenge, "passed": True}
+            for idx, challenge in enumerate(completed_challenges)
+        ]
+        session.current_challenge_idx = len(session.challenges)
+
+        face_scan_session_id = str(face_scan_result.get("face_scan_session_id", "") or "").strip()
+        if face_scan_session_id:
+            live_session = _face_scan_live_store.get(face_scan_session_id)
+            if live_session:
+                if live_session.best_live_frame_bytes:
+                    session.best_live_frame_bytes = live_session.best_live_frame_bytes
+                if live_session.challenge_snapshots:
+                    session.challenge_snapshots = list(live_session.challenge_snapshots)
+                if live_session.challenge_results:
+                    session.challenge_results = list(live_session.challenge_results)
+                session.current_challenge_idx = min(live_session.current_challenge_idx, len(session.challenges))
+
+        message = (
+            face_scan_result.get("honest_review")
+            or face_scan_result.get("overall_explanation")
+            or face_scan_result.get("message")
+            or ("Liveness verified." if passed else "Verification failed.")
+        )
+
+        return {
+            "passed": passed,
+            "display_score": display_score,
+            "match_score": round(display_score / 100.0, 4),
+            "liveness_passed": passed,
+            "liveness_state": "challenge_response",
+            "message": message,
+            "verdict": verdict,
+            "challenges": list(session.challenges),
+            "challenge_results": list(session.challenge_results),
+            "challenges_completed": session.current_challenge_idx,
+            "face_scan_result": face_scan_result,
+            "address_match_result": session.address_match_result or "skipped",
+            "isAddressMatch": session.address_match_result or "skipped",
+            "current_location": session.current_location,
+            "address_distance_meters": session.address_distance_meters,
+        }
+
     def _process_kyc_frame(session: Any, b64_frame: str) -> Dict[str, Any]:
         """CPU-bound per-frame analysis — called in a thread-pool executor."""
         try:
@@ -2224,6 +2275,35 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
             raise HTTPException(status_code=404, detail="Session not found or expired.")
         return session.to_status_dict()
 
+    @app.post("/kyc/sessions/{session_id}/liveness-result", tags=["Video KYC"], include_in_schema=False)
+    async def save_kyc_liveness_result(session_id: str, request: Request) -> Dict[str, Any]:
+        """Store the canonical Face Scan live result on the Video KYC session."""
+        session = _kyc_store.get(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="KYC session not found or expired.")
+
+        try:
+            face_scan_result = await request.json()
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail="Invalid Face Scan result payload.") from exc
+
+        if not isinstance(face_scan_result, dict):
+            raise HTTPException(status_code=400, detail="Face Scan result payload must be a JSON object.")
+
+        kyc_result = _translate_face_scan_live_result_to_kyc(session, face_scan_result)
+        session.status = "completed"
+        session.result = kyc_result
+        _kyc_log.info(
+            "KYC session completed via Face Scan live bridge",
+            extra={
+                "session_id": session_id,
+                "face_scan_session_id": face_scan_result.get("face_scan_session_id", ""),
+                "passed": kyc_result["passed"],
+                "verdict": kyc_result.get("verdict", ""),
+            },
+        )
+        return {"ok": True, **kyc_result}
+
     @app.get(
         "/kyc/sessions/{session_id}/best-frame",
         tags=["Video KYC"],
@@ -2450,51 +2530,57 @@ def create_app(artifact_root: str | Path | None = None) -> Any:
     async def kyc_upload_pan(session_id: str, file: UploadFile) -> Dict[str, Any]:
         """Receive the customer's PAN card photo (Step 2 of the KYC wizard).
 
-        Extracts PAN details and the signature image.
-        Returns ``{"pan_extracted": bool, "hint": "..."}``.
+        Stores the raw PAN image immediately, then starts the slower PAN
+        extraction in the background so the customer flow does not sit on a
+        long-lived HTTP request.
+
+        Returns ``{"pan_extracted": bool, "processing_started": bool, "hint": "..."}``.
         """
         session = _kyc_store.get(session_id)
         if not session or session.is_expired():
             raise HTTPException(status_code=404, detail="Session not found or expired.")
 
         image_bytes = await file.read()
-        
-        pan_extracted = False
-        try:
-            from basetruth.ui.pages.identity import _extract_pan_info, _crop_pan_signature
-            pan_d = await _asyncio.get_event_loop().run_in_executor(None, _extract_pan_info, image_bytes)
-            if pan_d and (pan_d.get("pan_number") or pan_d.get("full_name")):
-                session.pan_data = pan_d
-                pan_extracted = True
-                # Pass the sig_box already returned by _extract_pan_info so
-                # _crop_pan_signature uses the fast path (no second Gemma4 call).
-                # This is the same pattern used by the Identity Verification screen
-                # and guarantees identical signature quality and speed on both surfaces.
-                _sig_box = pan_d.get("sig_box")
-                sig_b = await _asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda _ib=image_bytes, _sb=_sig_box: _crop_pan_signature(_ib, precomputed_box=_sb),
-                )
-                if sig_b:
-                    import base64 as _b64
-                    session.pan_sig_b64 = _b64.b64encode(sig_b).decode("utf-8")
-        except Exception as exc:
-            _kyc_log.warning("kyc_upload_pan: PAN extraction failed: %s", exc)
 
         import base64 as _b64
         session.pan_b64 = _b64.b64encode(image_bytes).decode("utf-8")
+        session.pan_data = None
+        session.pan_sig_b64 = None
+        session.pan_processing = True
+        session.pan_extraction_error = ""
+
+        try:
+            _spawn_kyc_pan_extraction_thread(
+                session,
+                image_bytes,
+                file.filename or "pan_upload",
+                _kyc_log,
+            )
+        except Exception as exc:  # noqa: BLE001
+            session.pan_processing = False
+            session.pan_extraction_error = str(exc)
+            _kyc_log.error(
+                "kyc_upload_pan: could not start background extraction",
+                extra={
+                    "session_id": session_id,
+                    "doc_filename": file.filename,
+                    "error": str(exc),
+                },
+            )
+            raise HTTPException(status_code=500, detail="Could not start PAN extraction.") from exc
 
         _kyc_log.info(
             "kyc_upload_pan: PAN card uploaded",
             extra={
                 "session_id": session_id,
                 "doc_filename": file.filename,
-                "extracted": pan_extracted,
+                "background": True,
             },
         )
         return {
-            "pan_extracted": pan_extracted,
-            "hint": "PAN details extracted." if pan_extracted else "Could not extract PAN details from image.",
+            "pan_extracted": False,
+            "processing_started": True,
+            "hint": "PAN image received. Details are being extracted in the background.",
         }
 
     @app.post(

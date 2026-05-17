@@ -73,7 +73,7 @@ SQL SYNTAX REMINDERS:
   - Use COALESCE where nulls may appear.
   - Use readable column aliases.
 
-VALID TABLES — only these 6 tables exist in BaseTruth PostgreSQL:
+VALID TABLES — only these 7 tables exist in BaseTruth PostgreSQL:
   1. entities             — one row per applicant / person being verified
   2. scans                — one row per document uploaded and scanned
   3. document_extractions — extracted field data from each document (JSON)
@@ -94,6 +94,10 @@ VALID TABLES — only these 6 tables exist in BaseTruth PostgreSQL:
                             address_dtls (JSONB), challenge_snapshots_json (JSONB),
                             report_json (JSONB), created_at, updated_at
   6. entity_reports       — final cross-document verification reports
+  7. face_scan_live_results — durable Live Face Scan session results;
+                            columns: id, session_id, verdict, risk_score, confidence,
+                            best_frame_key, video_key, report_json (JSONB),
+                            created_at, updated_at
 
 TABLES THAT DO NOT EXIST — never query these:
   ✗ users        → use 'entities' instead
@@ -110,6 +114,7 @@ KEY COLUMN NAMING RULES:
   - 'entities' primary key is 'id' (NOT 'entity_id', NOT 'user_id')
   - 'entity_id' is a FOREIGN KEY in the child tables (scans, document_extractions,
     identity_checks, video_kyc_checks, entity_reports) pointing TO entities.id
+  - 'face_scan_live_results' does NOT have entity_id; use session_id for joins/searches
   - human-readable applicant ID is 'entity_ref' (e.g. BT-000001)
 
 ====================================================
@@ -252,11 +257,11 @@ TABLE: scans  (one row per document scan submitted to BaseTruth)
 TABLE: document_extractions  (structured JSON data extracted from each document)
   id            — internal primary key
   entity_id     — FK to entities
-  scan_id       — FK to scans (nullable for identity_verification)
+  scan_id       — FK to scans (nullable when a save path does not create a scan row)
   file_name     — uploaded filename; unique per entity
   document_type — e.g. payslip, aadhaar, pan_card, degree_certificate
   extracted_data — JSONB with all extracted fields (name, salary, marks, etc.)
-  source_screen — scan_document / bulk_scan / identity_verification
+  source_screen — scan_document / bulk_scan
   created_at    — insert timestamp
 
   COMMON QUERIES:
@@ -289,6 +294,49 @@ TABLE: identity_checks  (Identity Verification face-match results)
     Pass / fail breakdown for face matching:
       SELECT verdict, COUNT(*) FROM identity_checks
       GROUP BY verdict
+
+TABLE: video_kyc_checks  (Video KYC session results)
+  id            — internal primary key
+  entity_id     — FK to entities
+  status        — pass / fail / inconclusive
+  verdict       — PASS or FAIL
+  liveness_state — final challenge state
+  liveness_passed — true / false
+  cosine_similarity  — live-face match confidence score (0.0 to 1.0)
+  current_location — reverse-geocoded current address text
+  address_distance_meters — distance from proof address to live browser location
+  created_at    — when the session result was saved
+
+  COMMON QUERIES:
+    Latest Video KYC sessions:
+      SELECT id, entity_id, verdict, liveness_passed, created_at
+      FROM video_kyc_checks
+      ORDER BY created_at DESC LIMIT 20
+
+    Video KYC pass / fail breakdown:
+      SELECT verdict, COUNT(*) FROM video_kyc_checks
+      GROUP BY verdict
+
+TABLE: face_scan_live_results  (durable Live Face Scan session results)
+  id            — internal primary key
+  session_id    — unique live-session token
+  verdict       — GENUINE / SUSPICIOUS / DEEPFAKE / INCONCLUSIVE / LIVENESS_FAILED
+  risk_score    — 0 to 100 spoof-risk score
+  confidence    — 0.0 to 1.0 model confidence
+  best_frame_key — MinIO object key for the best still frame
+  video_key     — MinIO object key for the recorded MP4 (nullable)
+  created_at    — when the live session was saved
+
+  COMMON QUERIES:
+    Latest live Face Scan sessions:
+      SELECT session_id, verdict, risk_score, created_at
+      FROM face_scan_live_results
+      ORDER BY created_at DESC LIMIT 20
+
+    Count suspicious live Face Scan sessions:
+      SELECT COUNT(*) AS suspicious_sessions
+      FROM face_scan_live_results
+      WHERE verdict IN ('SUSPICIOUS', 'DEEPFAKE', 'LIVENESS_FAILED')
 
 TABLE: entity_reports  (final cross-document verification reports)
   id            — internal primary key
@@ -520,9 +568,10 @@ APPROVAL STATUS SYNONYMS:
   "rejected" / "denied" / "flagged" / "failed review" → first='N' OR second='N'
 
 KYC / IDENTITY:
-  "KYC" / "know your customer" / "identity check" → identity_checks table
+  "identity verification" / "identity check" → identity_checks table
   "face match" / "selfie check" / "photo verification" → identity_checks table (all rows are face-match)
   "video KYC" / "live video check" / "liveness" → video_kyc_checks table
+  "face scan" / "live face scan" / "spoof check" / "deepfake check" → face_scan_live_results table
   "Aadhaar" / "UID" / "UIDAI card" → aadhaar document type, aadhar_number column
   "PAN" / "PAN card" / "tax ID" → pan_card document type, pan_number column
 

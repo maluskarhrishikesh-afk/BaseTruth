@@ -170,6 +170,27 @@ def test_analyze_challenge_nod_passes_with_hold_and_return() -> None:
     assert result == {"passed": True, "feedback": "✅ Nod completed!"}
 
 
+def test_analyze_challenge_nod_passes_when_user_starts_moving_immediately() -> None:
+    """A genuine nod must still pass when the user starts moving on the first challenge frames.
+
+    This mirrors the real UI flow where some users begin the chin dip immediately after the
+    instruction appears, so the baseline must stay anchored to the earliest stable frame instead
+    of averaging already-moving frames into the neutral pose.
+    """
+    history = [
+        {"nose_rel_x": 0.50, "pitch": 0.50, "yaw": 0.0, "det_score": 1.0, "ear": 0.30},
+        {"nose_rel_x": 0.50, "pitch": 0.55, "yaw": 0.0, "det_score": 1.0, "ear": 0.30},
+        {"nose_rel_x": 0.50, "pitch": 0.58, "yaw": 0.0, "det_score": 1.0, "ear": 0.30},
+    ] + [
+        {"nose_rel_x": 0.50, "pitch": 0.62, "yaw": 0.0, "det_score": 1.0, "ear": 0.30}
+        for _ in range(6)
+    ]
+
+    result = analyze_challenge(history, "nod")
+
+    assert result == {"passed": True, "feedback": "✅ Nod completed!"}
+
+
 def test_analyze_challenge_blink_passes_on_single_blink() -> None:
     # _BLINK_COUNT_REQUIRED = 1 — a single complete EAR dip-recovery cycle is
     # sufficient to pass the blink challenge.

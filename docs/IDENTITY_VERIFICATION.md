@@ -80,13 +80,14 @@ Customer's browser ──WS /kyc/ws/{session_id}──► FastAPI server
 
 2. **Customer opens the link** — The browser loads the self-contained HTML page served directly by the API server.
    - Works on any modern mobile or desktop browser; no install required.
-   - Page shows: customer name, challenge count, and a "Start Verification" button.
+   - Page shows Aadhaar upload, optional PAN upload, address proof, and GPS steps first. When the customer reaches liveness, BaseTruth redirects them into the shared Face Scan live page so Video KYC and Face Scan use the exact same live challenge UI.
+   - PAN upload stores the raw image immediately and completes PAN field extraction plus signature cropping in the background, so slow Gemma4/OCR work does not block the browser or the operator status poller.
 
 3. **Live challenges** — Customer clicks "Start Verification":
    - Browser requests camera permission.
-   - A WebSocket connection opens to `/kyc/ws/<session_id>`.
-   - The browser captures a JPEG frame every ~310 ms and sends it as base64 over the WebSocket.
-   - The server runs **MediaPipe FaceLandmarker** (or InsightFace if available) to locate the face in each frame and extracts 5 key landmarks (eyes, nose, mouth corners).
+   - The KYC page first calls `POST /api/v1/face-scan/sessions`, then redirects the browser into `/face-scan/live/<face_scan_session_id>?autostart=1&result_mode=verification&callback=...`.
+   - The shared Face Scan live page opens the WebSocket connection to `/api/v1/face-scan/ws/<face_scan_session_id>` and captures a JPEG frame every ~100 ms.
+   - The dedicated Face Scan live engine runs the challenge loop, computes the canonical live-authenticity result payload, and the shared page posts that JSON back to `POST /kyc/sessions/<session_id>/liveness-result` so the Video KYC session stores the exact Face Scan result.
    - A random set of 2–4 **active-liveness challenges** are assigned (configurable):
 
     | Challenge | What the server looks for |
@@ -122,9 +123,9 @@ Customer's browser ──WS /kyc/ws/{session_id}──► FastAPI server
    - If no reference was provided, the session completes as a liveness-only check.
    - The backend also compares the current address against the extracted address-proof payload and calculates an address-distance metric when both sides can be normalized.
 
-6. **Result** — Server sends a `{"type":"result","passed":true/false,...}` message via WebSocket.
-   - Browser shows a full-screen PASS ✅ or FAIL ❌ card.
-   - Operator dashboard polls `GET /kyc/sessions/{session_id}` for the outcome.
+6. **Result** — Face Scan live sends its canonical `{"type":"result","verdict":...,"risk_score_0_100":...,"confidence_0_100":..., ...}` message via WebSocket.
+   - The shared Face Scan page posts that payload to the KYC callback and then shows a verification-style PASS ✅ or FAIL ❌ result card using the bridged KYC response.
+   - Operator dashboard polls `GET /kyc/sessions/{session_id}` for the outcome and can render the full Face Scan live review payload from the stored `face_scan_result` field.
 
 **Face detection strategy:**
 
@@ -174,13 +175,13 @@ Video KYC results are persisted in `video_kyc_checks`:
 | `status` | `pass`, `fail`, or `inconclusive` |
 | `cosine_similarity` / `display_score` / `threshold` / `is_match` | Live-face match decision fields |
 | `liveness_state` / `liveness_passed` | Liveness result |
-| `identity_dtls` | Reference identity-proof payload |
+| `aadhar_dtls` / `pan_dtls` | Structured Aadhaar and PAN identity-proof payloads |
 | `address_dtls` | Permanent address-proof payload |
-| `current_location_json` / `current_address_text` | Browser geolocation payload and resolved current address |
+| `current_location` | Reverse-geocoded current address text from the browser GPS fix |
 | `isAddressMatch` / `address_distance_meters` / `kyc_comments` | Address-comparison result fields |
-| `video_kyc_pic` / `address_proof_pic` / `reference_doc_pic` | MinIO object keys for the retained proof images |
+| `video_kyc_pic` / `address_proof_pic` / `aadhaar_pic` / `pan_pic` / `signature_pic` | MinIO object keys for the retained proof images |
 | `challenge_snapshots_json` | Metadata for one best retained frame per completed challenge |
-| `report_json` | Full Video KYC payload |
+| `report_json` | Full Video KYC payload, including the canonical `face_scan_result` JSON from the Face Scan live engine |
 | `pdf_report` | MinIO object key for the generated PDF report |
 
 `document_extractions` is reserved for Scan Document and Bulk Scan. Identity Verification and Video KYC do not create rows there.

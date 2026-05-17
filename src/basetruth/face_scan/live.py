@@ -179,6 +179,10 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
 <script>
 const SESSION_ID = '__SESSION_ID__';
 const CHALLENGES = __CHALLENGES_JSON__;
+const PARAMS = new URLSearchParams(window.location.search);
+const CALLBACK_URL = PARAMS.get('callback') || '';
+const AUTO_START = PARAMS.get('autostart') === '1';
+const RESULT_MODE = PARAMS.get('result_mode') || (CALLBACK_URL ? 'verification' : 'face_scan');
 const LABELS = {look_straight:'LOOK AT THE CAMERA', blink:'BLINK ONCE', turn_left:'TURN TO YOUR LEFT', turn_right:'TURN TO YOUR RIGHT', nod:'NOD ONCE'};
 const INSTR = {look_straight:'Look into the camera and hold still — your face will be captured automatically.', blink:'Blink once: slowly close both eyes completely, then open them wide.', turn_left:'Slowly turn your head to YOUR left. Hold it until you see a green light and hear a beep.', turn_right:'Slowly turn your head to YOUR right. Hold it until you see a green light and hear a beep.', nod:'Slowly tilt your chin DOWN and hold it. You will see a green light and hear a beep when done — no need to look back up.'};
 let ws=null, stream=null, captureTimer=null, reconnectTimer=null;
@@ -228,6 +232,76 @@ function flashGreen(){
 function show(id){['intro','live','result'].forEach(x=>{const el=document.getElementById(x); if(el) el.style.display = x===id ? 'block' : 'none';});}
 function feedback(msg){const el=document.getElementById('fb'); if(el) el.textContent = msg || '';}
 
+function verificationPassed(msg){
+    if(typeof msg.passed === 'boolean') return msg.passed;
+    if(typeof msg.liveness_passed === 'boolean') return msg.liveness_passed;
+    return String(msg.verdict || '').toUpperCase() === 'GENUINE';
+}
+
+function verificationDisplayScore(msg){
+    if(msg.display_score != null) return Number(msg.display_score) || 0;
+    if(msg.risk_score_0_100 != null) return Math.max(0, Math.min(100, 100 - Number(msg.risk_score_0_100)));
+    if(msg.confidence_0_100 != null) return Math.max(0, Math.min(100, Number(msg.confidence_0_100)));
+    return verificationPassed(msg) ? 100 : 0;
+}
+
+function renderFaceScanResult(msg){
+    const evidence = (msg.evidence || []).map(item => '<li>' + item + '</li>').join('');
+    document.getElementById('result').innerHTML = '<div class="res-card"><div class="res-title">' + (msg.verdict || 'RESULT') + '</div><div class="res-meta">Risk Score: <strong>' + Number(msg.risk_score_0_100 || 0).toFixed(1) + '/100</strong><br>Confidence: <strong>' + Number(msg.confidence_0_100 || 0).toFixed(1) + '/100</strong><br>' + (msg.honest_review || '') + '</div><ul class="list">' + evidence + '</ul></div>';
+    show('result');
+}
+
+function renderVerificationResult(msg){
+    const passed = verificationPassed(msg);
+    const score = verificationDisplayScore(msg);
+    const message = msg.message || msg.honest_review || msg.overall_explanation || '';
+    let html = '<div class="res-card"><div class="res-title" style="color:' + (passed ? '#4ade80' : '#f87171') + '">' + (passed ? 'Identity Verified' : 'Verification Failed') + '</div><div class="res-meta">';
+    if(passed){
+        html += 'Your identity has been successfully verified.';
+    } else {
+        html += (message || 'Verification could not be completed.') + '<br><br>Please contact your agent for assistance.';
+    }
+    html += '<br><br>Score: <strong>' + Number(score || 0).toFixed(1) + '%</strong>';
+    html += '</div>';
+    if(msg.address_match_result || msg.current_location){
+        const r = msg.address_match_result;
+        const addr = msg.current_location || '';
+        const dist = msg.address_distance_meters;
+        html += '<div class="res-meta" style="margin-top:.85rem;padding-top:.75rem;border-top:1px solid rgba(148,163,184,.18)"><strong>Address check:</strong> ';
+        html += r==='match' ? '<span style="color:#4ade80">Match</span>' : r==='partial' ? '<span style="color:#facc15">Partial match</span>' : r==='mismatch' ? '<span style="color:#f87171">Mismatch</span>' : '<span style="color:#94a3b8">Skipped</span>';
+        if(dist != null) html += ' <span style="color:#94a3b8">(' + Math.round(dist) + ' m)</span>';
+        if(addr) html += '<br><span style="color:#94a3b8">Live address: ' + addr.substring(0, 120) + '</span>';
+        html += '</div>';
+    }
+    html += '</div>';
+    document.getElementById('result').innerHTML = html;
+    show('result');
+}
+
+async function postVerificationCallback(msg){
+    if(!CALLBACK_URL) return msg;
+    const payload = {...msg, face_scan_session_id: SESSION_ID};
+    try{
+        const resp = await fetch(CALLBACK_URL, {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify(payload),
+        });
+        const data = await resp.json();
+        if(!resp.ok){
+            throw new Error(data.detail || data.message || 'Could not save verification result.');
+        }
+        return {...payload, ...data};
+    }catch(err){
+        return {
+            ...payload,
+            passed: verificationPassed(payload),
+            display_score: verificationDisplayScore(payload),
+            message: (err && err.message) || payload.message || payload.honest_review || 'Verification completed.',
+        };
+    }
+}
+
 async function start(){
     show('live');
     sessionFinished = false;
@@ -271,7 +345,7 @@ function connectSocket(){
         ws.send(JSON.stringify({type:'meta', camera_width: vid.videoWidth || 0, camera_height: vid.videoHeight || 0, observed_fps: 1000 / CAPTURE_MS, user_agent:navigator.userAgent, platform:navigator.platform || '', device_label: deviceLabel}));
         startCapture();
     };
-    ws.onmessage = (event) => { try{ handle(JSON.parse(event.data)); }catch(_err){} };
+    ws.onmessage = async (event) => { try{ await handle(JSON.parse(event.data)); }catch(_err){} };
     ws.onclose = () => {
         if(sessionFinished){
             stopCapture();
@@ -320,7 +394,7 @@ function stopCapture(){
     if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
 }
 
-function handle(msg){
+async function handle(msg){
     if(msg.type==='status'){
         document.getElementById('face-badge').textContent = msg.face_detected ? 'Face detected' : 'Searching...';
         const challenge = msg.challenge || CHALLENGES[Math.min(msg.challenges_completed || 0, CHALLENGES.length - 1)] || 'look_straight';
@@ -357,9 +431,9 @@ function handle(msg){
     if(msg.type==='result'){
         sessionFinished = true;
         stopCapture();
-        const evidence = (msg.evidence || []).map(item => '<li>' + item + '</li>').join('');
-        document.getElementById('result').innerHTML = '<div class="res-card"><div class="res-title">' + (msg.verdict || 'RESULT') + '</div><div class="res-meta">Risk Score: <strong>' + Number(msg.risk_score_0_100 || 0).toFixed(1) + '/100</strong><br>Confidence: <strong>' + Number(msg.confidence_0_100 || 0).toFixed(1) + '/100</strong><br>' + (msg.honest_review || '') + '</div><ul class="list">' + evidence + '</ul></div>';
-        show('result');
+        const finalMsg = await postVerificationCallback(msg);
+        if(RESULT_MODE === 'verification') renderVerificationResult(finalMsg);
+        else renderFaceScanResult(finalMsg);
         return;
     }
     if(msg.type==='error'){
@@ -370,7 +444,9 @@ function handle(msg){
     }
 }
 
-document.getElementById('btn-start').addEventListener('click', start);
+const startButton = document.getElementById('btn-start');
+if(AUTO_START) start();
+else if(startButton) startButton.addEventListener('click', start);
 </script>
 </body>
 </html>"""
@@ -1403,6 +1479,7 @@ def _build_evidence(
     temporal: Dict[str, float],
     replay: Dict[str, float],
     still_replay: Dict[str, float],
+    still_frames_used: int,
     per_challenge_scores: List[Dict[str, Any]],
     quality: Dict[str, float],
     saccade: Dict[str, float],
@@ -1436,7 +1513,16 @@ def _build_evidence(
     suspicious_challenges = [
         p for p in per_challenge_scores
         if (
-            (p["challenge"] in _STILL_CHALLENGES and p["combined_risk"] >= 50.0)
+            (
+                p["challenge"] in _STILL_CHALLENGES
+                and p["combined_risk"] >= 50.0
+                and _confirmed_static_still_window(
+                    repeat_frame_score=float(p["replay"]["repeat_frame_score"]),
+                    temporal_score_0_100=float(p["temporal"]["score_0_100"] if p["temporal"] else 0.0),
+                    still_frames_used=int(p["frames_used"]),
+                    eye_stillness_score_0_100=float(saccade["score_0_100"]),
+                )
+            )
             or (p["challenge"] not in _STILL_CHALLENGES and p["combined_risk"] >= 70.0)
         )
     ]
@@ -1447,7 +1533,12 @@ def _build_evidence(
                 f"Challenge '{ch_display}' was flagged suspicious "
                 f"(score={p['combined_risk']:.0f}/100): {p['reason']}."
             )
-    elif still_replay["repeat_frame_score"] >= 70.0:
+    elif _confirmed_static_still_window(
+        repeat_frame_score=float(still_replay["repeat_frame_score"]),
+        temporal_score_0_100=float(temporal["score_0_100"]),
+        still_frames_used=int(still_frames_used),
+        eye_stillness_score_0_100=float(saccade["score_0_100"]),
+    ):
         evidence.append(
             f"Still-challenge frames showed {still_replay['repeat_frame_score']:.0f}% near-identical pairs "
             f"— strong evidence that a static photograph was used during a still challenge."
@@ -1505,6 +1596,29 @@ def _honest_review(verdict: str) -> str:
     if verdict == "INCONCLUSIVE":
         return "The live session completed, but the video quality was not strong enough for a confident decision."
     return "The live session looks genuine based on the current challenge-response and replay checks."
+
+
+def _confirmed_static_still_window(
+    repeat_frame_score: float,
+    temporal_score_0_100: float,
+    still_frames_used: int,
+    eye_stillness_score_0_100: float,
+) -> bool:
+    """Return True only when repeated still frames are corroborated as a static source.
+
+    A genuine user can occasionally produce moderate repeated-frame hashes during
+    look_straight or blink, especially on low-light webcams. We only escalate that
+    pattern to a static-photo verdict when the still window also looks frozen overall:
+    either the still-challenge temporal signal is too quiet, the eyes look unnaturally
+    still, or the repeated-frame score is so extreme that it is unambiguous by itself.
+    """
+    if still_frames_used < 8:
+        return False
+    if repeat_frame_score >= 85.0:
+        return True
+    return repeat_frame_score >= 70.0 and (
+        temporal_score_0_100 >= 25.0 or eye_stillness_score_0_100 >= 60.0
+    )
 
 
 def _score_per_challenge(session: "FaceScanLiveSession") -> List[Dict[str, Any]]:
@@ -1652,6 +1766,13 @@ def build_live_face_scan_result(session: FaceScanLiveSession) -> Dict[str, Any]:
     timing     = _compute_frame_timing_jitter(history)
     depth      = _compute_depth_consistency(session)
 
+    still_static_photo_confirmed = _confirmed_static_still_window(
+        repeat_frame_score=float(still_replay["repeat_frame_score"]),
+        temporal_score_0_100=float(temporal["score_0_100"]),
+        still_frames_used=int(still_frames_used),
+        eye_stillness_score_0_100=float(saccade["score_0_100"]),
+    )
+
     # ── Tier 1 ML signals ────────────────────────────────────────────────────
     # These are computed at result-build time from data already in session/history.
     # head_velocity_var: variance of yaw velocity — low = replay/robot, high = human
@@ -1713,7 +1834,17 @@ def build_live_face_scan_result(session: FaceScanLiveSession) -> Dict[str, Any]:
         # Still challenges (look_straight, blink): threshold 50 — even moderate
         # repeated-frame patterns in a still window are suspicious because a live
         # person breathing always has enough micro-movement to keep replay low.
-        any(p["combined_risk"] >= 50.0 for p in per_challenge_scores if p["challenge"] in _STILL_CHALLENGES)
+        any(
+            p["combined_risk"] >= 50.0
+            and _confirmed_static_still_window(
+                repeat_frame_score=float(p["replay"]["repeat_frame_score"]),
+                temporal_score_0_100=float(p["temporal"]["score_0_100"] if p["temporal"] else 0.0),
+                still_frames_used=int(p["frames_used"]),
+                eye_stillness_score_0_100=float(saccade["score_0_100"]),
+            )
+            for p in per_challenge_scores
+            if p["challenge"] in _STILL_CHALLENGES
+        )
         or
         # Motion challenges (nod, turn_left, turn_right): threshold raised to 70.
         # During a nod or turn the subject must hold the position for the camera to
@@ -1724,7 +1855,11 @@ def build_live_face_scan_result(session: FaceScanLiveSession) -> Dict[str, Any]:
         any(p["combined_risk"] >= 70.0 for p in per_challenge_scores if p["challenge"] not in _STILL_CHALLENGES)
     ):
         verdict = "SUSPICIOUS"
-    elif max(replay["score_0_100"], temporal["score_0_100"], still_replay["score_0_100"]) >= 50.0 and risk_score >= 35.0:
+    elif max(
+        replay["score_0_100"],
+        temporal["score_0_100"],
+        still_replay["score_0_100"] if still_static_photo_confirmed else 0.0,
+    ) >= 50.0 and risk_score >= 35.0:
         # 50.0 sub-score threshold: any single strongly elevated signal triggers
         # SUSPICIOUS when the overall risk_score also exceeds 35. still_replay is
         # included in the max() because a static photo used for look_straight produces
@@ -1733,14 +1868,11 @@ def build_live_face_scan_result(session: FaceScanLiveSession) -> Dict[str, Any]:
         # The risk_score >= 35.0 guard prevents individual sub-score spikes (e.g.
         # dark-frame hash collisions in a dim room) from triggering a false SUSPICIOUS.
         verdict = "SUSPICIOUS"
-    elif still_replay["repeat_frame_score"] >= 70.0 and still_frames_used >= 8:
+    elif still_static_photo_confirmed:
         # Hard still-replay gate (no risk_score guard).
-        # If 70%+ of 300ms-apart frame pairs within the worst still-challenge window are
-        # near-identical, a static source was almost certainly used for look_straight.
-        # A live person holds still during this challenge but always has micro-tremors
-        # from breathing that keep the per-still repeat rate well below 70%.
-        # This gate fires independently of the overall risk score because the signal
-        # is so focused and high-precision that it does not need corroboration.
+        # Repeated still-window hashes only become a hard static-photo verdict when
+        # the window also looks frozen overall, or the repeat rate is extreme enough
+        # to be unambiguous on its own.
         verdict = "SUSPICIOUS"
     elif depth["score_0_100"] >= 65.0:
         # Hard flat-face gate: the 3D depth check strongly indicates a flat source
@@ -1785,7 +1917,20 @@ def build_live_face_scan_result(session: FaceScanLiveSession) -> Dict[str, Any]:
         "confidence_reason": _confidence_reason(quality, session),
         "overall_explanation": _overall_explanation(verdict),
         "honest_review": _honest_review(verdict),
-        "evidence": _build_evidence(session, temporal, replay, still_replay, per_challenge_scores, quality, saccade, screen_fft, timing, depth, confidence),
+        "evidence": _build_evidence(
+            session,
+            temporal,
+            replay,
+            still_replay,
+            still_frames_used,
+            per_challenge_scores,
+            quality,
+            saccade,
+            screen_fft,
+            timing,
+            depth,
+            confidence,
+        ),
         "trace": {
             "decision_trace_id": f"fs_live_{uuid.uuid4().hex[:12]}",
             "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
@@ -1828,7 +1973,10 @@ def build_live_face_scan_result(session: FaceScanLiveSession) -> Dict[str, Any]:
             # Using per-challenge isolation means a genuine blink window cannot dilute
             # the repeat_frame_score of a photo-based look_straight window.
             "still_challenge_replay": {
-                "status": "review" if still_replay["repeat_frame_score"] >= 50.0 else "pass",
+                "status": (
+                    "review" if still_static_photo_confirmed
+                    else ("warn" if still_replay["repeat_frame_score"] >= 50.0 else "pass")
+                ),
                 # still_frames_used: frame count of the worst single still-challenge window.
                 "still_frames_used": still_frames_used,
                 **still_replay,
@@ -1840,7 +1988,16 @@ def build_live_face_scan_result(session: FaceScanLiveSession) -> Dict[str, Any]:
                 p["challenge"]: {
                     "status": (
                         "review" if (
-                            (p["challenge"] in _STILL_CHALLENGES and p["combined_risk"] >= 50.0)
+                            (
+                                p["challenge"] in _STILL_CHALLENGES
+                                and p["combined_risk"] >= 50.0
+                                and _confirmed_static_still_window(
+                                    repeat_frame_score=float(p["replay"]["repeat_frame_score"]),
+                                    temporal_score_0_100=float(p["temporal"]["score_0_100"] if p["temporal"] else 0.0),
+                                    still_frames_used=int(p["frames_used"]),
+                                    eye_stillness_score_0_100=float(saccade["score_0_100"]),
+                                )
+                            )
                             or (p["challenge"] not in _STILL_CHALLENGES and p["combined_risk"] >= 70.0)
                         )
                         else ("warn" if p["combined_risk"] >= 35.0 else "pass")

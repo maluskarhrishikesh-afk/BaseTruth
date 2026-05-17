@@ -933,11 +933,11 @@ def _display_truth_score(value: Any) -> str:
 
 _PAGES: Dict[str, str] = {
     "🏠  Dashboard": "dashboard",
-    "🧑‍💻  Identity Verification": "identity",
-    "🎥  Video KYC": "video_kyc",
     "🔍  Scan Document": "scan",
     "🧪  Forensic Scan": "forensic_scan",
     "🥸  Face Scan": "face_scan",
+    "🧑‍💻  Identity Verification": "identity",
+    "🎥  Video KYC": "video_kyc",
     "📦  Bulk Scan": "bulk",
     "🔬  Review Scans": "scans",
     "🧠  Document Intelligence": "document_intelligence",

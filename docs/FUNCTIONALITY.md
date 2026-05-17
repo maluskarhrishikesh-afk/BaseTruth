@@ -11,11 +11,11 @@
 | Label | Icon | Page Key | Page Title |
 |---|---|---|---|
 | Dashboard | 🏠 | `dashboard` | Dashboard |
-| Identity Verification | 🧑‍💻 | `identity` | Identity Verification |
-| Video KYC | 🎥 | `video_kyc` | Video KYC |
-| Face Scan | 🥸 | `face_scan` | Face Scan |
 | Scan Document | 🔍 | `scan` | Scan Document |
 | Forensic Scan | 🧪 | `forensic_scan` | Forensic Scan |
+| Face Scan | 🥸 | `face_scan` | Face Scan |
+| Identity Verification | 🧑‍💻 | `identity` | Identity Verification |
+| Video KYC | 🎥 | `video_kyc` | Video KYC |
 | Bulk Scan | 📦 | `bulk` | Bulk Scan |
 | Review Scans | 🔬 | `scans` | Review Scans |
 | Document Intelligence | 🧠 | `document_intelligence` | Document Intelligence |
@@ -37,14 +37,16 @@
 
 ## 🏠 Dashboard
 
-**Purpose:** Shows a live summary of all verification activity in the system.
+**Purpose:** Gives a simple starting point for the team. It shows what needs attention, which screen to use next, and whether the machine learning models are ready.
 
 | Element | Action | Expected Result |
 |---|---|---|
-| Metrics row | Auto-renders on page load | Shows entities, scanned documents, pending review count, high-risk count, auto-approved count, and average score from PostgreSQL |
-| "Recent Scans" table | Auto-renders | Lists the 20 most recent scans with entity name, document type, risk level, verdict, and date |
-| Shortcut buttons (Document Intelligence, Reports, Review Scans, etc.) | Click | Navigates to the corresponding screen |
-| If DB is offline | Page load | Shows "Database is offline" warning; no metrics or tables shown |
+| Summary row | Auto-renders on page load | Shows entities, saved documents, items needing review, and how many ML models are trained and ready |
+| Workflow guide | Auto-renders | Explains in simple language when to use Identity Verification vs Video KYC, when to use Scan Document vs Bulk Scan, when Forensic Scan and Face Scan fit, and why everything should stay linked to one entity |
+| Workflow buttons | Click | Navigates directly to the matching screen from the guide |
+| Machine learning model cards | Auto-renders | Shows one card each for the image document model, PDF model, and live face model with trained/not-trained status, number of signals used, training example count, and accuracy checked against the saved training data on the machine |
+| "Open ML Training Pipeline" button | Click | Opens the ML Training Pipeline screen |
+| If DB is offline | Page load | Shows a warning that database counts may be incomplete, but still shows the workflow guide and model cards |
 
 ---
 
@@ -157,7 +159,7 @@ The Session Status tab is the operator's full review surface. It mirrors the Ide
 | Element | Action | Expected Result |
 |---|---|---|
 | Aadhaar Card uploader | Upload image | Decodes QR → shows name, DOB, gender, UID, state, PIN. Bytes stored in `vkyc_aadhaar_bytes`. Cached in `vkyc_aadhaar_qr` |
-| PAN Card uploader | Upload image | Extracts PAN number, full name, father name, DOB via Gemma4 + OCR. Crops signature. Cached in `vkyc_pan_data` / `vkyc_pan_sig_bytes` |
+| PAN Card uploader | Upload image | Stores the PAN image immediately, then extracts PAN number, full name, father name, DOB, and signature in the background via Gemma4 + OCR. Cached in `vkyc_pan_data` / `vkyc_pan_sig_bytes`; the image can appear before the extracted fields finish |
 | Address Proof uploader | Upload image/PDF | Extracts address fields via AI. Cached in `vkyc_addr_dtls` |
 
 **Live Selfie:**
@@ -196,6 +198,12 @@ The Session Status tab is the operator's full review surface. It mirrors the Ide
 | Entity link widget | Select / type | Links check to an existing entity or creates a new one |
 | Auto-fill trigger | Document bytes arrive (Aadhaar or PAN) | `_vkyc_auto_key` changes → all four auto fields refill from latest document data |
 
+**Face Scan live review:**
+
+| Element | Action | Expected Result |
+|---|---|---|
+| Face Scan Live Review block | Auto-renders below Applicant Details after liveness completes | Reuses the same Face Scan result renderer as the Face Scan screen so verdict, narrative, recording playback, highlighted JSON, and JSON download match the dedicated Face Scan experience |
+
 **Face Match:**
 
 | Element | Action | Expected Result |
@@ -226,7 +234,7 @@ In simple words: BaseTruth watches a short sequence of recent frames, not just o
 
 ### Customer-Facing KYC Page (`GET /kyc/{session_id}`)
 
-The customer opens this URL on their phone or PC. The page is a self-contained 4-step wizard that communicates with the BaseTruth API entirely from the browser.
+The customer opens this URL on their phone or PC. The page is a self-contained 5-step wizard that communicates with the BaseTruth API entirely from the browser.
 
 #### Step 1 — Upload ID
 - Customer taps the upload zone and selects a photo of their **Aadhaar card (front)** or **PAN card**.
@@ -234,13 +242,20 @@ The customer opens this URL on their phone or PC. The page is a self-contained 4
 - The server extracts the face embedding from the ID photo and stores it as the face-match reference for the liveness step.
 - If no face is detected the server returns HTTP 400 and the customer is prompted to try a clearer photo.
 
-#### Step 2 — Upload Address Proof
+#### Step 2 — Upload PAN Card
+- Customer uploads a clear photo of their **PAN card (front)**.
+- The image is posted to `POST /kyc/sessions/{id}/upload-pan`.
+- The server stores the raw PAN image immediately, then continues PAN field extraction and signature cropping in a background worker so slow Gemma4/OCR calls do not stall the browser or the operator Session Status poller.
+- The operator Session Status tab can show the PAN image first and the extracted PAN fields a few seconds later when background processing finishes.
+- The customer may skip this step and continue with Aadhaar-only identity evidence.
+
+#### Step 3 — Upload Address Proof
 - Customer uploads the **back side of their Aadhaar card** or the **address page of their Passport**.
 - The image is posted to `POST /kyc/sessions/{id}/upload-address`.
 - The server runs OCR (pytesseract) to extract raw address text; OCR failure is non-fatal and silently skipped.
 - The customer may skip this step; doing so sets `address_match_result = "skipped"` for the session.
 
-#### Step 3 — Share GPS Location
+#### Step 4 — Share GPS Location
 - Customer taps "Share My Location"; the browser calls `navigator.geolocation.getCurrentPosition()`.
 - Coordinates are posted to `POST /kyc/sessions/{id}/location` as JSON `{"lat", "lon", "accuracy"}`.
 - The server reverse-geocodes the point via Nominatim and stores the human-readable address in the session.
@@ -248,11 +263,12 @@ The customer opens this URL on their phone or PC. The page is a self-contained 4
 - The 500 m rule: if GPS distance between live point and proof-address GPS point is ≤ 500 m the result is upgraded to `"match"` regardless of text overlap.
 - The customer may skip this step; doing so leaves `address_match_result = "skipped"`.
 
-#### Step 4 — Liveness Challenge
-- The browser opens a WebSocket to `/kyc/ws/{session_id}` and starts the camera.
-- Frames are captured at ~3 fps and sent as base64 JPEG via `{type: "frame", data: "..."}` messages.
-- The server drives the challenge sequence and sends `{type: "status", ...}` messages to update the UI.
-- On completion the server sends `{type: "result", passed, display_score, address_match_result, current_address_text, address_distance_meters}`.
+#### Step 5 — Liveness Challenge
+- The Video KYC browser page creates a dedicated Face Scan live session via `POST /api/v1/face-scan/sessions`, then immediately redirects the customer into the shared Face Scan live page at `/face-scan/live/{face_scan_session_id}?autostart=1&result_mode=verification&callback=...`.
+- That shared Face Scan live page owns the camera UI, green-flash success cue, beep confirmation, reconnect handling, and the WebSocket connection to `/api/v1/face-scan/ws/{face_scan_session_id}`.
+- Frames are captured at ~10 fps and sent as base64 JPEG via `{type: "frame", data: "..."}` messages.
+- When the shared page receives the final canonical Face Scan `{type: "result", verdict, risk_score_0_100, confidence_0_100, honest_review, ...}` payload, it posts that JSON to `POST /kyc/sessions/{session_id}/liveness-result` through the callback URL.
+- The callback marks the Video KYC session completed and stores the canonical Face Scan payload inside the KYC result for the operator dashboard and DB save path.
 
 #### Result Screen
 - Shows a green **Identity Verified** card (pass) or red **Verification Failed** card (fail).
@@ -263,6 +279,7 @@ The customer opens this URL on their phone or PC. The page is a self-contained 4
 | Endpoint | Method | Purpose |
 |---|---|---|
 | `/kyc/sessions/{id}/upload-id` | POST | Accept ID photo; extract + store face embedding |
+| `/kyc/sessions/{id}/upload-pan` | POST | Accept PAN photo; store image immediately; finish extraction in background |
 | `/kyc/sessions/{id}/upload-address` | POST | Accept address proof photo; run OCR; store text |
 | `/kyc/sessions/{id}/location` | POST | Accept GPS coordinates; reverse-geocode; compare addresses |
 | `/kyc/{id}` | GET | Serve the HTML wizard page |
@@ -309,6 +326,7 @@ The customer opens this URL on their phone or PC. The page is a self-contained 4
 - If the browser WebSocket drops before completion, the live session stays resumable until expiry and the live page retries the connection automatically.
 - The live result remains non-persistent like the static tab. It does **not** save to PostgreSQL or MinIO.
 - The first live-authenticity signals are temporal consistency, replay heuristics, live frame quality, and challenge completion.
+- A still-challenge static-photo accusation must be corroborated by a frozen still window, not by repeated frame hashes alone; nod/turn hold phases are motion challenges and must not be treated as static-photo evidence.
 
 ---
 

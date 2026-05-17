@@ -433,6 +433,7 @@ def is_face_stable(
 _NOD_HOLD_FRAMES    = 6     # frames of sustained head-down position ≈ 0.6 s at 10 FPS
 _NOD_DOWN_DELTA     = 0.08  # pitch must deviate this much from neutral to count as "down"
 _NOD_BASELINE_FRAMES = 3    # first N challenge frames used to estimate neutral pitch
+_NOD_BASELINE_STABILITY_DELTA = 0.03  # stop baseline capture once pitch is already drifting into a nod
 
 # Blink: number of distinct eye-close/open cycles required to pass the challenge.
 # Two blinks are sufficient proof of liveness and are easier for users than
@@ -823,16 +824,24 @@ def analyze_challenge(
         if len(nod_hist) < _NOD_BASELINE_FRAMES + 3:
             return {"passed": False, "feedback": "Look DOWN..."}
 
-        # Phase 1: baseline pitch from the first frames (user was frontal/straight).
-        baseline_pitch = (
-            sum(f["pitch"] for f in nod_hist[:_NOD_BASELINE_FRAMES]) / _NOD_BASELINE_FRAMES
-        )
+        # Phase 1: baseline pitch from the earliest stable frames.
+        # Some users start nodding as soon as the instruction appears, so blindly
+        # averaging the first 3 frames can contaminate the neutral baseline with
+        # motion and make a genuine gentle nod miss the threshold.
+        baseline_pitches = [pitches[0]]
+        for pitch in pitches[1:_NOD_BASELINE_FRAMES]:
+            running_baseline = sum(baseline_pitches) / len(baseline_pitches)
+            if abs(pitch - running_baseline) > _NOD_BASELINE_STABILITY_DELTA:
+                break
+            baseline_pitches.append(pitch)
+        baseline_pitch = sum(baseline_pitches) / len(baseline_pitches)
+        baseline_end_idx = len(baseline_pitches)
 
         # Phase 2-3: find the longest contiguous run where pitch is deviated from
         # baseline by ≥ _NOD_DOWN_DELTA. Direction-agnostic so it works for all
         # camera heights (pitch can go either way for "chin down").
         best_start, best_len, cur_start, cur_len = -1, 0, -1, 0
-        for i in range(_NOD_BASELINE_FRAMES, len(pitches)):
+        for i in range(baseline_end_idx, len(pitches)):
             if abs(pitches[i] - baseline_pitch) >= _NOD_DOWN_DELTA:
                 if cur_start < 0:
                     cur_start = i

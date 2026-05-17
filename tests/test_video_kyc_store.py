@@ -130,6 +130,34 @@ class TestSaveVideoKYCCheckEnrichedColumns:
         assert result["aadhar_dtls"]["uid"] == "123456789012"
         assert result["pan_dtls"]["pan_number"] == "ABCDE1234F"
 
+    def test_uploads_enriched_images_even_when_filenames_are_missing(self) -> None:
+        """Video KYC save must not skip MinIO uploads just because filenames are blank.
+
+        This is a regression test for the Session Status save path, where the
+        customer-uploaded Aadhaar, PAN, and address-proof bytes were present but
+        the UI did not always carry the original filenames through to the save
+        helper. The DB row should still receive MinIO keys using stable fallback
+        names.
+        """
+        aadhaar_bytes = b"aadhaar-image"
+        pan_bytes = b"pan-image"
+        address_bytes = b"address-image"
+
+        _, _, mock_minio = self._run(
+            _make_result(),
+            aadhaar_bytes=aadhaar_bytes,
+            aadhaar_filename="",
+            pan_bytes=pan_bytes,
+            pan_filename="",
+            address_proof_bytes=address_bytes,
+            address_proof_filename="",
+        )
+
+        upload_calls = [call.args[0] for call in mock_minio.call_args_list]
+        assert "BT-000007/vkyc_aadhaar_card.jpg" in upload_calls
+        assert "BT-000007/vkyc_pan_card.jpg" in upload_calls
+        assert "BT-000007/vkyc_address_proof.jpg" in upload_calls
+
 
 # ---------------------------------------------------------------------------
 # Test: save_identity_check dispatcher passes new params to save_video_kyc_check

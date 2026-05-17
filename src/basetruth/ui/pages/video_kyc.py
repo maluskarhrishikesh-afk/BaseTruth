@@ -24,6 +24,7 @@ screen for face-to-face checks.
 """
 from __future__ import annotations
 
+import json
 import os
 import socket
 import subprocess
@@ -31,7 +32,9 @@ import sys
 import textwrap
 import time
 import uuid
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import urlsplit, urlunsplit
 
@@ -46,6 +49,7 @@ from basetruth.ui.components import (
     _render_entity_link_widget,
     save_identity_check,
 )
+from basetruth.ui.pages.scan import _RESULT_CSS
 
 # ---------------------------------------------------------------------------
 # API communication helpers
@@ -78,6 +82,36 @@ def _normalize_external_api_url(url: str) -> str:
 _API_EXTERNAL = _normalize_external_api_url(
     os.getenv("BT_API_EXTERNAL_URL", "http://localhost:8000")
 )
+
+
+def _normalize_vkyc_result_payload(result_payload: Any) -> Dict[str, Any]:
+    """Return a dict payload even when the session API sends null or malformed result data."""
+    if isinstance(result_payload, Mapping):
+        return dict(result_payload)
+    return {}
+
+
+
+def _prepare_vkyc_face_scan_result_for_display(face_scan_result: Dict[str, Any]) -> Dict[str, Any]:
+    """Backfill minimal Face Scan fields so Video KYC can reuse the shared result renderer."""
+    payload = dict(face_scan_result)
+    session_id = str(payload.get("face_scan_session_id") or "").strip()
+    if session_id and not str(payload.get("filename") or "").strip():
+        payload["filename"] = f"face_scan_live_{session_id}.jpg"
+    if "video_key" in face_scan_result:
+        payload["video_key"] = face_scan_result.get("video_key")
+    return payload
+
+
+def _render_vkyc_face_scan_live_review(face_scan_result: Dict[str, Any]) -> None:
+    """Render the canonical Face Scan live payload with the same component used on Face Scan."""
+    from basetruth.ui.pages.face_scan import _render_static_result  # noqa: PLC0415
+
+    payload = _prepare_vkyc_face_scan_result_for_display(face_scan_result)
+    filename = str(payload.get("filename") or "face_scan_live_result.jpg")
+
+    st.subheader("🥸 Face Scan Live Review")
+    _render_static_result(payload, filename)
 
 
 @st.cache_resource
@@ -638,6 +672,7 @@ def _build_kyc_save_artifacts(
     """
     disp_score = float(result.get("display_score", result.get("match_score", 0) * 100))
     is_match   = bool(result.get("passed", False))
+    face_scan_result = result.get("face_scan_result") or {}
 
     vkyc_result = {
         "is_match":          is_match,
@@ -645,11 +680,14 @@ def _build_kyc_save_artifacts(
         "cosine_similarity": cosine_sim,
         "display_score":     disp_score,
         "threshold":         0.40,
-        "liveness_passed":   True,
-        "liveness_state":    "challenge_response",
+        "liveness_passed":   bool(result.get("liveness_passed", is_match)),
+        "liveness_state":    result.get("liveness_state", "challenge_response"),
         "match":             is_match,
         "session_id":        session_id,
         "challenges":        status_resp.get("challenges", []),
+        "face_scan_result":  face_scan_result,
+        "verdict":           result.get("verdict", ""),
+        "message":           result.get("message", ""),
         # Enriched document payloads from operator uploads
         "aadhar_dtls":       aadhar_dtls or {},
         "pan_dtls":          pan_dtls or {},
@@ -752,7 +790,7 @@ def _section_session_status() -> None:  # noqa: PLR0912,PLR0915
     status   = status_resp.get("status", "unknown")
     ch_done  = status_resp.get("challenges_completed", 0)
     ch_total = status_resp.get("total_challenges", len(challenges) or 2)
-    result   = status_resp.get("result")
+    result   = _normalize_vkyc_result_payload(status_resp.get("result"))
 
     # Set this flag early so we can fire st.rerun() after ALL widgets have
     # rendered (Streamlit requires all widgets to be drawn before rerun).
@@ -875,8 +913,20 @@ def _section_session_status() -> None:  # noqa: PLR0912,PLR0915
             )
             pan_d = st.session_state.get("vkyc_pan_data", {})
             sig_b = st.session_state.get("vkyc_pan_sig_bytes")
-            # render_pan_fields already shows the success/warning banner internally
-            render_pan_fields(pan_d, sig_b)
+            if pan_d:
+                # render_pan_fields already shows the success/warning banner internally
+                render_pan_fields(pan_d, sig_b)
+            elif status_resp.get("pan_processing"):
+                st.info(
+                    "PAN image received. Extracted fields will appear here once background processing finishes.",
+                    icon="⏳",
+                )
+            elif status_resp.get("pan_extraction_error"):
+                st.warning(status_resp["pan_extraction_error"], icon="⚠️")
+            else:
+                st.caption(
+                    "PAN image received. Extracted fields are not available yet for this upload."
+                )
         else:
             # Customer has not yet uploaded PAN through the session link
             st.info(
@@ -1214,6 +1264,11 @@ def _section_session_status() -> None:  # noqa: PLR0912,PLR0915
             }.items() if v
         } or None
 
+    face_scan_result = result.get("face_scan_result") or {}
+    if face_scan_result:
+        st.divider()
+        _render_vkyc_face_scan_live_review(face_scan_result)
+
     st.divider()
 
     # ── Face Match ────────────────────────────────────────────────────────
@@ -1411,6 +1466,7 @@ def _page_video_kyc() -> None:
             "and reload this page."
         )
 
+    st.markdown(_RESULT_CSS, unsafe_allow_html=True)
     st.markdown(_page_title("🎥", "Video KYC"), unsafe_allow_html=True)
     st.caption(
         "Create a secure remote session, schedule the appointment, and share "

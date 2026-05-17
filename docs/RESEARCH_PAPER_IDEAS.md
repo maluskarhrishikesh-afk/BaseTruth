@@ -1,13 +1,13 @@
 # Research Paper Ideas — BaseTruth
 
-> Status: Draft brainstorm — revisit before submission.
-> Last updated: April 2026.
+> Status: Active — four identified contributions, Paper 1 in progress.
+> Last updated: May 2026.
 
 ---
 
 ## Overview
 
-Three publishable contributions have been identified from the BaseTruth codebase. They are listed in order of recommended priority.
+Four publishable contributions have been identified from the BaseTruth codebase. They are listed in order of recommended priority. Papers 1–3 cover document forensics and system architecture. Paper 4 (added May 2026) covers the Face Scan Live anti-spoofing pipeline, which is a distinct and novel contribution independent of the document fraud work.
 
 ---
 
@@ -181,21 +181,27 @@ A **system paper** describing the full pipeline from document ingestion to case 
 ### Architecture Summary
 
 ```
-Input document
-     │
-     ├─ Gemma4 lightweight classifier (document type routing)
-     │
-     ├─ Forensic engine (image 11-layer or PDF 11-layer)
-     │
-     ├─ OCR / text extraction (PaddleOCR or PyMuPDF embedded text)
-     │
-     ├─ LLM field extraction (Gemma4 via Ollama; cloud provider fallback)
-     │
-     ├─ Validation pack (domain-specific arithmetic + format checks)
-     │
-     ├─ ML fraud scorer (XGBoost 4-class; heuristic fallback)
-     │
-     └─ Persistence + case management (PostgreSQL; MinIO; REST API)
+Input document (static)               Live face via browser WebSocket
+        │                                           │
+        ├─ Gemma4 type router              ├─ Active liveness FSM
+        │                                  │    (5 hold-and-return challenges)
+        ├─ Forensic engine                 │
+        │   (image 11-layer /              ├─ Passive anti-spoofing signals
+        │    PDF 11-layer)                 │    (24-feature vector: IOD-yaw depth,
+        │                                  │    replay hash, screen FFT, eye jitter,
+        ├─ OCR / text extraction           │    temporal consistency, frame timing)
+        │  (PaddleOCR / PyMuPDF)           │
+        │                                  ├─ XGBoost binary scorer (GENUINE/SPOOF)
+        ├─ LLM field extraction            │    + heuristic fallback (cold-start safe)
+        │  (Gemma4 via Ollama)             │
+        │                                  ├─ GDPR-compliant video recording
+        ├─ Validation pack                 │    (SUSPICIOUS/DEEPFAKE only; H.264 MP4;
+        │  (7 domain packs)                │    configurable retention TTL)
+        │                                  │
+        ├─ ML fraud scorer                 └─ face_scan_live_results table
+        │  (XGBoost 4-class)
+        │
+        └─ Persistence + case management (PostgreSQL; MinIO; REST API)
 ```
 
 ### Target Venues
@@ -203,6 +209,122 @@ Input document
 - ACM DocEng demo/system track
 - IEEE IST (International Conference on Imaging Systems and Techniques)
 - UIST demo track
+
+---
+
+## Paper 4 — Active + Passive Hybrid Liveness Detection for Financial KYC
+
+### Proposed Title
+
+**"Hold-and-Return: A 24-Signal Passive Anti-Spoofing Framework Fused with Active Liveness Challenges for Remote Financial KYC"**
+
+### Core Insight
+
+Existing liveness papers focus on either:
+
+- **Active challenges** (instruction-following gestures) — gameable with prepared replay tooling once the attacker knows the challenge sequence, and inconclusive when the user hesitates or stumbles.
+- **Passive signals** (texture maps, rPPG, depth sensors) — most assume depth cameras or controlled lighting unavailable on commodity smartphone/laptop webcams.
+
+This work shows that a set of **passive signals derivable entirely from a standard webcam JPEG stream** — when correctly fused — achieves reliable liveness detection without any additional hardware, while the active challenge component provides an independent evidence channel that passive signals cannot simultaneously fake.
+
+### Novel Contributions
+
+#### 1. IOD-Yaw Geometric Depth Cue
+
+The inter-ocular distance (IOD) measured from 5-point face landmarks correlates with head yaw in a real 3D face but is independent of yaw in a flat representation (photo print, screen display, mask). The signal is computed as the Pearson correlation between per-frame IOD and yaw across the session:
+
+```
+iod_yaw_correlation = pearsonr(iod_sequence, yaw_sequence)
+```
+
+Real humans: correlation typically −0.40 to −0.99 (IOD shrinks as face turns away from camera).
+Flat photo / printed mask: correlation near 0 (IOD stays constant regardless of paper tilt).
+Plastic doll measured at −0.12: scores ~77/100 risk — correctly above the SUSPICIOUS threshold.
+
+This requires no depth sensor, no infrared, no second camera. It is derived from landmark geometry already available whenever a face detector runs.
+
+#### 2. Hold-and-Return Challenge Protocol
+
+Prior work uses either a single head-turn gesture or a binary present/absent detection. The hold-and-return protocol introduced here has three stages:
+
+1. **Threshold crossing**: yaw must exceed `|0.16|` (normalised by IOD) — filters out micro-movements that a rigid mask can produce without the head actually turning.
+2. **Sustained hold** (10 consecutive frames ≈ 1 s at 10 FPS): the user must *maintain* the turned position, not just briefly cross it. Replay tools injecting single frames cannot satisfy this.
+3. **Stability gate reset**: after hold completes, the system resets to a fresh stability gate before accepting the next challenge — making it impossible to exploit a drifting replay that happens to cross the threshold twice.
+
+Wrong-action self-correction (user reverses and retries) is explicitly allowed and tracked as a feature (`wrong_action_count`) so that hesitation by a genuine user does not inflate the risk score.
+
+#### 3. Screen Replay Detection via FFT Moiré Grid
+
+When a face video is filmed from a screen (monitor, smartphone, TV), the screen pixel grid introduces a regular moiré pattern in the captured frames. The signal:
+
+```
+mean_fft_grid_peak = mean amplitude of dominant non-DC frequency bins
+                     in the 2-D FFT of each frame's luminance channel
+```
+
+This fires on filmed screens regardless of the video content and is complementary to repeat-frame hashing — which detects software replay tools but misses filmed-screen attacks where each frame is genuinely different.
+
+#### 4. Self-Labeling Training Pipeline
+
+Most liveness papers train on dedicated spoofing databases (e.g., CelebA-Spoof, LCC FASD). This work presents an alternative for production deployments where labelled data does not exist at launch:
+
+1. Cold start: heuristic formula runs; `scoring_method = "heuristic"` in every result JSON.
+2. Every completed session appends a row to `training_data_face_scan_live.csv` with `label=-1` (unconfirmed).
+3. Operators label confirmed genuine and spoof sessions → rows updated to `label=0` or `label=1`.
+4. When enough labelled rows accumulate, `train()` runs 5-fold stratified CV and saves the model only if ROC AUC ≥ 0.75.
+5. On next server restart the model activates automatically; `scoring_method = "ML"` from that point.
+
+This is a genuine deployment contribution: liveness systems that require a pre-labelled dataset before going live are impractical for small financial institutions building their first KYC pipeline.
+
+#### 5. GDPR-Compliant Forensic Video Recording
+
+Completed SUSPICIOUS, DEEPFAKE, or INCONCLUSIVE sessions are assembled from the per-frame JPEG buffer into an H.264 MP4 and uploaded to object storage. GENUINE sessions are **not** recorded. Rationale: biometric video is Article 9 GDPR special-category data — recording it without investigative necessity violates the data minimisation principle. The recording TTL is operator-configurable (`FACE_SCAN_RECORD_VIDEO_RETENTION_DAYS`). This design decision and its legal basis are worth a short discussion section in the paper.
+
+### The 24-Feature Vector
+
+| Group | Features | Anti-spoofing target |
+|---|---|---|
+| Temporal consistency | yaw_jerk, pitch_jerk, nose_jitter, temporal_consistency_score | Rigid objects / smoothed replay |
+| Replay detection | repeat_frame_score, flicker_score, brightness_instability | Software replay tools |
+| Eye micro-jitter | mean_eye_jitter | Static images / masks (eyes never move) |
+| 3D depth geometry | iod_yaw_correlation | Flat photos, printed masks, screens |
+| Screen moiré | mean_fft_grid_peak | Filmed-screen attacks |
+| Frame timing | interval_cv | Metronomic replay tools |
+| Session metadata | observed_fps, frame_drop_rate | Frame injection / rate manipulation |
+| Face quality | mean_face_area_ratio, blur_risk, brightness_risk | Occlusion, darkness, extreme distance |
+| Active liveness | wrong_action_count, challenge_count | Challenge bypass attempts |
+| Face tracking | frames_without_face | Occlusion attacks |
+| Device flag | virtual_camera_suspected | OBS / virtual camera injection |
+| Tier-1 ML signals | head_velocity_variance, blink_duration_ms, challenge_reaction_latency_ms, mean_landmark_confidence | Human micro-behaviour baseline |
+
+### Model Architecture
+
+- XGBoost binary classifier (`objective='binary:logistic'`)
+- Pipeline: `SimpleImputer(strategy='median') → XGBClassifier`
+- Training gate: saves only if 5-fold stratified CV ROC AUC ≥ 0.75
+- Inference: risk_score = spoof probability × 100
+- Explainability: XGBoost tree SHAP (no external `shap` package)
+- Cold-start: `predict()` returns `None` → heuristic runs unchanged; `scoring_method` field distinguishes the two in the result JSON
+
+### Suggested Sections
+
+1. Introduction — webcam-only liveness; gap between passive-only and active-only approaches
+2. Background — existing active challenge protocols; passive signal survey; smartphone webcam constraints
+3. Threat Model — replay attack taxonomy: software replay, filmed-screen, printed photo, 3D mask, virtual camera injection
+4. Hold-and-Return Challenge Protocol — FSM design; threshold vs. hold vs. reset stages; wrong-action self-correction
+5. 24-Signal Passive Feature Set — per-signal design rationale; which attacks each targets
+6. IOD-Yaw Geometric Depth Cue — derivation; empirical results (real face vs. photo vs. doll vs. mask)
+7. XGBoost Fusion Model — training pipeline; self-labeling bootstrapping; cold-start guarantee
+8. GDPR-Compliant Video Recording — design rationale; data minimisation; forensic value
+9. Experimental Evaluation — per-signal ablation; binary ML vs. heuristic baseline; held-out attack types
+10. Conclusion
+
+### Target Venues
+
+- IEEE BTAS (Biometrics: Theory, Applications and Systems) — primary
+- IJCB (International Joint Conference on Biometrics)
+- IEEE Access (open access; system/application paper track)
+- IET Biometrics
 
 ---
 
@@ -218,8 +340,12 @@ Input document
 
 ## Next Steps
 
-- [ ] Choose Paper 1 as the first submission target
-- [ ] Identify a concrete dataset split to publish alongside (anonymised, redacted real documents or a curated synthetic version for reproducibility)
+- [x] Choose Paper 1 as the first submission target (decided)
+- [ ] Identify a concrete dataset split to publish alongside Paper 1 (anonymised, redacted real documents or a curated synthetic version for reproducibility)
 - [ ] Write an ablation comparing binary baseline vs. 4-class on TAMPERED-DERIVED documents specifically
-- [ ] Confirm venue deadlines (IEEE WIFS typically submits May–June)
-- [ ] Draft abstract and introduction
+- [ ] ⚠️ **IEEE WIFS deadline is May–June 2026 — submit Paper 1 abstract now**
+- [ ] Draft Paper 1 abstract and introduction
+- [ ] Collect labelled genuine/spoof Face Scan Live sessions to train the Paper 4 XGBoost model
+- [ ] Run IOD-yaw correlation experiment on a held-out set of printed photos and filmed-screen attacks to generate Table 1 for Paper 4
+- [ ] Decide whether Paper 4 targets IEEE BTAS (November 2026 deadline) or IJCB
+- [ ] Update Paper 3 system description to include the Face Scan Live pipeline once video recording is in production

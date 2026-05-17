@@ -1923,6 +1923,16 @@ def save_video_kyc_check(
 
             # ── Upload images to MinIO and store keys on the row ──────────────
             if entity_ref:
+                # Video KYC can receive document bytes from the customer session
+                # before the original filenames have been synced back into the UI.
+                # Use stable fallback names so the DB row and MinIO objects are
+                # still saved instead of silently skipping these uploads.
+                resolved_aadhaar_filename = aadhaar_filename or "aadhaar_card.jpg"
+                resolved_pan_filename = pan_filename or "pan_card.jpg"
+                resolved_address_proof_filename = (
+                    address_proof_filename or "address_proof.jpg"
+                )
+
                 if pdf_bytes:
                     try:
                         pdf_key = f"{entity_ref}/video_kyc_report.pdf"
@@ -1956,18 +1966,20 @@ def save_video_kyc_check(
                         log.warning("save_video_kyc_check: live frame upload failed", exc_info=True)
 
                 # ── New enriched images ───────────────────────────────────────────
-                if aadhaar_bytes and aadhaar_filename:
+                if aadhaar_bytes:
                     try:
-                        aadhaar_key = f"{entity_ref}/vkyc_{Path(aadhaar_filename).name}"
+                        aadhaar_key = (
+                            f"{entity_ref}/vkyc_{Path(resolved_aadhaar_filename).name}"
+                        )
                         minio_upload(aadhaar_key, aadhaar_bytes, "application/octet-stream")
                         row.aadhaar_pic = aadhaar_key
                         session.flush()
                     except Exception:
                         log.warning("save_video_kyc_check: Aadhaar image upload failed", exc_info=True)
 
-                if pan_bytes and pan_filename:
+                if pan_bytes:
                     try:
-                        pan_key = f"{entity_ref}/vkyc_{Path(pan_filename).name}"
+                        pan_key = f"{entity_ref}/vkyc_{Path(resolved_pan_filename).name}"
                         minio_upload(pan_key, pan_bytes, "application/octet-stream")
                         row.pan_pic = pan_key
                         session.flush()
@@ -1983,9 +1995,11 @@ def save_video_kyc_check(
                     except Exception:
                         log.warning("save_video_kyc_check: signature upload failed", exc_info=True)
 
-                if address_proof_bytes and address_proof_filename:
+                if address_proof_bytes:
                     try:
-                        addr_key = f"{entity_ref}/vkyc_{Path(address_proof_filename).name}"
+                        addr_key = (
+                            f"{entity_ref}/vkyc_{Path(resolved_address_proof_filename).name}"
+                        )
                         minio_upload(addr_key, address_proof_bytes, "application/octet-stream")
                         row.address_proof_pic = addr_key
                         session.flush()

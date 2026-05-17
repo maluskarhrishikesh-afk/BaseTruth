@@ -263,10 +263,11 @@ def get_schema_summary() -> str:
     # makes the valid table names impossible to miss even when the full schema is long.
     schema_guardrail = (
         "NON-NEGOTIABLE SQL GUARDRAILS:\n"
-        "- ONLY these PostgreSQL tables exist: entities, scans, document_extractions, identity_checks, entity_reports.\n"
+        "- ONLY these PostgreSQL tables exist: entities, scans, document_extractions, identity_checks, video_kyc_checks, entity_reports, face_scan_live_results.\n"
         "- NEVER use: users, names, documents, uploads, customers, applicants, checks, reports.\n"
         "- Use 'entities.id' as the primary key. NEVER use 'entity_id' on the entities table.\n"
         "- For uploaded documents by applicant, join entities.id to scans.entity_id and/or document_extractions.entity_id.\n"
+        "- Video KYC rows live in video_kyc_checks. Live Face Scan session rows live in face_scan_live_results and use session_id rather than entity_id.\n"
         "- Before emitting SQL, verify every table and column name appears in DATABASE.md below."
     )
 
@@ -291,8 +292,10 @@ def get_schema_summary() -> str:
             "  entities             — one row per applicant (PK = id, human ref = entity_ref)\n"
             "  scans                — one row per document scan (FK entity_id → entities.id)\n"
             "  document_extractions — extracted fields from each document (FK entity_id → entities.id)\n"
-            "  identity_checks      — face match + Video KYC results (FK entity_id → entities.id)\n"
+            "  identity_checks      — Identity Verification face-match results only (FK entity_id → entities.id)\n"
+            "  video_kyc_checks     — Video KYC session results only (FK entity_id → entities.id)\n"
             "  entity_reports       — final cross-document reports (FK entity_id → entities.id)\n"
+            "  face_scan_live_results — durable live Face Scan session results (keyed by session_id, no entity_id FK)\n"
         )
 
     parts.append("=" * 60)
@@ -304,7 +307,8 @@ def get_schema_summary() -> str:
         "CRITICAL SQL RULES:\n"
         "- 'entities' PK is 'id' (NOT 'entity_id'). Use 'entity_ref' (e.g. BT-000001) for display.\n"
         "- 'entity_id' exists ONLY in child tables (scans, document_extractions, "
-        "identity_checks, entity_reports) as a FK to entities.id.\n"
+        "identity_checks, video_kyc_checks, entity_reports) as a FK to entities.id.\n"
+        "- 'face_scan_live_results' does not use entity_id; query it by session_id, verdict, timestamps, or JSON fields.\n"
         "- Always use ILIKE for name searches (partial, case-insensitive).\n"
         "- Always add LIMIT 20 on non-aggregate queries.\n"
         "- Use only SELECT — no writes are permitted."

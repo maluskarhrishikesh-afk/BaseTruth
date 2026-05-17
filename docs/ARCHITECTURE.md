@@ -54,7 +54,7 @@ flowchart TD
 
 - supports single-file upload and immediate scan
 - supports a dedicated Face Scan page for instant static face-authenticity review without persistence
-- supports a dedicated Face Scan live-session contract with its own browser page, WebSocket transport, and canonical live result payload separate from Video KYC
+- supports a dedicated Face Scan live-session contract with its own browser page, WebSocket transport, and canonical live result payload; the Video KYC customer page now delegates Step 5 liveness to this contract and stores that canonical payload back on the KYC session
 - supports a dedicated single-file Forensic Scan page for instant tamper verdicts without persistence
 - supports a dedicated Swagger page that links operators to live OpenAPI docs (`/docs`, `/openapi.json`, `/redoc`)
 - supports bulk upload and folder-driven scan workflows
